@@ -1,31 +1,7 @@
 $ vera --run integrator_neg.va
-=== integrator_neg ===
---- point 0 ---
-  x[in] = -1.000000e0
-  x[out] = 0.000000e0
-  x[idtZ240] = 0.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
 t = 0 s: V(out) = 0 V
---- point 1 ---
-  x[in] = -1.000000e0
-  x[out] = -1.000000e0
-  x[idtZ240] = -1.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 1.000000e-3  dt = 1.000000e-3
 t = 0.001 s: V(out) = -1 V
---- point 2 ---
-  x[in] = -1.000000e0
-  x[out] = -2.000000e0
-  x[idtZ240] = -2.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 2.000000e-3  dt = 1.000000e-3
 t = 0.002 s: V(out) = -2 V
---- point 3 ---
-  x[in] = -1.000000e0
-  x[out] = -3.000000e0
-  x[idtZ240] = -3.000000e0
-  x[flowZ28outZ2cgndZ29] = 0.000000e0
-  t = 3.000000e-3  dt = 1.000000e-3
 t = 0.003 s: V(out) = -3 V
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 1 — I(idt$0,gnd) — compiles with @setFloatMode(.strict)
   --> integrator_neg.va:15:15

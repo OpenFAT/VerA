@@ -8,7 +8,7 @@
     flake-utils.url = "github:numtide/flake-utils";
     zig-overlay.url = "github:mitchellh/zig-overlay";
     zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
-    # The conformance suite: its `conform` harness and OpenVAF-Reloaded.
+    # The conformance suite: its `conform` harness.
     conformance.url = "github:OpenFAT/VAMS-Conformance-Suite";
     conformance.inputs.nixpkgs.follows = "nixpkgs";
     conformance.inputs.flake-utils.follows = "flake-utils";
@@ -67,7 +67,11 @@
           dontStrip = stdenv.hostPlatform.isDarwin;
           installPhase = ''
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-global-cache ZIG_LOCAL_CACHE_DIR=$TMPDIR/zig-cache
-            zig build install -j${toString zigJobs} -Doptimize=ReleaseFast -Dcpu=baseline --prefix "$out"
+            # The sandbox has no /usr/bin/env for Zig to read the native ABI
+            # from, so native means static musl there: libvera-vpi.a then
+            # loads a design with std's ElfDynLib, which applies no
+            # relocations, and every analog VPI app segfaulted. Name glibc.
+            zig build install -j${toString zigJobs} -Doptimize=ReleaseFast -Dcpu=baseline ${lib.optionalString stdenv.hostPlatform.isLinux "-Dtarget=${stdenv.hostPlatform.parsed.cpu.name}-linux-gnu"} --prefix "$out"
             ${wrapZig zig}
           '';
           meta = {
@@ -98,7 +102,18 @@
           dontStrip = true;
           installPhase = ''
             install -Dm755 vera $out/bin/vera
-            install -Dm644 ${fetchurl { inherit (contract) url sha256; }} $out/share/vera/contract.zig
+            ${
+              # From 0.21.0 the contract is a root and the `contract/` it
+              # imports from: both come out of the tag's source archive.
+              if contract.archive or false then
+                ''
+                  mkdir -p $out/share/vera
+                  tar -xzf ${fetchurl { inherit (contract) url sha256; }} -C $out/share/vera --strip-components=2 \
+                    VerA-${version}/lib/contract.zig VerA-${version}/lib/contract
+                ''
+              else
+                "install -Dm644 ${fetchurl { inherit (contract) url sha256; }} $out/share/vera/contract.zig"
+            }
             ${wrapZig zig}
           '';
           meta = {
@@ -150,6 +165,10 @@
           export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
           vera --help > /dev/null
           test -s ${vera}/share/vera/contract.zig
+          # Every file the contract root imports sits beside it.
+          for f in $(sed -n 's|.*@import("\(contract/[^"]*\)").*|\1|p' ${vera}/share/vera/contract.zig); do
+            test -s ${vera}/share/vera/$f
+          done
           cat > r.va <<'EOF'
           `include "disciplines.vams"
           module r(p, n);
@@ -186,9 +205,7 @@
         # Drop what this system cannot build (availableOn alone misses `broken`).
         available = lib.filter (p: lib.meta.availableOn pkgs.stdenv.hostPlatform p && !(p.meta.broken or false));
 
-        # OpenVAF-Reloaded, the reference Verilog-A compiler, and the suite's
-        # harness, both from the conformance suite's flake.
-        openvaf = conformance.packages.${system}.openvaf-r or null;
+        # The suite's harness, from the conformance suite's flake.
         conform = conformance.packages.${system}.conform;
 
         # yosys gated by hand: its check inputs hold iverilog, refused on 26.05's x86_64-darwin.
@@ -198,13 +215,11 @@
               pkgs.iverilog
               pkgs.verilator
               pkgs.ngspice
-              pkgs.xyce
               pkgs.python3
               conform
             ]
             ++ lib.optional (system != "x86_64-darwin") pkgs.yosys
-          )
-          ++ lib.optional (system == "x86_64-linux") openvaf;
+          );
       in
       {
         devShells = rec {

@@ -1,90 +1,98 @@
-//! Entries: the stored per-diagnostic record and the typed views rendering reads.
+//! Entries: the rows `Bag` stores for each diagnostic and the by-value views a
+//! reader decodes from them. In: a `Builder`'s parts. Out: one `Row` per
+//! diagnostic plus its `LabelRow`s and `NoteRow`s, their text in the bag's
+//! string pool, and the `Entry`/`Label`/`Note` views of them.
 //!
-//! In: a `Builder`'s parts. Out: one fixed-size `Record` per diagnostic, whose text
-//! lives in `Bag.string_bytes`, and the by-value `Entry`/`Label`/`Note` views of it.
-//! Cites no LRM clause (the stage that reports a diagnostic cites it).
+//! Cites no LRM clause: the stage that reports a diagnostic cites it.
+//!
+//! Contents:
+//! - `pub const Stage = enum(u8) { preprocess, parse, lower, proof, codegen, run }`
+//! - `pub const String = enum(u32) { none = 0, _ }`
+//! - `pub const max_children: u8`
+//! - `pub const Children = struct { start: u16, len: u8 }`
+//! - `pub const Row = struct`, `pub const LabelRow = struct`, `pub const NoteRow = struct`
+//! - `pub const Fix = struct`, `pub const Note = struct` (`Kind`), `pub const Label = struct`
+//! - `pub const Entry = struct`
 
 const std = @import("std");
-const diag = @import("root.zig");
-const diag_location = @import("location.zig");
-const Code = diag.Code;
-const Severity = diag.Severity;
+const assert = std.debug.assert;
+const Code = @import("code.zig").Code;
+const Severity = @import("level.zig").Severity;
+const location = @import("location.zig");
+const Span = location.Span;
+const FileId = location.FileId;
 
-/// Which stage produced the diagnostic. Kept for filtering and for the JSON
-/// output; the code's class digits say the same thing, but a stage is what a
-/// person debugging the ENGINE wants to filter on. `run`: raised while a
-/// design runs (the digital interpreter), after it compiled, so the
-/// renderer's "could not compile" summary does not count it.
+/// Which stage produced the diagnostic: what a person debugging the engine
+/// filters on, and the JSON `stage`. `run`: raised while a design runs (the
+/// digital interpreter), after it compiled, so the renderer's "could not
+/// compile" summary does not count it.
 pub const Stage = enum(u8) { preprocess, parse, lower, proof, codegen, run };
 
-/// Index into `Bag.string_bytes`, at the first byte of a NUL-terminated
-/// string. 0 means "no string": byte 0 of the pool is a sentinel NUL, so no
-/// real string can begin there.
-pub const String = u32;
+/// Handle of a NUL-terminated string in `Bag.strings`. Byte 0 of the pool is
+/// a sentinel NUL, so no real string starts at 0 and `none` costs no byte.
+pub const String = enum(u32) { none = 0, _ };
 
-/// Labels or notes on ONE diagnostic. More than four of either is not clearer
-/// for it, and the cap is what lets a `Record` hold them inline.
-pub const max_children = 4;
+/// Most labels, and most notes, on ONE diagnostic. More than four of either
+/// is not clearer for it; later ones are dropped by `Builder`.
+pub const max_children: u8 = 4;
 
-/// One diagnostic as `Bag.records` stores it. Offsets, not pointers, so
-/// `detach` copies the rows and the string pool and fixes nothing up.
-pub const Record = struct {
+/// A diagnostic's run of rows in `Bag.label_rows` or `Bag.note_rows`.
+/// Children are appended at `emit`, all at once, so a run is contiguous.
+pub const Children = struct {
+    start: u16 = 0,
+    len: u8 = 0,
+};
+
+/// One diagnostic as `Bag.rows` stores it (one column per field). Handles,
+/// not pointers, so `detach` copies the tables and fixes nothing up.
+pub const Row = struct {
     code: Code,
     severity: Severity,
     stage: Stage,
-    /// Set only by the preprocessor, whose offsets are file-local because it
-    /// fails before a preprocessed text exists to map them through.
-    file: ?diag_location.FileId,
-    span: diag_location.Span,
+    /// A file only for a preprocessor diagnostic, whose offsets are
+    /// file-local because it fails before a preprocessed text exists.
+    file: FileId,
+    span: Span,
     message: String,
     point: String,
-    /// Rows of `labels` in use; the rest are undefined.
-    n_labels: u8,
-    /// Rows of `notes` in use; the rest are undefined.
-    n_notes: u8,
-    labels: [max_children]LabelRec,
-    notes: [max_children]NoteRec,
+    labels: Children,
+    notes: Children,
+};
 
-    // Budget: 156 B, children inline. At most `max_entries` (64) rows, so a
-    // full bag is 10 KB; out-of-line children would save ~128 B a row and
-    // cost `detach` a fix-up pass. See docs/seams/s1-diag.md, Memory (removed
-    // from the tree; `git show 6e59b3d4^:docs/seams/s1-diag.md`).
+/// A stored secondary label: `Label` with its text as a handle.
+pub const LabelRow = struct {
+    span: Span,
+    text: String,
+
     comptime {
-        std.debug.assert(@sizeOf(Record) == 156);
+        assert(@sizeOf(LabelRow) == 12);
     }
 };
 
-/// A stored secondary label: `Label` with its text as a pool offset.
-pub const LabelRec = struct {
-    span: diag_location.Span,
-    text: String,
-};
-
-/// `fix_repl == 0` means "no fix": a fix whose replacement is EMPTY is a
-/// deletion and stays distinguishable from no fix at all.
-pub const NoteRec = struct {
+/// A stored note. `fix_replacement == .none` means "no fix": a fix whose
+/// replacement is EMPTY is a deletion and is interned, so it stays
+/// distinguishable from no fix at all.
+pub const NoteRow = struct {
     kind: Note.Kind,
     text: String,
-    fix_repl: String,
-    fix_span: diag_location.Span,
+    fix_replacement: String,
+    fix_span: Span,
+
+    comptime {
+        assert(@sizeOf(NoteRow) == 20);
+    }
 };
 
-// ---------------------------------------------------------------------------
-// Views
-// ---------------------------------------------------------------------------
-//
-// Produced BY VALUE from a `Record` and never stored. The strings are slices
-// into `Bag.string_bytes`; `Bag.str` says how long they stay valid.
-
-/// A machine-applicable rewrite. `span` is what to replace; a zero-width span
-/// inserts. The renderer draws `+` under an insertion and `~` under a
+/// A machine-applicable rewrite. `span` is what to replace; a zero-width
+/// span inserts. The renderer draws `+` under an insertion and `~` under a
 /// replacement, like rustc.
 pub const Fix = struct {
-    span: diag_location.Span,
+    span: Span,
     replacement: []const u8,
 };
 
 /// A `= note:` or `= help:` line under a diagnostic, optionally with a fix.
+/// Its strings borrow the bag's pool (see `Bag.str`).
 pub const Note = struct {
     /// Which word the line is rendered with; also the JSON `kind`.
     pub const Kind = enum(u8) { note, help };
@@ -94,36 +102,32 @@ pub const Note = struct {
     fix: ?Fix = null,
 };
 
-/// A secondary span with its own text: "this is the parameter that is
-/// unconstrained", pointing somewhere other than the primary span.
+/// A secondary span with its own text ("this is the parameter that is
+/// unconstrained"), pointing somewhere other than the primary span.
 pub const Label = struct {
-    span: diag_location.Span,
+    span: Span,
     text: []const u8,
 };
 
-/// One diagnostic as a reader sees it: `Bag.at` decodes it from a `Record`.
-/// Its strings borrow `Bag.string_bytes`; labels and notes are read through
-/// `Bag.labels`/`Bag.notes` with `index`.
+/// One diagnostic as a reader sees it: `Bag.at` decodes it from a `Row`, and
+/// `Bag.labels`/`Bag.notes` read its children through `index`. Its strings
+/// borrow the bag's pool (see `Bag.str`).
 pub const Entry = struct {
-    /// Row in `Bag.records` — what `Bag.labels`/`Bag.notes` read. Valid until
-    /// the next `Bag.sort`.
+    /// The row in `Bag.rows`. Valid until the next `Bag.sort`.
     index: u32,
     code: Code,
     severity: Severity,
     stage: Stage,
-    /// Primary span — where the caret goes. May be `Span.none` only for a
+    /// The primary span, where the caret goes. `Span.none` only for a
     /// whole-file condition such as E1001.
-    span: diag_location.Span,
-    /// Set ONLY by the preprocessor; every other stage leaves it null and
-    /// resolves through `Bag.map`. See `Record.file`.
-    file: ?diag_location.FileId = null,
-    /// The headline under `Info.title`; when empty the renderer prints the
-    /// title alone.
+    span: Span,
+    /// `.none` but for a preprocessor diagnostic; see `Row.file`.
+    file: FileId = .none,
+    /// The headline after `Info.title`; when empty the title stands alone.
     message: []const u8,
-    /// Short text drawn beside the primary caret. Usually empty: repeating the
-    /// headline next to the caret is noise, and rustc only labels the primary
-    /// span when the label says something the headline does not.
+    /// Short text beside the primary caret; usually empty, because repeating
+    /// the headline beside the caret is noise.
     point: []const u8 = "",
-    n_labels: u32 = 0,
-    n_notes: u32 = 0,
+    label_count: u8 = 0,
+    note_count: u8 = 0,
 };

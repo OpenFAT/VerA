@@ -1,0 +1,17 @@
+// A non-finite charge has no delay to print (#47). y follows a through
+// R = 1k and C = c: at the declared c = 1p, tau = ΔQ/ΔS = c·VDD / (VDD/R)
+// = R·c = 1 ns, so each edge's 50 % crossing is ln2 ns = 0.693147 ns.
+// Under `--param c=inf` the charge at V(y) = 0 is inf·0 = NaN, so tau is
+// NaN, and --emit-verilog refuses node y rather than print a delay
+// (build.zig runs both).
+`include "disciplines.vams"
+
+module rc_charge(a, y, vdd, vss);
+    inout a, y, vdd, vss;
+    electrical a, y, vdd, vss;
+    parameter real c = 1p;
+
+    analog begin
+        I(y, vss) <+ (V(y, vss) - V(a, vss)) / 1k + ddt(c * V(y, vss));
+    end
+endmodule

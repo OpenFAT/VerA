@@ -1,0 +1,21 @@
+// The --emit-verilog attribute scheme on a model with no RC: an inverter
+// whose delay is its transition() td, and a buffer whose delay is its
+// (* vera_delay *). Pins are named by vera_pin, not --digital-pins, and the
+// supplies are not named vdd/vss, so only their attributes make them supplies.
+`include "disciplines.vams"
+
+module attrs(a, y, z, ana, pwr, gnd0);
+    (* vera_pin = "digital" *) inout a;
+    (* vera_pin = "digital" *) inout y;
+    (* vera_pin = "digital", vera_delay = 3n *) inout z;
+    inout ana;                                  // analog: undriven in Verilog
+    (* vera_pin = "power" *) inout pwr;
+    (* vera_pin = "ground" *) inout gnd0;
+    electrical a, y, z, ana, pwr, gnd0;
+
+    analog begin
+        V(y, gnd0) <+ transition(V(a, gnd0) > V(pwr, gnd0) / 2 ? 0.0 : V(pwr, gnd0), 2n, 100p);
+        V(z, gnd0) <+ V(a, gnd0);
+        I(ana, gnd0) <+ V(ana, gnd0) / 1k;
+    end
+endmodule

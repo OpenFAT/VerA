@@ -10,29 +10,51 @@
 //!     A2D: rising through vth + vhys/2 -> 1, falling through vth - vhys/2 -> 0;
 //!          a static solve reads 1 above the band, 0 below, x inside it
 //!
-//! The engine is `root.State` rebuilt from a saved tick boundary
+//! The engine is `State.zig` rebuilt from a saved tick boundary
 //! (`snapshot.save`) whenever it has work, run, and saved again: `State`
 //! holds two boundaries, the accepted one and the one this step made.
 //! Clauses: VAMS §7.3.6 (synchronization), §7.8, §8.4.3.3 (an A2D event at
 //! the nearest tick), §4.5.8 (the ramps), §5.10.3.1 (`cross`); IEEE 1364-2005
 //! §9.7.2 (which edges wake a process), §11.4 (a tick boundary).
+//!
+//! Contents:
+//! - `pub const Pin = struct`
+//! - `pub const Spec = struct`
+//! - `pub fn Device(comptime spec: Spec) type`
+//! - `Device.U`
+//! - `Device.Model = struct`
+//! - `Device.Instance = struct`
+//! - `Device.State = struct`
+//! - `Device.state_class: contract.StateClass`
+//! - `Device.deriv_reads: M`
+//! - `Device.ddx_reads: M`
+//! - `Device.jac_pattern: [n_u]M`
+//! - `Device.eval(comptime S: type, x: *const [n_u]S.V, _: *const Model, inst: *const Instance, sim: contract.SimState) contract.Rows(Self, S)`
+//! - `Device.initState(m: *const Model, inst: *Instance) State`
+//! - `Device.updateState(comptime S: type, m: *const Model, inst: *Instance, x: [n_u]f64, st: *State, sim: contract.SimState) contract.UpdateResult`
+//! - `Device.stateCtl(_: *const Model, inst: *Instance, st: *State, op: contract.StateCtlOp) bool`
+//! - `Device.pendingBreakpoint(inst: *const Instance, t: f64) ?f64`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const contract = @import("contract");
-const root = @import("root.zig");
+const design = @import("design.zig");
+const entry = @import("main.zig");
+const RtState = @import("State.zig");
 const snapshot = @import("snapshot.zig");
-const logic = @import("logic.zig");
+const logic = @import("logic/root.zig");
 const time = @import("../time.zig");
 
 /// One pin: bit `bit` of the top module's port slot `slot`, whose first word
 /// is word `off` of the planes.
 pub const Pin = struct { out: bool, slot: u32, off: u32, bit: u32 };
 
-/// What `src/codegen/digital/emit.zig`'s device root passes `Device`, all comptime.
+/// What `src/codegen/digital/device.zig`'s device root passes `Device`, all comptime.
 pub const Spec = struct {
     /// The pins' enum, `U` of the device.
     U: type,
-    design: *const root.Design,
-    dispatch: root.Dispatch,
+    design: *const design.Design,
+    dispatch: design.Dispatch,
     /// In `U` order: the ports in declaration order, a vector's bits from
     /// its left index to its right.
     pins: []const Pin,
@@ -72,6 +94,8 @@ pub fn Device(comptime spec: Spec) type {
     };
     const n_out = outs.len;
     const n_in = ins.len;
+    // Every pin is an input or an output, never both.
+    comptime assert(n_in + n_out == n_u);
     // Per pin, its index among the outputs or among the inputs.
     const index = comptime blk: {
         var ix: [n_u]usize = undefined;
@@ -88,6 +112,8 @@ pub fn Device(comptime spec: Spec) type {
     // 10^|units|, exact for every precision 1364 allows, so a tick count
     // converts with one rounding: k * 1e-9 is not k / 1e9.
     const decade: f64 = comptime std.fmt.parseFloat(f64, std.fmt.comptimePrint("1e{d}", .{@abs(spec.units)})) catch unreachable;
+    comptime assert(tick > 0);
+    comptime assert(decade >= 1);
     const cap = snapshot.bound(spec.design);
     const nan = std.math.nan(f64);
     const inf = std.math.inf(f64);
@@ -193,11 +219,13 @@ pub fn Device(comptime spec: Spec) type {
         /// analysis but a transient. An input pin draws nothing.
         pub fn eval(comptime S: type, x: *const [n_u]S.V, _: *const Model, inst: *const Instance, sim: contract.SimState) contract.Rows(Self, S) {
             var r: contract.Rows(Self, S) = undefined;
+            comptime assert(r.len == n_u);
             inline for (spec.pins, 0..) |p, u| {
                 if (!p.out) {
                     r[u] = S.con(0).to(contract.rowMask(Self, u));
                 } else {
                     const k = index[u];
+                    comptime assert(k < n_out);
                     const g = if (sim.kind != .tran) inst.dc_g[k] else ramp(inst.g_from[k], inst.g_to[k], inst.g_t0[k], inst.g_t1[k], sim.t);
                     const v = if (sim.kind != .tran) inst.dc_lvl[k] else ramp(inst.lvl_from[k], inst.lvl_to[k], inst.lvl_t0[k], inst.lvl_t1[k], sim.t);
                     r[u] = S.probe(u, x[u]).addC(-v).scale(g).to(contract.rowMask(Self, u));
@@ -215,10 +243,15 @@ pub fn Device(comptime spec: Spec) type {
             defer arena.deinit();
             birth(arena.allocator(), m, inst, &st) catch poison(inst);
             st.inst = inst.*;
+            // No step is in flight; a live engine has an accepted boundary.
+            assert(!st.work);
+            if (!inst.stopped) assert(st.lens[st.cur] != 0);
             return st;
         }
 
         fn birth(a: std.mem.Allocator, m: *const Model, inst: *Instance, st: *State) !void {
+            assert(!st.work); // A fresh `State`.
+            assert(st.lens[st.cur] == 0);
             const s = try open(a, null);
             for (ins) |u| try drive(s, spec.pins[u], .x);
             try run(s, 0);
@@ -228,6 +261,7 @@ pub fn Device(comptime spec: Spec) type {
             st.work = false;
             // Time 0 is never rejected.
             flush(st);
+            assert(st.say_len == 0);
         }
 
         /// At a static solve (any analysis but a transient) the inputs are
@@ -239,6 +273,9 @@ pub fn Device(comptime spec: Spec) type {
         /// changed, so the step never needs repeating (`.ok` always).
         pub fn updateState(comptime S: type, m: *const Model, inst: *Instance, x: [n_u]f64, st: *State, sim: contract.SimState) contract.UpdateResult {
             _ = S;
+            // Pair of `keep`: each boundary fits its buffer.
+            assert(st.lens[0] <= cap);
+            assert(st.lens[1] <= cap);
             st.say_len = 0;
             if (inst.stopped) return .ok;
             var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
@@ -255,6 +292,9 @@ pub fn Device(comptime spec: Spec) type {
         }
 
         fn static(a: std.mem.Allocator, m: *const Model, inst: *Instance, x: [n_u]f64, st: *State, t: f64) !bool {
+            // A running engine has an accepted boundary (`birth`, `keep`).
+            assert(!inst.stopped);
+            assert(st.lens[st.cur] != 0);
             const s = try open(a, st.bufs[st.cur][0..st.lens[st.cur]]);
             for (ins, 0..) |u, i| {
                 try drive(s, spec.pins[u], threshold(m, x[u]));
@@ -271,6 +311,9 @@ pub fn Device(comptime spec: Spec) type {
         const Edge = struct { tick: u64, pin: u32, bit: logic.Bit };
 
         fn transient(a: std.mem.Allocator, m: *const Model, inst: *Instance, x: [n_u]f64, st: *State, t: f64) !void {
+            // A running engine has an accepted boundary (`birth`, `keep`).
+            assert(!inst.stopped);
+            assert(st.lens[st.cur] != 0);
             const horizon = time.tickAtOrBefore(t, tick);
             const hi = vth(m) + m.vhys / 2;
             const lo = vth(m) - m.vhys / 2;
@@ -302,6 +345,7 @@ pub fn Device(comptime spec: Spec) type {
                 inst.a2d_v[i] = v1;
             }
             inst.a2d_t = t;
+            assert(n <= edges.len); // At most two edges per input.
             const due = inst.next_ev != inf and time.tickAtOrBefore(inst.next_ev, tick) <= horizon;
             if (late and (woke or due)) inst.late_cross = true;
             if (n == 0 and !due) return;
@@ -327,21 +371,30 @@ pub fn Device(comptime spec: Spec) type {
         }
 
         /// The engine at the boundary `saved`, or at time 0 for null, with
-        /// no file or dump (`root.State.quiet`) and its transcript in memory
+        /// no file or dump (`State.quiet`) and its transcript in memory
         /// until `keep` holds it in `State.say`.
-        fn open(a: std.mem.Allocator, saved: ?[]const u8) !*root.State {
-            const s = try root.quietState(a, spec.design, spec.units);
+        fn open(a: std.mem.Allocator, saved: ?[]const u8) !*RtState {
+            // Pair of `keep`: a boundary `saveTo` wrote into `cap` bytes.
+            if (saved) |b| assert(b.len != 0);
+            if (saved) |b| assert(b.len <= cap);
+            const s = try RtState.quietState(a, spec.design, spec.units);
             if (saved) |b| try s.restore(b);
+            assert(s.quiet); // No file, dump or transcript leaves the engine.
             return s;
         }
 
         /// Every event at a tick up to `limit`.
-        fn run(s: *root.State, limit: u64) !void {
-            if (root.loop(s, spec.dispatch, null, limit)) |e| return e;
+        fn run(s: *RtState, limit: u64) !void {
+            assert(s.quiet);
+            assert(limit >= s.sched.now); // The clock never runs back.
+            if (entry.loop(s, spec.dispatch, null, limit)) |e| return e;
+            assert(s.sched.now <= limit);
         }
 
         /// The A2D store of `bit` into pin `p`, with every wake it causes.
-        fn drive(s: *root.State, p: Pin, bit: logic.Bit) !void {
+        fn drive(s: *RtState, p: Pin, bit: logic.Bit) !void {
+            assert(!p.out); // An A2D bridge drives an input pin.
+            assert(p.off + p.bit / 64 < s.v.len);
             const one = @as(u64, 1) << @intCast(p.bit % 64);
             const b: u2 = @backingInt(bit);
             // (v, x) planes: 0 = 00, 1 = 10, z = 01, x = 11.
@@ -352,9 +405,12 @@ pub fn Device(comptime spec: Spec) type {
 
         /// Each output's level and conductance from the engine: the static
         /// ones when `static`, else a ramp from its value at `t`.
-        fn outputs(m: *const Model, inst: *Instance, s: *const root.State, t: f64, static_: bool) void {
+        fn outputs(m: *const Model, inst: *Instance, s: *const RtState, t: f64, static_: bool) void {
+            assert(s.quiet);
+            assert(s.v.len == s.x.len);
             for (outs, 0..) |u, k| {
                 const p = spec.pins[u];
+                assert(p.out);
                 const w = s.get(p.off + p.bit / 64);
                 const at: u6 = @intCast(p.bit % 64);
                 const b: u2 = @intCast(((w.v >> at) & 1) | (((w.x >> at) & 1) << 1));
@@ -381,8 +437,10 @@ pub fn Device(comptime spec: Spec) type {
         /// The engine's next event, whether it stopped, which input edges
         /// wake it, and its boundary as this step's work; a boundary longer
         /// than `cap` fails.
-        fn keep(inst: *Instance, st: *State, s: *root.State) !void {
-            const said = s.sink.buffered();
+        fn keep(inst: *Instance, st: *State, s: *RtState) !void {
+            assert(s.quiet);
+            assert(s.out == s.buffers.sink); // No `capture` is left open.
+            const said = s.buffers.sink.buffered();
             if (said.len <= say_cap) {
                 @memcpy(st.say[0..said.len], said);
                 st.say_len = @intCast(said.len);
@@ -391,6 +449,7 @@ pub fn Device(comptime spec: Spec) type {
                 @memcpy(st.say[say_cap - say_cut.len ..], say_cut);
                 st.say_len = say_cap;
             }
+            assert(st.say_len <= say_cap);
             inst.stopped = s.sched.phase == .stopped;
             inst.next_ev = if (s.sched.peekTime()) |k| seconds(k) else inf;
             for (ins, 0..) |u, i| {
@@ -407,12 +466,16 @@ pub fn Device(comptime spec: Spec) type {
             const into = st.cur ^ 1;
             st.lens[into] = @intCast(try snapshot.saveTo(s, &st.bufs[into]));
             st.work = true;
+            assert(st.lens[into] != 0);
+            assert(st.lens[into] <= cap);
         }
 
         /// `query`: a crossing ran late; `commit`: this step's boundary and
         /// `Instance` are the accepted ones; `revert`: the accepted ones are
         /// restored, the static levels excepted (see `Instance`).
         pub fn stateCtl(_: *const Model, inst: *Instance, st: *State, op: contract.StateCtlOp) bool {
+            assert(st.lens[0] <= cap);
+            assert(st.lens[1] <= cap);
             switch (op) {
                 .query => return inst.late_cross,
                 .commit => {
@@ -421,6 +484,7 @@ pub fn Device(comptime spec: Spec) type {
                     st.work = false;
                     inst.late_cross = false;
                     st.inst = inst.*;
+                    assert(st.say_len == 0); // `flush` wrote it.
                 },
                 .revert => {
                     const lvl = inst.dc_lvl;
@@ -432,15 +496,18 @@ pub fn Device(comptime spec: Spec) type {
                     st.say_len = 0;
                 },
             }
+            assert(!st.work or op == .query);
             return false;
         }
 
         /// The held transcript of an accepted step, to stderr: a host's
         /// stdout may carry its own results.
         fn flush(st: *State) void {
+            assert(st.say_len <= say_cap);
             if (st.say_len == 0) return;
             std.debug.print("{s}", .{st.say[0..st.say_len]});
             st.say_len = 0;
+            assert(st.say_len == 0);
         }
 
         /// The next digital event or end of an output ramp after `t`.
@@ -449,7 +516,9 @@ pub fn Device(comptime spec: Spec) type {
             for (inst.lvl_t1 ++ inst.g_t1) |t1| {
                 if (t1 > t) best = @min(best, t1);
             }
-            return if (best == inf) null else best;
+            if (best == inf) return null;
+            assert(best > t); // Never a time at or before `t`, nor a NaN.
+            return best;
         }
 
         /// The ramp from `from` at `t0` to `to` at `t1`, at `t`.
@@ -471,7 +540,9 @@ pub fn Device(comptime spec: Spec) type {
         /// `k` ticks in seconds.
         fn seconds(k: u64) f64 {
             const f: f64 = @floatFromInt(k);
-            return if (spec.units < 0) f / decade else f * decade;
+            const t = if (spec.units < 0) f / decade else f * decade;
+            assert(t >= 0); // A tick count is never before time 0.
+            return t;
         }
 
         /// `t` seconds in ticks.
@@ -480,11 +551,15 @@ pub fn Device(comptime spec: Spec) type {
         }
 
         fn rise(m: *const Model) f64 {
-            return if (m.trise > 0) m.trise else 1e-12;
+            const r = if (m.trise > 0) m.trise else 1e-12;
+            assert(r > 0); // A NaN or non-positive card value is 1 ps.
+            return r;
         }
 
         fn fall(m: *const Model) f64 {
-            return if (m.tfall > 0) m.tfall else 1e-12;
+            const f = if (m.tfall > 0) m.tfall else 1e-12;
+            assert(f > 0); // A NaN or non-positive card value is 1 ps.
+            return f;
         }
 
         fn vth(m: *const Model) f64 {
@@ -509,6 +584,31 @@ pub fn Device(comptime spec: Spec) type {
             inst.lvl_from = @splat(nan);
             inst.lvl_to = @splat(nan);
             inst.stopped = true;
+            assert(inst.stopped); // `updateState` never runs the engine again.
         }
     };
+}
+
+test "Device: a step over a one-slot design keeps a boundary its next step restores" {
+    // Oracle: the contract asserts above, which pair `keep`'s write of a
+    // boundary with `open`'s restore of it; this is their one host here.
+    const Dev = Device(.{
+        .U = enum { a, y },
+        .design = &design.one_slot,
+        .dispatch = struct {
+            fn none(_: *RtState, _: u32) design.Error!void {}
+        }.none,
+        .pins = &.{ .{ .out = false, .slot = 0, .off = 0, .bit = 0 }, .{ .out = true, .slot = 0, .off = 0, .bit = 1 } },
+        .units = -9,
+    });
+    const m: Dev.Model = .{};
+    var inst: Dev.Instance = .{};
+    var st = Dev.initState(&m, &inst);
+    try std.testing.expect(!inst.stopped);
+    // A static solve reads 5 V on the input as 1; the output, x, holds.
+    try std.testing.expectEqual(contract.UpdateResult.ok, Dev.updateState(void, &m, &inst, .{ 5, 0 }, &st, .{}));
+    _ = Dev.stateCtl(&m, &inst, &st, .commit);
+    _ = Dev.updateState(void, &m, &inst, .{ 0, 0 }, &st, .{ .kind = .tran, .t = 1e-9 });
+    _ = Dev.stateCtl(&m, &inst, &st, .revert);
+    try std.testing.expectEqual(@as(?f64, null), Dev.pendingBreakpoint(&inst, 1));
 }

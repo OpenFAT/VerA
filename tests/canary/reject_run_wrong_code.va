@@ -1,0 +1,16 @@
+// CANARY: a run-time refusal under the wrong name. The second point divides
+// by zero, so the run ends in E0601; the fixture names E0816, which the run
+// never prints, and must FAIL rather than accept any nonzero exit.
+//! reject-run E0816
+//! sweep V(p) = 3, 0
+//! print none
+`include "check.vh"
+module reject_run_wrong_code(p, n);
+  inout p, n; electrical p, n;
+  integer d;
+  analog begin
+    d = V(p,n);
+    `CHECKI("11 % 3 is 2 at the first point", 11 % d, 2);
+    I(p,n) <+ d;
+  end
+endmodule

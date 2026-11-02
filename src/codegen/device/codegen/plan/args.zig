@@ -3,8 +3,13 @@
 //! decides some of them. Callee in, answer out. The literal-string fact the
 //! setup tiers read too is `prove.strArg`. Clauses: §3.3, §4.5, §4.5.14,
 //! §5.10.3, §9.4, §9.5, §9.7.3, §9.13, §9.15.
+//!
+//! Contents:
+//! - `pub const Display = enum`
+//! - `pub fn callArgIsValue(c: Mir.Callee, i: usize, display: Display) bool`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 const op = @import("ir").op;
 
@@ -29,7 +34,7 @@ pub const Display = enum { drop, record, emit };
 /// never renders declares an unread local (a Zig error), and missing one it
 /// renders leaves an undefined leaf (`S.con(0.0)` in a print).
 pub fn callArgIsValue(c: Mir.Callee, i: usize, display: Display) bool {
-    return switch (c) {
+    const value = switch (c) {
         // The §5.10.3 `enable` is the exception: it is a live expression the
         // event test reads every evaluation, so it needs a slot like any other
         // operand.
@@ -232,7 +237,15 @@ pub fn callArgIsValue(c: Mir.Callee, i: usize, display: Display) bool {
         .@"$plusarg$str",
         => false,
     };
+    // The modes nest, `.drop` within `.record` within `.emit`: a louder mode
+    // only adds values, so an argument live under one stays live above it.
+    if (value and display == .drop) assert(callArgIsValue(c, i, .record));
+    if (value and display == .record) assert(callArgIsValue(c, i, .emit));
+    if (!value and display == .emit) assert(!callArgIsValue(c, i, .record));
+    return value;
 }
+
+// ---- private ----
 
 test "callArgIsValue: the display-gated prongs are the printing and §9.5 families" {
     // Only the §9.4.1/§9.7.3 printing tasks and the §9.5 family answer

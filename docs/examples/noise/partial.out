@@ -1,14 +1,9 @@
 $ vera --run partial.va
-=== partial ===
 noise count got=4 want=4 ok=1
 noise[0] got=thermal(a,b)#0 want=thermal(a,b)#0 ok=1
 noise[1] got=thermal(a,b)#1 want=thermal(a,b)#1 ok=1
 noise[2] got=thermal(b,c)#2 want=thermal(b,c)#2 ok=1
 noise[3] got=thermal(b,c)#1 want=thermal(b,c)#1 ok=1
---- point 0 ---
-  x[a] = 1.000000e0
-  x[b] = 5.000000e-1
-  x[c] = 0.000000e0
 noise[0].white got=0.00000000000000000075000000000000015 want=0.00000000000000000075 ok=1
 noise[0].corr[2] got=0 want=0 ok=1
 noise[1].white got=0.00000000000000000025 want=0.00000000000000000025 ok=1

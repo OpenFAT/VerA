@@ -1,14 +1,28 @@
 //! §6.3.6/§9.18 hierarchical system-parameter names → Table 9-29 identities,
 //! domains and composition expressions. Shared by elaboration and the
 //! §3.4.7 top-level alias declarations in lowering.
+//!
+//! Contents:
+//! - `pub const Kind`
+//! - `pub const Values`
+//! - `pub const Aliases`
+//! - `pub fn compose(self: Kind, file: *Ast.SourceFile, arena: std.mem.Allocator, parent: Ast.ExprId, value: Ast.ExprId, tok: u32) std.mem.Allocator.Error!Ast.ExprId`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("frontend").Ast;
 const constfold = @import("frontend").constfold;
 
 /// One §9.18 Table 9-29 hierarchical system parameter (`base`'s, so
 /// `Lowered.SystemCheck` names one without importing elaboration).
 pub const Kind = @import("base").SystemParam;
+
+/// One instance's expression per kind, `.none` where nothing sets it.
+pub const Values = std.EnumArray(Kind, Ast.ExprId);
+
+/// Lowering's §3.4.7 top-level alias per kind: the `Lowered.params` row that
+/// holds it, or null.
+pub const Aliases = std.EnumArray(Kind, ?u32);
 
 /// Returns the expression for an instance's value given its parent's
 /// (Table 9-29's composition: a sum, a product, or a sum modulo 360).
@@ -39,11 +53,7 @@ pub fn compose(self: Kind, file: *Ast.SourceFile, arena: std.mem.Allocator, pare
         combined;
 }
 
-/// One instance's expression per kind, `.none` where nothing sets it.
-pub const Values = std.EnumArray(Kind, Ast.ExprId);
-/// Lowering's §3.4.7 top-level alias per kind: the `Lowered.params` row that
-/// holds it, or null.
-pub const Aliases = std.EnumArray(Kind, ?u32);
+// ---- private ----
 
 fn binary(file: *Ast.SourceFile, arena: std.mem.Allocator, op: Ast.BinaryOp, lhs: Ast.ExprId, rhs: Ast.ExprId, tok: u32) std.mem.Allocator.Error!Ast.ExprId {
     return file.exprs.add(arena, .{

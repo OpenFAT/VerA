@@ -1,9 +1,4 @@
 $ vera --run series_r.va
-=== series_r ===
---- point 0 ---
-  x[a] = 8.000000e-1
-  x[k] = 0.000000e0
-  x[ai] = 7.115112e-1
 V(ai) = 0.711511 V  I(rs) = 8.848882e-03 A  I(junction) = 8.848882e-03 A
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 1 — I(k,ai) — compiles with @setFloatMode(.strict)
   --> series_r.va:17:5

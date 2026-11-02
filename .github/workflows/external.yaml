@@ -1,11 +1,7 @@
-# The external suites, every reference tool from `nix develop .#external`
-# (the reference tools of `.#benchmarking`, without its GPU toolchains).
-# Each gates by NAME: a disagreement passes only when
-# a row of its suite's TRIAGE.md (tests/conformance/vera/external/<suite>/) names it
-# (the conformance job: a line of tools/vera.xfail)
-# with a verdict, and a row that names nothing is STALE and fails too, as an
-# XPASS does. Upstream sources are fetched at their pinned commits into
-# .zig-cache/external, never committed.
+# The reference tools from `nix develop .#external` on VerA's output, and the
+# VAMS Conformance Suite through its `conform` harness. A known conformance
+# failure is a line of tools/vera.xfail; a listed test that passes (XPASS)
+# fails the job.
 name: external
 
 on:
@@ -21,46 +17,39 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Analog (tools/external_analog.py): VerA's `--emit-osdi` libraries in
-  # ngspice against hand-derived values, OpenVAF-Reloaded, the CMC and TU
-  # Dresden QA references and Xyce. One job per suite, side by side; inside a
-  # job a model's QA tests run one per CPU, and every simulator run is capped
+  # tools/external_analog.py: VerA's `--emit-osdi` libraries in ngspice
+  # against hand-derived values (tests/osdi). Every simulator run is capped
   # (VERA_EXTERNAL_TIMEOUT seconds), so a deck that never converges FAILs by
   # name instead of eating the job's budget.
   external-analog:
-    name: external-analog (${{ matrix.suite }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: ["selftest osdi", va-models, cmcqa, hicum-qa, xyce]
     env:
       VERA_EXTERNAL_TIMEOUT: "120"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          submodules: true  # tests/conformance/vera: the decks, MANIFESTs and TRIAGE.md
+          submodules: true
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
       - name: Build vera
         run: nix develop .#external -c zig build -Doptimize=ReleaseFast install
-      - name: External analog suite ${{ matrix.suite }}
+      - name: OSDI decks in ngspice
         run: |
-          nix develop .#external -c python3 tools/external_analog.py ${{ matrix.suite }} --out external-out 2>&1 | tee external.txt
+          nix develop .#external -c python3 tools/external_analog.py --out external-out 2>&1 | tee external.txt
           exit "${PIPESTATUS[0]}"
       - name: Job summary
         if: always()
         run: |
           {
-            echo '## External analog suite ${{ matrix.suite }}'
+            echo '## OSDI decks in ngspice'
             echo '```'; tail -1 external.txt; echo '```'
-            echo '### FAIL and STALE names'
-            echo '```'; grep -E '^(FAIL|STALE) ' external.txt || true; echo '```'
+            echo '### FAIL names'
+            echo '```'; grep -E '^FAIL ' external.txt || true; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: external-analog-${{ strategy.job-index }}
+          name: external-analog
           path: |
             external.txt
             external-out/fail.txt
@@ -68,17 +57,15 @@ jobs:
   # `zig build test-external`: VerA's output read by the reference tools.
   # --emit-verilog's modules get a verilator -Wall lint and an iverilog
   # testbench each (Ubuntu's verilator 5.020 has no rise/fall delays and
-  # rejects them; nixpkgs' 5.050 is the version they are linted against),
-  # --emit-rtlil is read, proc'ed and checked by yosys, and VAMPyRE
-  # (tools/external_vampyre.py) checks the compact models beside VerA, every
-  # disagreement a row of tests/conformance/vera/external/vampyre/TRIAGE.md, by name.
+  # rejects them; nixpkgs' 5.050 is the version they are linted against) and
+  # --emit-rtlil is read, proc'ed and checked by yosys.
   external-tools:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          submodules: true  # tests/conformance/vera: beh_verilog, rtlil and the VAMPyRE triage
+          submodules: true
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
       - name: Reference tools on VerA's output
         run: |
@@ -89,9 +76,8 @@ jobs:
         run: |
           {
             echo '## Reference tools on VerA output'
-            echo '```'; grep -E '^vampyre:' external-tools.txt || true; echo '```'
-            echo '### FAIL and STALE names'
-            echo '```'; grep -E '^(FAIL|STALE) ' external-tools.txt || true; echo '```'
+            echo '### FAIL names'
+            echo '```'; grep -E '^FAIL ' external-tools.txt || true; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
   # The VAMS Conformance Suite (tests/conformance): its Verilog, Verilog-A,

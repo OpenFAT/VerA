@@ -6,8 +6,22 @@
 //!
 //! LRM clauses cited: §3.2, §3.2.2, §3.3, §3.4, §3.4.1, §3.4.2, §3.4.4,
 //! §3.4.5, §3.4.7, §5.10.4, §9.7.3, §9.18; IEEE 1364-2005 Table 7-1.
+//!
+//! Contents:
+//! - `pub fn parseAliasparam(self: *Parser) Error!Ast.AliasParam`
+//! - `pub fn parseParamDecl(self: *Parser, out: *std.ArrayList(Ast.ParamDecl)) Error!void`
+//! - `pub fn varType(tag: token.Tag) ?Ast.Type`
+//! - `pub fn parseRegDecl(self: *Parser, out: *std.ArrayList(Ast.VarDecl)) Error!void`
+//! - `pub fn parseVarDecl(self: *Parser, out: *std.ArrayList(Ast.VarDecl)) Error!void`
+//! - `pub fn literalWidth(self: *const Parser, d: Ast.Dim) ?u64`
+//! - `pub fn literalValue(self: *const Parser, e: Ast.ExprId) i128`
+//! - `pub fn parseEventDecl(self: *Parser) Error!Ast.EventDecl`
+//! - `pub fn parseDims(self: *Parser) Error![]const Ast.Dim`
+//! - `pub fn optDim(self: *Parser) Error!?Ast.Dim`
+//! - `pub fn parseDim(self: *Parser) Error!Ast.Dim`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_expr = @import("expr.zig");
@@ -16,13 +30,12 @@ const Ast = @import("../ast.zig");
 const token = @import("../token.zig");
 const Error = parser.Error;
 
-// -----------------------------------------------------------------------
-// A.2.1.1 parameter declarations: LRM §3.4
-// -----------------------------------------------------------------------
-
 /// A.2.1.1 `aliasparam_declaration`, from the keyword through the `;`. Shared
 /// by module items and A.1.9 paramset items.
 pub fn parseAliasparam(self: *Parser) Error!Ast.AliasParam {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     self.pos += 1; // 'aliasparam'
     const alias = try self.expectIdent();
     _ = try self.expect(.assign_eq);
@@ -40,6 +53,9 @@ pub fn parseAliasparam(self: *Parser) Error!Ast.AliasParam {
 /// `parameter real a = 1, b = 2;` is one declaration but two `ParamDecl`s,
 /// so each is appended to `out`.
 pub fn parseParamDecl(self: *Parser, out: *std.ArrayList(Ast.ParamDecl)) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const decl_tok = self.pos;
     const is_local = self.peek() == .kw_localparam;
     self.pos += 1;
@@ -108,9 +124,179 @@ pub fn parseParamDecl(self: *Parser, out: *std.ArrayList(Ast.ParamDecl)) Error!v
     }
 }
 
+/// A.2.1.3 / A.2.7 variable type keyword -> `Ast.Type`, null for any other
+/// token. `time` folds to integer and `realtime` to real (§3.4.1). An analog
+/// function's return type is narrower (A.2.6), so `parseFuncDecl` has its own.
+pub fn varType(tag: token.Tag) ?Ast.Type {
+    return switch (tag) {
+        .kw_integer, .kw_time => .integer,
+        .kw_real, .kw_realtime => .real,
+        .kw_string => .string,
+        else => null, // else: not one of the five variable-type keywords
+    };
+}
+
+/// Parses an A.2.1.3 `reg_declaration ::= reg [ discipline_identifier ]
+/// [ signed ] [ range ] list_of_variable_identifiers ;`, cursor on `reg`,
+/// through its `;`, appending one `VarDecl` per name to `out`. The analog
+/// context reads any `reg` as Table 7-1's nonnegative integer ("The sign bit
+/// (bit 31) of the integer is always set to zero"), so `signed` changes only
+/// the digital kernel's arithmetic.
+pub fn parseRegDecl(self: *Parser, out: *std.ArrayList(Ast.VarDecl)) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const tok = self.pos;
+    self.pos += 1;
+    const disc: Ast.StrId = if (regDisciplineAhead(self)) d: {
+        const d = try self.internTok(self.pos);
+        self.pos += 1;
+        break :d d;
+    } else .none;
+    const signed = self.eat(.kw_signed);
+    // §7.3.1's 31-bit limit is on an ACCESS ("Access of discrete bit
+    // groupings with greater than 31 bits is illegal"), not on a declaration:
+    // `lower_var.analogRead` judges each grouping the analog context reads,
+    // so a 31-bit part-select of a wider `reg` stays legal.
+    const range: ?Ast.Dim = try optDim(self);
+    while (true) {
+        const name_tok = self.pos;
+        const name = try self.expectIdent();
+        try self.copyAttributes(tok, name_tok);
+        // A.2.1.3 reg_declaration ends in A.2.3's
+        // list_of_variable_identifiers, whose A.2.2.1 `variable_type`
+        // takes dimensions and an initializer:
+        //
+        //     variable_type ::=
+        //         variable_identifier { dimension } [ = constant_assignment_pattern ]
+        //         | variable_identifier = constant_expression
+        //
+        // `integer`/`time` reach the same production through
+        // `parseVarDecl`, so neither is gated on `digital` here.
+        const dims = try parseDims(self);
+        const value = if (self.eat(.assign_eq)) try parse_expr.parseExpr(self) else Ast.ExprId.none;
+        try out.append(self.arena, .{
+            .name = name,
+            .ty = .integer,
+            .main_tok = name_tok,
+            .storage = .reg,
+            .packed_range = range,
+            .is_signed = signed,
+            .dims = dims,
+            .init = value,
+            .discipline = disc,
+        });
+        if (!self.eat(.comma)) break;
+    }
+    _ = try self.expect(.semicolon);
+}
+
+/// Parses an A.2.1.3 integer/real/string/time declaration (§3.2, §3.3), cursor
+/// on the type keyword, up to but not including the `;`. Appends one `VarDecl`
+/// per name to `out`. Asserts the cursor is on a variable type keyword.
+pub fn parseVarDecl(self: *Parser, out: *std.ArrayList(Ast.VarDecl)) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const decl_tok = self.pos;
+    const storage: @FieldType(Ast.VarDecl, "storage") = if (self.peek() == .kw_time) .time else .variable;
+    const ty = varType(self.peek()).?;
+    self.pos += 1;
+    while (true) {
+        const tok = self.pos;
+        const name = try self.expectIdent();
+        try self.copyAttributes(decl_tok, tok);
+        const dims = try parseDims(self);
+        var init_expr: Ast.ExprId = .none;
+        if (self.eat(.assign_eq)) init_expr = try parse_expr.parseExpr(self);
+        try out.append(self.arena, .{
+            .name = name,
+            .ty = ty,
+            .dims = dims,
+            .init = init_expr,
+            .storage = storage,
+            .main_tok = tok,
+        });
+        if (!self.eat(.comma)) break;
+    }
+}
+
+/// The width of `[msb:lsb]` when both bounds are integer literals, else null.
+///
+/// ponytail: literals only. Folding `[W-1:0]` needs the constant evaluator,
+/// which lives in lowering.
+pub fn literalWidth(self: *const Parser, d: Ast.Dim) ?u64 {
+    const ex = &self.file.exprs;
+    if (ex.tag(d.msb) != .int_literal or ex.tag(d.lsb) != .int_literal) return null;
+    // In i128 the difference of two 64-bit values cannot overflow; a width
+    // past u64 (`[2**64-1 : -1]`) is no width a path can compare.
+    return std.math.cast(u64, @abs(literalValue(self, d.msb) - literalValue(self, d.lsb)) + 1);
+}
+
+/// An `.int_literal`'s value as written. The store keeps an `i64`, so an
+/// unsigned 64-bit literal with its top bit set (`64'h8000000000000000`)
+/// reads back negative; reinterpreted here, it is the large positive number.
+/// Asserts (by `intLiteral`) that `e` is an `.int_literal`.
+pub fn literalValue(self: *const Parser, e: Ast.ExprId) i128 {
+    const lit = self.file.exprs.intLiteral(e);
+    if (!lit.signed and lit.value < 0) return @as(u64, @bitCast(lit.value));
+    return lit.value;
+}
+
+/// §9.7.3 / AMS §5.10.4: dimensions belong to each event identifier.
+pub fn parseEventDecl(self: *Parser) Error!Ast.EventDecl {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const tok = self.pos;
+    const name = try self.expectIdent();
+    return .{ .name = name, .dims = try parseDims(self), .main_tok = tok };
+}
+
+/// Parses zero or more A.2.5 dimensions after a declared name: A.2.2.1
+/// `variable_type ::= identifier { dimension }` and A.2.1.1's
+/// `parameter_identifier { dimension }`, as in §3.2's
+/// `real vtable[0:16][0:7][0:64];`. Lowering scalarizes them (`dimsBounds`).
+pub fn parseDims(self: *Parser) Error![]const Ast.Dim {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    if (self.peek() != .lbracket) return &.{};
+    var dims: std.ArrayList(Ast.Dim) = .empty;
+    while (self.peek() == .lbracket)
+        try dims.append(self.arena, try parseDim(self));
+    return dims.items;
+}
+
+/// An optional `[ range ]`: null unless the next token is `[`.
+pub fn optDim(self: *Parser) Error!?Ast.Dim {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    return if (self.peek() == .lbracket) try parseDim(self) else null;
+}
+
+/// A.2.5 `dimension ::= [ expr : expr ]` (§3.2.2, §3.4.4).
+pub fn parseDim(self: *Parser) Error!Ast.Dim {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    _ = try self.expect(.lbracket);
+    const msb = try parse_expr.parseExpr(self);
+    _ = try self.expect(.colon);
+    const lsb = try parse_expr.parseExpr(self);
+    _ = try self.expect(.rbracket);
+    return .{ .msb = msb, .lsb = lsb };
+}
+
+// ---- private ----
+
 /// LRM §3.4.2 / A.2.5 value_range. The ranges are the only parameter bound
 /// evidence `proof.zig` gets, so each must reach `ParamDecl.ranges`.
 fn parseRange(self: *Parser) Error!Ast.ValueRange {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const kind: Ast.ValueRange.Kind = if (self.peek() == .kw_from) .from else .exclude;
     self.pos += 1;
 
@@ -168,6 +354,9 @@ fn parseRange(self: *Parser) Error!Ast.ValueRange {
 
 /// A.2.5 value_range_expression ::= constant_expression | -inf | inf
 fn parseValueRangeExpr(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     if (self.peek() == .minus and self.peekAt(1) == .kw_inf) {
         self.pos += 2;
@@ -178,70 +367,6 @@ fn parseValueRangeExpr(self: *Parser) Error!Ast.ExprId {
         return self.file.exprs.add(self.arena, .{ .tag = .pos_inf, .main_tok = tok });
     }
     return parse_expr.parseExpr(self);
-}
-
-/// A.2.1.3 / A.2.7 variable type keyword -> `Ast.Type`, null for any other
-/// token. `time` folds to integer and `realtime` to real (§3.4.1). An analog
-/// function's return type is narrower (A.2.6), so `parseFuncDecl` has its own.
-pub fn varType(tag: token.Tag) ?Ast.Type {
-    return switch (tag) {
-        .kw_integer, .kw_time => .integer,
-        .kw_real, .kw_realtime => .real,
-        .kw_string => .string,
-        else => null, // else: not one of the five variable-type keywords
-    };
-}
-
-/// Parses an A.2.1.3 `reg_declaration ::= reg [ discipline_identifier ]
-/// [ signed ] [ range ] list_of_variable_identifiers ;`, cursor on `reg`,
-/// through its `;`, appending one `VarDecl` per name to `out`. The analog
-/// context reads any `reg` as Table 7-1's nonnegative integer ("The sign bit
-/// (bit 31) of the integer is always set to zero"), so `signed` changes only
-/// the digital kernel's arithmetic.
-pub fn parseRegDecl(self: *Parser, out: *std.ArrayList(Ast.VarDecl)) Error!void {
-    const tok = self.pos;
-    self.pos += 1;
-    const disc: Ast.StrId = if (regDisciplineAhead(self)) d: {
-        const d = try self.internTok(self.pos);
-        self.pos += 1;
-        break :d d;
-    } else .none;
-    const signed = self.eat(.kw_signed);
-    // §7.3.1's 31-bit limit is on an ACCESS ("Access of discrete bit
-    // groupings with greater than 31 bits is illegal"), not on a declaration:
-    // `lower_var.analogRead` judges each grouping the analog context reads,
-    // so a 31-bit part-select of a wider `reg` stays legal.
-    const range: ?Ast.Dim = try optDim(self);
-    while (true) {
-        const name_tok = self.pos;
-        const name = try self.expectIdent();
-        try self.copyAttributes(tok, name_tok);
-        // A.2.1.3 reg_declaration ends in A.2.3's
-        // list_of_variable_identifiers, whose A.2.2.1 `variable_type`
-        // takes dimensions and an initializer:
-        //
-        //     variable_type ::=
-        //         variable_identifier { dimension } [ = constant_assignment_pattern ]
-        //         | variable_identifier = constant_expression
-        //
-        // `integer`/`time` reach the same production through
-        // `parseVarDecl`, so neither is gated on `digital` here.
-        const dims = try parseDims(self);
-        const value = if (self.eat(.assign_eq)) try parse_expr.parseExpr(self) else Ast.ExprId.none;
-        try out.append(self.arena, .{
-            .name = name,
-            .ty = .integer,
-            .main_tok = name_tok,
-            .storage = .reg,
-            .packed_range = range,
-            .is_signed = signed,
-            .dims = dims,
-            .init = value,
-            .discipline = disc,
-        });
-        if (!self.eat(.comma)) break;
-    }
-    _ = try self.expect(.semicolon);
 }
 
 /// Whether a `reg` declaration's optional discipline_identifier is at the
@@ -267,87 +392,4 @@ fn regDisciplineAhead(self: *const Parser) bool {
         i += 1;
     } else if (self.tags[i] == .kw_signed) return true;
     return self.identLike(i);
-}
-
-/// Parses an A.2.1.3 integer/real/string/time declaration (§3.2, §3.3), cursor
-/// on the type keyword, up to but not including the `;`. Appends one `VarDecl`
-/// per name to `out`. Asserts the cursor is on a variable type keyword.
-pub fn parseVarDecl(self: *Parser, out: *std.ArrayList(Ast.VarDecl)) Error!void {
-    const decl_tok = self.pos;
-    const storage: @FieldType(Ast.VarDecl, "storage") = if (self.peek() == .kw_time) .time else .variable;
-    const ty = varType(self.peek()).?;
-    self.pos += 1;
-    while (true) {
-        const tok = self.pos;
-        const name = try self.expectIdent();
-        try self.copyAttributes(decl_tok, tok);
-        const dims = try parseDims(self);
-        var init_expr: Ast.ExprId = .none;
-        if (self.eat(.assign_eq)) init_expr = try parse_expr.parseExpr(self);
-        try out.append(self.arena, .{
-            .name = name,
-            .ty = ty,
-            .dims = dims,
-            .init = init_expr,
-            .storage = storage,
-            .main_tok = tok,
-        });
-        if (!self.eat(.comma)) break;
-    }
-}
-
-/// The width of `[msb:lsb]` when both bounds are integer literals, else null.
-///
-/// ponytail: literals only. Folding `[W-1:0]` needs the constant evaluator,
-/// which lives in lowering.
-pub fn literalWidth(self: *const Parser, d: Ast.Dim) ?u64 {
-    const ex = &self.file.exprs;
-    if (ex.tag(d.msb) != .int_literal or ex.tag(d.lsb) != .int_literal) return null;
-    // In i128 the difference of two 64-bit values cannot overflow; a width
-    // past u64 (`[2**64-1 : -1]`) is no width a path can compare.
-    return std.math.cast(u64, @abs(literalValue(self, d.msb) - literalValue(self, d.lsb)) + 1);
-}
-
-/// An `.int_literal`'s value as written. The store keeps an `i64`, so an
-/// unsigned 64-bit literal with its top bit set (`64'h8000000000000000`)
-/// reads back negative; reinterpreted here, it is the large positive number.
-/// Asserts (by `intLiteral`) that `e` is an `.int_literal`.
-pub fn literalValue(self: *const Parser, e: Ast.ExprId) i128 {
-    const lit = self.file.exprs.intLiteral(e);
-    if (!lit.signed and lit.value < 0) return @as(u64, @bitCast(lit.value));
-    return lit.value;
-}
-
-/// §9.7.3 / AMS §5.10.4: dimensions belong to each event identifier.
-pub fn parseEventDecl(self: *Parser) Error!Ast.EventDecl {
-    const tok = self.pos;
-    const name = try self.expectIdent();
-    return .{ .name = name, .dims = try parseDims(self), .main_tok = tok };
-}
-
-/// Parses zero or more A.2.5 dimensions after a declared name: A.2.2.1
-/// `variable_type ::= identifier { dimension }` and A.2.1.1's
-/// `parameter_identifier { dimension }`, as in §3.2's
-/// `real vtable[0:16][0:7][0:64];`. Lowering scalarizes them (`dimsBounds`).
-pub fn parseDims(self: *Parser) Error![]const Ast.Dim {
-    if (self.peek() != .lbracket) return &.{};
-    var dims: std.ArrayList(Ast.Dim) = .empty;
-    while (self.peek() == .lbracket)
-        try dims.append(self.arena, try parseDim(self));
-    return dims.items;
-}
-
-/// An optional `[ range ]`: null unless the next token is `[`.
-pub fn optDim(self: *Parser) Error!?Ast.Dim {
-    return if (self.peek() == .lbracket) try parseDim(self) else null;
-}
-
-/// A.2.5 `dimension ::= [ expr : expr ]` (§3.2.2, §3.4.4).
-pub fn parseDim(self: *Parser) Error!Ast.Dim {
-    _ = try self.expect(.lbracket);
-    const msb = try parse_expr.parseExpr(self);
-    _ = try self.expect(.colon);
-    const lsb = try parse_expr.parseExpr(self);
-    _ = try self.expect(.rbracket);
-    return .{ .msb = msb, .lsb = lsb };
 }

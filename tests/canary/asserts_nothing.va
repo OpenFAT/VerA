@@ -1,0 +1,8 @@
+// CANARY: compiles and runs, asserts nothing. Under `--strict` that is a FAIL.
+//! lrm 5.6.3
+//! bias V(p) = 1.5, V(n) = 0.25
+`include "disciplines.vams"
+module canary_asserts_nothing(p, n);
+  inout p, n; electrical p, n;
+  analog I(p, n) <+ V(p, n) / 1k;
+endmodule

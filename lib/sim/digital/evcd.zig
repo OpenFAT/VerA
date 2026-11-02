@@ -7,7 +7,30 @@
 //! boundary: those inside the dumped instance drive its output side, the
 //! rest its input side (§18.4.3.2). A native executable writes the same
 //! file through `rt/evcd.zig`, from `rt.net`'s driver rows.
+//!
+//! Contents:
+//! - `pub const Op = enum`
+//! - `pub const tasks`
+//! - `pub const Check = struct`
+//! - `pub const Evcd = struct`
+//! - `Dump.len(d: Dump) usize`
+//! - `Dump.dir(d: Dump, n: usize) Ast.Direction`
+//! - `Dump.width(d: Dump, n: usize) u32`
+//! - `Dump.last(d: Dump, n: usize) *[]u8`
+//! - `Dump.sides(d: Dump, n: usize, bit: u32) [2]Signal`
+//! - `Dump.write(d: Dump, bytes: []const u8) Error!void`
+//! - `pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void`
+//! - `pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok: u32) Error!void`
+//! - `pub fn tick(r: *Run, a: std.mem.Allocator) Error!void`
+//! - `pub fn close(r: *Run) Error!void`
+//! - `pub fn path(r: *Run, w: *std.Io.Writer, scope: u32) std.Io.Writer.Error!void`
+//! - `pub fn writeAt(io: std.Io, f: anytype, bytes: []const u8) error{WriteFailed}!void`
+//! - `pub fn writeCheckpoint(d: anytype, keyword: []const u8, as_x: bool, at: u64) !void`
+//! - `pub fn writeChanges(d: anytype, at: u64) !void`
+//! - `pub fn below(r: *Run, scope: u32, inst: u32) bool`
+
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const waiters = @import("waiters.zig");
@@ -40,49 +63,11 @@ pub const Check = struct {
     files: std.ArrayList(Ast.StrId) = .empty,
 };
 
-/// Refuses a malformed §18.3 call (Syntax 18-21 to 18-25).
-pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
-    const ex = &r.file.exprs;
-    const given = present(args);
-    for (given) |a| if (a == .none) return r.fail(tok, "the §18.3 dump tasks take no null arguments", .{});
-    switch (op) {
-        // `$dumpports ( scope_list , file_pathname )`: "Only modules are
-        // allowed (not variables)", "Each scope specified in the scope_list
-        // shall be unique", and "Specifying the same file_pathname multiple
-        // times is not allowed". The last argument is the file unless it
-        // names an instance.
-        .ports => for (given, 0..) |a, i| {
-            const last = i + 1 == given.len;
-            if (last and ex.tag(a) == .str_literal) {
-                const f = ex.strOf(a);
-                if (std.mem.findScalar(Ast.StrId, r.ports_dump.files.items, f) != null)
-                    return r.exprFail(a, "§18.3.1: the same file_pathname shall not be given to two $dumpports calls");
-                try r.ports_dump.files.append(r.arena, f);
-                continue;
-            }
-            if (ex.tag(a) != .ident and ex.tag(a) != .hier_ident) {
-                if (last) continue;
-                return r.exprFail(a, "§18.3.1: a $dumpports scope is a module instance");
-            }
-            const sc = switch (try vcd.target(r, a)) {
-                .scope => |sc| sc,
-                .slot => if (last) continue else return r.exprFail(a, "§18.3.1: a $dumpports scope is a module instance: only modules are allowed, not variables"),
-            };
-            if (std.mem.findScalar(u32, r.ports_dump.scopes.items, sc) != null)
-                return r.exprFail(a, "§18.3.1: each $dumpports scope shall be unique");
-            try r.ports_dump.scopes.append(r.arena, sc);
-        },
-        .off, .on, .all, .flush => if (given.len > 1) return r.fail(tok, "$dumpportsoff, $dumpportson, $dumpportsall and $dumpportsflush take at most one file_pathname argument", .{}),
-        // "The filesize argument is required".
-        .limit => if (given.len == 0 or given.len > 2) return r.fail(tok, "$dumpportslimit takes a filesize, then optionally a file_pathname", .{}),
-    }
-    for (given) |a| if (ex.tag(a) != .ident and ex.tag(a) != .hier_ident) try compile.checkExpr(r, a);
-}
-
-/// `name()` and `name` alike: §18.3.7's "the name followed by ()".
-fn present(args: []const Ast.ExprId) []const Ast.ExprId {
-    return if (args.len == 1 and args[0] == .none) &.{} else args;
-}
+/// Every `$dumpports` file and the time they were called at.
+pub const Evcd = struct {
+    files: std.ArrayList(File) = .empty,
+    selected_at: ?u64 = null,
+};
 
 /// One dumped port (§18.4.2), in its module's declaration order.
 const Port = struct {
@@ -110,17 +95,119 @@ const File = struct {
     last_time: ?u64 = null,
 };
 
-/// Every `$dumpports` file and the time they were called at.
-pub const Evcd = struct {
-    files: std.ArrayList(File) = .empty,
-    selected_at: ?u64 = null,
+/// `checkpoint`'s and `changes`' view of interpreter file `f`: each port's
+/// width from its slot, and its sides from the run's drivers.
+const Dump = struct {
+    r: *Run,
+    f: *File,
+    /// Temporaries; `keep` owns each port's `last`.
+    scratch: std.mem.Allocator,
+    keep: std.mem.Allocator,
+
+    pub fn len(d: Dump) usize {
+        assert(d.f.started); // `tick` opened the file before any section.
+        assert(d.f.scopes.len != 0); // `task` gives a call one scope at least.
+        return d.f.ports.len;
+    }
+    pub fn dir(d: Dump, n: usize) Ast.Direction {
+        assert(n < d.f.ports.len);
+        assert(d.f.ports[n].inst < d.r.hier.scopes.items.len);
+        return d.f.ports[n].dir;
+    }
+    pub fn width(d: Dump, n: usize) u32 {
+        assert(n < d.f.ports.len);
+        const w = d.r.values[d.f.ports[n].slot].width;
+        assert(w != 0); // A port is a declared net or variable.
+        return w;
+    }
+    pub fn last(d: Dump, n: usize) *[]u8 {
+        assert(n < d.f.ports.len);
+        const l = &d.f.ports[n].last;
+        // Empty until the first section, then one `state` text (`remember`).
+        assert(l.len == 0 or l.len == 3 * d.width(n) + 3);
+        return l;
+    }
+    /// Bit `bit` of port `n` as its input side and its output side drive it.
+    pub fn sides(d: Dump, n: usize, bit: u32) [2]Signal {
+        assert(n < d.f.ports.len);
+        assert(bit < d.width(n));
+        const r = d.r;
+        const p = d.f.ports[n];
+        var in: Signal = .{};
+        var out: Signal = .{};
+        if (p.net) |net| {
+            for (r.netDrivers(net)) |di| {
+                const c = resolution.contribution(r.netlist.drivers[di], bit);
+                if (below(r, r.netlist.drivers[di].scope, p.inst)) out = out.combine(c) else in = in.combine(c);
+            }
+        } else out = .of(r.values[p.slot].bit(bit), .strong, .strong); // an output declared as a variable
+        if (p.net == null) assert(in.none()); // A variable has no driver outside.
+        return .{ in, out };
+    }
+    pub fn write(d: Dump, bytes: []const u8) Error!void {
+        assert(d.f.started);
+        assert(d.f.file != null); // `tick` opened it before it set `started`.
+        return put(d.r, d.f, bytes);
+    }
 };
 
-/// The interpreter's run of one §18.3 task.
-pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
+/// One port bit as §18.4.3 dumps it: the Table 18-7 state character and
+/// its strength0 and strength1 components, each 0..7.
+const State = struct { c: u8, s0: u8, s1: u8 };
+
+/// Refuses a malformed §18.3 call (Syntax 18-21 to 18-25). Asserts that
+/// `tok` is one of the run's tokens.
+pub fn check(r: *Run, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
+    assert(tok < r.starts.len);
     const ex = &r.file.exprs;
     const given = present(args);
-    const d = &r.evcd;
+    for (given) |a| if (a == .none) return r.fail(tok, "the §18.3 dump tasks take no null arguments", .{});
+    const files_before = r.dumps.ports_check.files.items.len;
+    const scopes_before = r.dumps.ports_check.scopes.items.len;
+    switch (op) {
+        // `$dumpports ( scope_list , file_pathname )`: "Only modules are
+        // allowed (not variables)", "Each scope specified in the scope_list
+        // shall be unique", and "Specifying the same file_pathname multiple
+        // times is not allowed". The last argument is the file unless it
+        // names an instance.
+        .ports => for (given, 0..) |a, i| {
+            const last = i + 1 == given.len;
+            if (last and ex.tag(a) == .str_literal) {
+                const f = ex.strOf(a);
+                if (std.mem.findScalar(Ast.StrId, r.dumps.ports_check.files.items, f) != null)
+                    return r.exprFail(a, "§18.3.1: the same file_pathname shall not be given to two $dumpports calls");
+                try r.dumps.ports_check.files.append(r.arena, f);
+                continue;
+            }
+            if (ex.tag(a) != .ident and ex.tag(a) != .hier_ident) {
+                if (last) continue;
+                return r.exprFail(a, "§18.3.1: a $dumpports scope is a module instance");
+            }
+            const sc = switch (try vcd.target(r, a)) {
+                .scope => |sc| sc,
+                .slot => if (last) continue else return r.exprFail(a, "§18.3.1: a $dumpports scope is a module instance: only modules are allowed, not variables"),
+            };
+            if (std.mem.findScalar(u32, r.dumps.ports_check.scopes.items, sc) != null)
+                return r.exprFail(a, "§18.3.1: each $dumpports scope shall be unique");
+            try r.dumps.ports_check.scopes.append(r.arena, sc);
+        },
+        .off, .on, .all, .flush => if (given.len > 1) return r.fail(tok, "$dumpportsoff, $dumpportson, $dumpportsall and $dumpportsflush take at most one file_pathname argument", .{}),
+        // "The filesize argument is required".
+        .limit => if (given.len == 0 or given.len > 2) return r.fail(tok, "$dumpportslimit takes a filesize, then optionally a file_pathname", .{}),
+    }
+    for (given) |a| if (ex.tag(a) != .ident and ex.tag(a) != .hier_ident) try compile.checkExpr(r, a);
+    // One call adds at most one file and one scope per argument.
+    assert(r.dumps.ports_check.files.items.len <= files_before + 1);
+    assert(r.dumps.ports_check.scopes.items.len <= scopes_before + given.len);
+}
+
+/// The interpreter's run of one §18.3 task, which `check` accepted.
+/// Asserts that `tok` is one of the run's tokens.
+pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok: u32) Error!void {
+    assert(tok < r.starts.len);
+    const ex = &r.file.exprs;
+    const given = present(args);
+    const d = &r.dumps.evcd;
     if (op == .ports) {
         // "the execution of all $dumpports tasks shall be at the same
         // simulation time".
@@ -143,14 +230,14 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
         if (scopes.items.len == 0) scopes.appendAssumeCapacity(r.instanceOf(r.scope));
         for (d.files.items) |f| if (std.mem.eql(u8, f.name, name)) return r.fail(tok, "§18.3.1: the same file_pathname shall not be given to two $dumpports calls", .{});
         var n_ports: usize = 0;
-        for (scopes.items) |sc| n_ports += r.file.modules[r.scope_info.items[sc].def].ports.len;
+        for (scopes.items) |sc| n_ports += r.file.modules[r.hier.scopes.items[sc].def].ports.len;
         var ports: std.ArrayList(Port) = try .initCapacity(r.arena, n_ports);
         for (scopes.items) |sc| {
-            const m = &r.file.modules[r.scope_info.items[sc].def];
+            const m = &r.file.modules[r.hier.scopes.items[sc].def];
             for (m.ports) |p| {
-                const slot = r.names.get(.{ .scope = sc, .str = p.name }) orelse continue;
-                ports.appendAssumeCapacity(.{ .inst = sc, .slot = slot, .net = r.net_of.get(slot), .dir = p.direction });
-                r.watch[slot].insert(.ports);
+                const slot = r.hier.names.get(.{ .scope = sc, .str = p.name }) orelse continue;
+                ports.appendAssumeCapacity(.{ .inst = sc, .slot = slot, .net = r.netlist.slot_nets.get(slot), .dir = p.direction });
+                r.waits.watch[slot].insert(.ports);
             }
         }
         try d.files.append(r.arena, .{
@@ -159,8 +246,11 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
             .scopes = scopes.items,
             .ports = ports.items,
         });
+        assert(d.selected_at.? == r.scheduler.now);
+        assert(ports.items.len <= n_ports);
         return waiters.requestVcd(r);
     }
+    assert(op != .ports);
     // §18.3.7: a file_pathname that names no $dumpports file is ignored;
     // none names every one of them.
     var want: ?[]const u8 = null;
@@ -195,16 +285,13 @@ pub fn task(r: *Run, a: std.mem.Allocator, op: Op, args: []const Ast.ExprId, tok
     }
 }
 
-/// The characters of a file_pathname argument; null for an x or z bit.
-fn fileName(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!?[]const u8 {
-    return @import("system.zig").text(a, try evaluate.eval(r, a, e, 0));
-}
-
 /// The end of a step with a port's net resolved, or of the `$dumpports`
 /// step: each new file's header and `$dumpports` section, and each running
 /// file's changes.
 pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
-    for (r.evcd.files.items) |*f| {
+    // `task` sets the time before it adds the first file.
+    if (r.dumps.evcd.files.items.len != 0) assert(r.dumps.evcd.selected_at != null);
+    for (r.dumps.evcd.files.items) |*f| {
         if (f.started) {
             try changes(r, a, f);
             continue;
@@ -213,7 +300,7 @@ pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
         f.file = std.Io.Dir.cwd().createFile(io, f.name, .{}) catch return r.fail(0, "cannot create the dump file `{s}`", .{f.name});
         f.started = true;
         var w: std.Io.Writer.Allocating = .init(a);
-        try vcd.preamble(&w.writer, io, f.call, r.finest);
+        try vcd.preamble(&w.writer, io, f.call, r.time.finest);
         // §18.4.2: "$scope module <full instance path> $end", then one
         // `$var port <size> <n> <name> $end` per port.
         var n: u32 = 0;
@@ -233,6 +320,10 @@ pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
             };
             try w.writer.writeAll("$upscope $end\n");
         }
+        // Each port is in exactly one of the call's scopes, which `check`
+        // makes unique: the `<n>` codes are the ports' indices, as the
+        // sections write them.
+        assert(n == f.ports.len);
         try w.writer.writeAll("$enddefinitions $end\n");
         try put(r, f, w.written());
         try checkpoint(r, a, f, "$dumpports", false);
@@ -241,22 +332,21 @@ pub fn tick(r: *Run, a: std.mem.Allocator) Error!void {
 
 /// §18.3.6.1 `$vcdclose <final time> $end`, once the run is over.
 pub fn close(r: *Run) Error!void {
-    for (r.evcd.files.items) |*f| if (f.started) {
+    if (r.dumps.evcd.files.items.len != 0) assert(r.dumps.evcd.selected_at != null);
+    for (r.dumps.evcd.files.items) |*f| if (f.started) {
+        assert(f.file != null);
         var buf: [64]u8 = undefined;
         try put(r, f, std.mem.print(&buf, "$vcdclose #{d} $end\n", .{r.scheduler.now}) catch unreachable);
     };
 }
 
-fn portName(r: *Run, p: Port) []const u8 {
-    const m = &r.file.modules[r.scope_info.items[p.inst].def];
-    for (m.ports) |mp| if (r.names.get(.{ .scope = p.inst, .str = mp.name }) == p.slot) return r.file.str(mp.name);
-    unreachable; // `task` found the slot by a port's name
-}
-
-/// The instance path of `scope` from its root, `top.u`.
+/// The instance path of `scope` from its root, `top.u`. Asserts that
+/// `scope` is a scope.
 pub fn path(r: *Run, w: *std.Io.Writer, scope: u32) std.Io.Writer.Error!void {
-    const info = r.scope_info.items[scope];
+    assert(scope < r.hier.scopes.items.len);
+    const info = r.hier.scopes.items[scope];
     if (!root.isRoot(r, scope)) {
+        assert(info.parent != scope); // A root is its own parent; this is no root.
         try path(r, w, info.parent);
         try w.writeByte('.');
     }
@@ -264,61 +354,130 @@ pub fn path(r: *Run, w: *std.Io.Writer, scope: u32) std.Io.Writer.Error!void {
     if (info.index) |i| try w.print("[{d}]", .{i});
 }
 
+/// Writes `bytes` at `f.pos`, or once §18.3.4's limit would be passed, its
+/// comment and nothing after. `error.WriteFailed` is the file system's refusal.
+/// Asserts that `f` has started (its header is being or was written).
+pub fn writeAt(io: std.Io, f: anytype, bytes: []const u8) error{WriteFailed}!void {
+    assert(f.started); // Every section follows the header's open.
+    if (f.limited or bytes.len == 0) return;
+    const file = f.file orelse return;
+    var out = bytes;
+    // §18.3.4: "When this filesize is reached, the dumping stops, and a
+    // comment is inserted into file_pathname indicating the size limit was
+    // attained."
+    if (f.limit) |lim| if (f.pos + bytes.len > lim) {
+        out = "$comment $dumpportslimit reached $end\n";
+        f.limited = true;
+    };
+    file.writePositionalAll(io, out, f.pos) catch return error.WriteFailed;
+    f.pos += out.len;
+    // Past the limit only by its own comment, and nothing after it.
+    if (out.ptr != bytes.ptr) assert(f.limited);
+}
+
+/// A section of every port of dump `d` (`as_x`: each unknown, for
+/// `$dumpportsoff`), which then counts as written. Asserts that the file
+/// has started and `keyword` is a `$` section keyword.
+pub fn writeCheckpoint(d: anytype, keyword: []const u8, as_x: bool, at: u64) !void {
+    assert(d.f.started);
+    assert(keyword[0] == '$'); // A §18.4 section keyword.
+    var w: std.Io.Writer.Allocating = .init(d.scratch);
+    defer w.deinit();
+    try time(d.f, &w.writer, at);
+    try w.writer.print("{s}\n", .{keyword});
+    for (0..d.len()) |n| {
+        const text = if (as_x) try unknown(d.scratch, d.dir(n), d.width(n)) else try state(d, n);
+        defer d.scratch.free(text);
+        try remember(d.keep, d.last(n), text);
+        assert(d.last(n).len == 3 * d.width(n) + 3);
+        try w.writer.print("{s} <{d}\n", .{ text, n });
+    }
+    try w.writer.writeAll("$end\n");
+    try d.write(w.written());
+}
+
+/// The ports of dump `d` whose state is not the one last written. Asserts
+/// that the file has started.
+pub fn writeChanges(d: anytype, at: u64) !void {
+    assert(d.f.started);
+    if (!d.f.on) return;
+    var w: std.Io.Writer.Allocating = .init(d.scratch);
+    defer w.deinit();
+    for (0..d.len()) |n| {
+        const text = try state(d, n);
+        defer d.scratch.free(text);
+        if (std.mem.eql(u8, text, d.last(n).*)) continue;
+        if (w.written().len == 0) try time(d.f, &w.writer, at);
+        try remember(d.keep, d.last(n), text);
+        assert(std.mem.eql(u8, d.last(n).*, text));
+        try w.writer.print("{s} <{d}\n", .{ text, n });
+    }
+    try d.write(w.written());
+}
+
+/// Is `scope` the instance `inst` or inside it? Asserts that both are scopes.
+pub fn below(r: *Run, scope: u32, inst: u32) bool {
+    assert(scope < r.hier.scopes.items.len);
+    assert(inst < r.hier.scopes.items.len);
+    var s = scope;
+    // Each step climbs one level of the scope tree, which holds every scope once.
+    var steps: usize = 0;
+    while (true) : (steps += 1) {
+        assert(steps < r.hier.scopes.items.len);
+        if (s == inst) return true;
+        if (root.isRoot(r, s)) return false;
+        s = r.hier.scopes.items[s].parent;
+    }
+}
+
+// ---- private ----
+
+/// `name()` and `name` alike: §18.3.7's "the name followed by ()".
+fn present(args: []const Ast.ExprId) []const Ast.ExprId {
+    const out = if (args.len == 1 and args[0] == .none) &.{} else args;
+    assert(out.len <= args.len);
+    if (out.len != args.len) assert(args[0] == .none);
+    return out;
+}
+
+/// The characters of a file_pathname argument; null for an x or z bit.
+fn fileName(r: *Run, a: std.mem.Allocator, e: Ast.ExprId) Error!?[]const u8 {
+    assert(e != .none);
+    assert(@backingInt(e) < r.file.exprs.len());
+    return @import("system.zig").text(a, try evaluate.eval(r, a, e, 0));
+}
+
+fn portName(r: *Run, p: Port) []const u8 {
+    assert(p.inst < r.hier.scopes.items.len);
+    assert(p.slot < r.values.len);
+    const m = &r.file.modules[r.hier.scopes.items[p.inst].def];
+    for (m.ports) |mp| if (r.hier.names.get(.{ .scope = p.inst, .str = mp.name }) == p.slot) return r.file.str(mp.name);
+    unreachable; // `task` found the slot by a port's name
+}
+
 fn put(r: *Run, f: *File, bytes: []const u8) Error!void {
+    assert(f.started);
+    assert(f.call[0] == '$'); // `callText` of the `$dumpports` call.
     // `f.file` is set only once `tick` has had an `io`.
     const io = r.io orelse return;
     writeAt(io, f, bytes) catch return r.fail(0, "cannot write the dump file `{s}`", .{f.name});
 }
 
-/// `checkpoint`'s and `changes`' view of interpreter file `f`: each port's
-/// width from its slot, and its sides from the run's drivers.
-const Dump = struct {
-    r: *Run,
-    f: *File,
-    /// Temporaries; `keep` owns each port's `last`.
-    scratch: std.mem.Allocator,
-    keep: std.mem.Allocator,
-
-    pub fn len(d: Dump) usize {
-        return d.f.ports.len;
-    }
-    pub fn dir(d: Dump, n: usize) Ast.Direction {
-        return d.f.ports[n].dir;
-    }
-    pub fn width(d: Dump, n: usize) u32 {
-        return d.r.values[d.f.ports[n].slot].width;
-    }
-    pub fn last(d: Dump, n: usize) *[]u8 {
-        return &d.f.ports[n].last;
-    }
-    /// Bit `bit` of port `n` as its input side and its output side drive it.
-    pub fn sides(d: Dump, n: usize, bit: u32) [2]Signal {
-        const r = d.r;
-        const p = d.f.ports[n];
-        var in: Signal = .{};
-        var out: Signal = .{};
-        if (p.net) |net| {
-            for (r.netDrivers(net)) |di| {
-                const c = resolution.contribution(r.drivers[di], bit);
-                if (below(r, r.drivers[di].scope, p.inst)) out = out.combine(c) else in = in.combine(c);
-            }
-        } else out = .of(r.values[p.slot].bit(bit), .strong, .strong); // an output declared as a variable
-        return .{ in, out };
-    }
-    pub fn write(d: Dump, bytes: []const u8) Error!void {
-        return put(d.r, d.f, bytes);
-    }
-};
-
 fn dump(r: *Run, a: std.mem.Allocator, f: *File) Dump {
+    assert(f.started);
+    assert(f.scopes.len != 0);
     return .{ .r = r, .f = f, .scratch = a, .keep = r.arena };
 }
 
 fn checkpoint(r: *Run, a: std.mem.Allocator, f: *File, keyword: []const u8, as_x: bool) Error!void {
+    assert(f.started);
+    assert(r.dumps.evcd.selected_at != null);
     return writeCheckpoint(dump(r, a, f), keyword, as_x, r.scheduler.now);
 }
 
 fn changes(r: *Run, a: std.mem.Allocator, f: *File) Error!void {
+    assert(f.started);
+    assert(r.dumps.evcd.selected_at != null);
     return writeChanges(dump(r, a, f), r.scheduler.now);
 }
 
@@ -333,74 +492,31 @@ fn changes(r: *Run, a: std.mem.Allocator, f: *File) Error!void {
 // `last(n)`, `sides(n, bit)` and `write(bytes)`: where each port's drivers
 // and last state text are kept is the one thing the two differ in.
 
-/// Writes `bytes` at `f.pos`, or once §18.3.4's limit would be passed, its
-/// comment and nothing after. `error.WriteFailed` is the file system's refusal.
-pub fn writeAt(io: std.Io, f: anytype, bytes: []const u8) error{WriteFailed}!void {
-    if (f.limited or bytes.len == 0) return;
-    const file = f.file orelse return;
-    var out = bytes;
-    // §18.3.4: "When this filesize is reached, the dumping stops, and a
-    // comment is inserted into file_pathname indicating the size limit was
-    // attained."
-    if (f.limit) |lim| if (f.pos + bytes.len > lim) {
-        out = "$comment $dumpportslimit reached $end\n";
-        f.limited = true;
-    };
-    file.writePositionalAll(io, out, f.pos) catch return error.WriteFailed;
-    f.pos += out.len;
-}
-
 fn time(f: anytype, w: *std.Io.Writer, at: u64) std.Io.Writer.Error!void {
+    if (f.last_time) |t| assert(at >= t); // Time never runs back.
     if (f.last_time == at) return;
     f.last_time = at;
     try w.print("#{d}\n", .{at});
-}
-
-/// A section of every port of dump `d` (`as_x`: each unknown, for
-/// `$dumpportsoff`), which then counts as written.
-pub fn writeCheckpoint(d: anytype, keyword: []const u8, as_x: bool, at: u64) !void {
-    var w: std.Io.Writer.Allocating = .init(d.scratch);
-    defer w.deinit();
-    try time(d.f, &w.writer, at);
-    try w.writer.print("{s}\n", .{keyword});
-    for (0..d.len()) |n| {
-        const text = if (as_x) try unknown(d.scratch, d.dir(n), d.width(n)) else try state(d, n);
-        defer d.scratch.free(text);
-        try remember(d.keep, d.last(n), text);
-        try w.writer.print("{s} <{d}\n", .{ text, n });
-    }
-    try w.writer.writeAll("$end\n");
-    try d.write(w.written());
-}
-
-/// The ports of dump `d` whose state is not the one last written.
-pub fn writeChanges(d: anytype, at: u64) !void {
-    if (!d.f.on) return;
-    var w: std.Io.Writer.Allocating = .init(d.scratch);
-    defer w.deinit();
-    for (0..d.len()) |n| {
-        const text = try state(d, n);
-        defer d.scratch.free(text);
-        if (std.mem.eql(u8, text, d.last(n).*)) continue;
-        if (w.written().len == 0) try time(d.f, &w.writer, at);
-        try remember(d.keep, d.last(n), text);
-        try w.writer.print("{s} <{d}\n", .{ text, n });
-    }
-    try d.write(w.written());
+    assert(f.last_time.? == at);
 }
 
 /// `last.* = text`, in place: a port's state text has one length (its
 /// width fixes it), so after the first write no step allocates.
 fn remember(keep: std.mem.Allocator, last: *[]u8, text: []const u8) std.mem.Allocator.Error!void {
+    assert(text[0] == 'p'); // A `state` or `unknown` text.
+    // The text of one port keeps its length: only the first write allocates.
+    assert(last.len == 0 or last.len == text.len);
     if (last.len == text.len) return @memcpy(last.*, text);
     keep.free(last.*);
     last.* = try keep.dupe(u8, text);
+    assert(last.len == text.len);
 }
 
 /// §18.4.3 `p<port_value> <0_strength> <1_strength>` of port `n` of dump
 /// `d`: per bit, most significant first, a Table 18-7 state character and
 /// its strength digits.
 fn state(d: anytype, n: usize) std.mem.Allocator.Error![]u8 {
+    assert(n < d.len());
     const width = d.width(n);
     const chars = try d.scratch.alloc(u8, 3 * width);
     defer d.scratch.free(chars);
@@ -412,11 +528,14 @@ fn state(d: anytype, n: usize) std.mem.Allocator.Error![]u8 {
         chars[width + i] = '0' + s.s0;
         chars[2 * width + i] = '0' + s.s1;
     }
-    return d.scratch.print("p{s} {s} {s}", .{ chars[0..width], chars[width .. 2 * width], chars[2 * width ..] });
+    const text = try d.scratch.print("p{s} {s} {s}", .{ chars[0..width], chars[width .. 2 * width], chars[2 * width ..] });
+    assert(text.len == 3 * width + 3); // Pair of `unknown`'s length.
+    return text;
 }
 
 /// `$dumpportsoff`'s X: Table 18-7's unknown of the port's direction.
 fn unknown(a: std.mem.Allocator, dir: Ast.Direction, width: u32) std.mem.Allocator.Error![]u8 {
+    assert(width != 0);
     const c: u8 = switch (dir) {
         .input => 'N',
         .output => 'X',
@@ -429,27 +548,19 @@ fn unknown(a: std.mem.Allocator, dir: Ast.Direction, width: u32) std.mem.Allocat
     @memset(out[2 + width ..][0..width], '6');
     out[2 + 2 * width] = ' ';
     @memset(out[3 + 2 * width ..][0..width], '6');
+    assert(out.len == 3 * width + 3); // Pair of `state`'s length.
     return out;
 }
-
-/// Is `scope` the instance `inst` or inside it?
-pub fn below(r: *Run, scope: u32, inst: u32) bool {
-    var s = scope;
-    while (true) {
-        if (s == inst) return true;
-        if (root.isRoot(r, s)) return false;
-        s = r.scope_info.items[s].parent;
-    }
-}
-
-/// One port bit as §18.4.3 dumps it: the Table 18-7 state character and
-/// its strength0 and strength1 components, each 0..7.
-const State = struct { c: u8, s0: u8, s1: u8 };
 
 /// A signal's strength components: the strength0 and strength1 levels it
 /// spans (0 on a side it does not reach).
 fn levels(s: Signal) [2]u8 {
-    return .{ if (s.lo < 0) @intCast(-s.lo) else 0, if (s.hi > 0) @intCast(s.hi) else 0 };
+    assert(s.lo <= s.hi); // A signal is a range of strengths.
+    const l: [2]u8 = .{ if (s.lo < 0) @intCast(-s.lo) else 0, if (s.hi > 0) @intCast(s.hi) else 0 };
+    // §18.4.3.1: each component is one digit, 0 to 7.
+    assert(l[0] <= 7);
+    assert(l[1] <= 7);
+    return l;
 }
 
 /// §18.4.3.1 Table 18-7 and §18.4.3.2's conflict rules for one bit, from
@@ -457,6 +568,8 @@ fn levels(s: Signal) [2]u8 {
 /// the device) drive. "Strength 7 to 5: strong strength; Strength 4 to 1:
 /// weak strength."
 fn portState(dir: Ast.Direction, in: Signal, out: Signal) State {
+    assert(in.lo <= in.hi);
+    assert(out.lo <= out.hi);
     const li = levels(in);
     const lo = levels(out);
     if (in.none() and out.none()) return .{ .c = switch (dir) {
@@ -497,6 +610,9 @@ fn portState(dir: Ast.Direction, in: Signal, out: Signal) State {
 
 /// `set`'s character for 0, 1, else unknown.
 fn pick(b: @import("kernels").Integer.Bit, set: *const [3]u8) u8 {
+    // Three distinct characters: a 0 never reads as a 1 or an unknown.
+    assert(set[0] != set[1]);
+    assert(set[2] != set[0]);
     return switch (b) {
         .zero => set[0],
         .one => set[1],

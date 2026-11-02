@@ -1,0 +1,128 @@
+//! `vera --help`'s text: every flag `cli/args.zig` reads, what it takes and
+//! its default. Printed on stdout by `--help`, on stderr by a command line
+//! that names no input. User-visible and frozen.
+//!
+//! Cites: LRM 3.4 (`--param`), 7.4.4 (`--discipline-resolution`), annex E.2
+//! (`--spice`); IEEE 1364-2005 §13.2, §13.7.1, §15.5.4, §28 (the `.v` flags).
+//!
+//! Contents:
+//! - `pub const usage_text: []const u8`
+
+/// `--help`, and what a command line naming no input prints to stderr.
+pub const usage_text =
+    \\usage: vera [options] FILE.va
+    \\       vera --run|--emit-exe [options] FILE.v [MORE.v ...]
+    \\       vera --emit-zig|--check|--emit-so|--emit-osdi|--emit-rtlil [options] FILE.v [MORE.v ...]
+    \\       vera --explain CODE
+    \\       vera --version | -v | -V
+    \\       vera --lsp [options]
+    \\
+    \\  --lint                  frontend only (parse, lower, prove); no codegen
+    \\  --elab                  a .v design: preprocess, parse and elaborate it
+    \\                          (IEEE 1364-2005 12.1.3), then stop: nothing runs
+    \\  --lsp                   a language server on stdin/stdout: --lint's
+    \\                          diagnostics and fix-its for each open document;
+    \\                          the options here, then the workspace's .vera-flags
+    \\  --emit-zig              generate the device; to stdout unless -o is given
+    \\  -o PATH                 write the generated device.zig here
+    \\  --expect-module=NAME    fail unless the compiled module is called NAME
+    \\  --emit-verilog          a behavioural Verilog module of the .va for digital
+    \\                          simulation (same name and ports; -o PATH, else stdout)
+    \\  --digital-pins LIST|FILE   ports that are logic: a comma/space-separated
+    \\                          list, or a file of names (also `(* vera_pin *)`)
+    \\  --power-pins            --emit-verilog: supply pins only under
+    \\                          `ifdef USE_POWER_PINS
+    \\  --vdd=X                 --emit-verilog: logic-high potential in V (default 1.8)
+    \\  --emit-rtlil            a .v design as Yosys RTLIL, for synthesis (-o PATH,
+    \\                          else stdout); a construct outside the synthesizable
+    \\                          subset is refused by name
+    \\  --check                 type-check the generated device with zig, running
+    \\                          the contract's conformance checks
+    \\  --emit-so               build lib<name>.<gen>.so via the orchestrator
+    \\  --emit-osdi             build an OSDI 0.4 library (ngspice `pre_osdi`) of a
+    \\                          .va or .v: --emit-so under this vera's osdi_dyn.zig,
+    \\                          copied to -o PATH (default <module>.osdi); print it
+    \\  --emit-exe              build a runnable Verilog-A testbench,
+    \\                          or a .v design's executable; print its path
+    \\                          (--emit-zig, --check, --emit-so and --emit-osdi of
+    \\                          a .v build its top module as a contract device,
+    \\                          4-state, E1103)
+    \\  --schedule=static|fifo  a .v executable's order of same-time events:
+    \\                          combinational logic levelized (static, the
+    \\                          default; IEEE 1364 §11.4.1), or the interpreter's
+    \\  --state=auto|2|4        a .v executable's logic: 4-state until no live x
+    \\                          or z is left, then 2-state, printing what 4-state
+    \\                          prints (auto, the default); every x or z is 0,
+    \\                          NOT IEEE 1364 4-state logic (2, E1101); 4-state
+    \\  --two-state             --state=2
+    \\  --negative-timing       let a .v design's $setuphold and $recrem take
+    \\                          negative limits (IEEE 1364 §15.5.4's option)
+    \\  --event-budget=N        a .v design's events at one time step before a
+    \\                          zero-delay loop is refused (default 10000000)
+    \\  --run                   run a .v initial-process program, or an analog testbench
+    \\  --libmap FILE           read an IEEE 1364 §13.2 library map (repeatable, read
+    \\                          in order); each .v file compiles into the library
+    \\                          whose file_path_spec matches it, else `work`
+    \\  --protect-keys FILE     the keys and CBC IV for IEEE 1364 §28 decryption
+    \\                          envelopes in a .v design (JSON: profile.iv_hex,
+    \\                          keys[] of owner, name, key_hex)
+    \\  -L LIB                  search LIB for an instance's cell (repeatable, in
+    \\                          order; IEEE 1364 §13.7.1); default: map order, then work
+    \\  --display=record|drop|emit
+    \\                          ch9 display tasks: recorded by the device's `say`
+    \\                          for its host to print (default), void, or
+    \\                          printed (--emit-exe's default; with record the
+    \\                          testbench prints the device's records)
+    \\  --jac-f32               mark the device as tolerating an f32 Jacobian
+    \\  --jac-f32-host          ...and ask the host to use it on its CPU path
+    \\  --validate-contract     run the contract's conformance checks (validate,
+    \\                          validateHost, checkFamily, Debug su_ok) in the
+    \\                          --emit-exe/--run testbench; off by default. A host
+    \\                          gets them only by opting in: `pub const
+    \\                          vera_validate_contract = true` in its root module
+    \\                          (--emit-so: in the --dyn module). The version check
+    \\                          (`vera_version`) is always on
+    \\  --contract PATH         root of the `contract` module (default: this vera's
+    \\                          own, written under the work directory)
+    \\  --dyn PATH              root of the `dyn` module (--emit-so)
+    \\  --work-dir DIR          scratch + artifact directory (--emit-so)
+    \\  --zig PATH              zig executable to drive (default: zig)
+    \\  --optimize=MODE         Debug|ReleaseSafe|ReleaseFast|ReleaseSmall (default: exe Debug, so ReleaseFast)
+    \\  --zig-backend=auto|llvm|native   auto: native for Debug on x86_64, else llvm
+    \\  --debug-info            keep DWARF in a ReleaseFast/ReleaseSmall --emit-so or
+    \\                          --emit-exe artifact (default: stripped; same machine
+    \\                          code, about half the LLVM time of a large device)
+    \\  -I DIR                  add an `include search directory
+    \\  -D NAME[=TEXT]          `define NAME TEXT before the source (bare: 1);
+    \\                          also -DNAME[=TEXT]; repeatable
+    \\  --param NAME=VALUE      compile with the top module's parameter NAME set
+    \\                          to VALUE (LRM 3.4): a number, or a string parameter's
+    \\                          text (`--param mode=fast`). A parameter that sizes an
+    \\                          array, vector or replication, or bounds a genvar
+    \\                          loop or selects a generate arm, is fixed at VALUE and
+    \\                          the device refuses a card that moves it
+    \\                          (`checkShape`); any other stays a card value
+    \\  --spice PATH            read a SPICE netlist alongside the source; Annex
+    \\                          E.2's .MODEL and .SUBCKT cards in it become
+    \\                          module definitions the .va can instantiate
+    \\  --no-std-defs           do not prepend the annex D prelude
+    \\  --std=SPEC              source language, a `begin_keywords specifier:
+    \\                          1364-1995|1364-2001|1364-2005|VAMS-2023
+    \\                          (default; 1364-2005 under -Dlanguage=verilog).
+    \\                          A 1364 language frees every AMS keyword as an
+    \\                          identifier and refuses AMS constructs (E0242)
+    \\  --sim=verilogAMS|verilogA|verilog
+    \\                          the language family: all of Verilog-AMS (the
+    \\                          default), annex C's Verilog-A subset (a digital
+    \\                          or mixed-signal construct is E0250; no .v), or
+    \\                          IEEE 1364-2005 alone (--std=1364-2005 unless
+    \\                          --std names another 1364 set; no .va)
+    \\  --diagnostics=text|json how to report (default: text)
+    \\  --color=auto|always|never
+    \\  --allow/--warn/--deny/--forbid=CODE   per-code lint level
+    \\  --unknown-bound=X       solver compliance limit (see --explain W0650)
+    \\  --discipline-resolution=basic|detail
+    \\                          LRM 7.4.4's mode for undeclared interconnect
+    \\                          (default: basic; detail is Annex F.2.2)
+    \\
+;

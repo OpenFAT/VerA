@@ -1,11 +1,7 @@
 $ vera --run thermal.va
-=== thermal ===
 noise count got=1 want=1 ok=1
 noise[0] got=thermal(p,n)#0 want=thermal(p,n)#0 ok=1
 noise[0].name got=thermal want=thermal ok=1
---- point 0 ---
-  x[p] = 1.000000e0
-  x[n] = 0.000000e0
 I(p,n) = 0.001 A
 noise[0].white got=0.0000000000000000000000165760875018 want=0.0000000000000000000000165760875018 ok=1
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(p,n) — compiles with @setFloatMode(.strict)

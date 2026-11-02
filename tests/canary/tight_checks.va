@@ -1,0 +1,20 @@
+// CONTROL (perturb): every check form, each tight enough that a 0.1% move in
+// its want flips it. `--perturb` must PASS this, which shows each macro in
+// check.vh's perturbed half really moves its want.
+//! lrm 5.6.3
+//! bias V(p) = 1.5, V(n) = 0.25
+//! checks 5
+`include "check.vh"
+module canary_tight_checks(p, n);
+  inout p, n; electrical p, n;
+  integer two;
+  analog begin
+    two = 2;
+    `CHECK("absolute", V(p, n), 1.25, 1e-12);
+    `CHECKR("relative", V(p, n) / 1k, 1.25e-3, 1e-12);
+    `CHECKX("exact", V(p, n), 1.25);
+    `CHECKI("integer", two, 2);
+    `CHECKEQ("relational", V(p, n), V(p) - V(n), 1e-12);
+    I(p, n) <+ V(p, n) / 1k;
+  end
+endmodule

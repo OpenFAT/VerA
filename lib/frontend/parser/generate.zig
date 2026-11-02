@@ -4,8 +4,17 @@
 //!
 //! LRM clauses cited: §2.8, §3.4.6, §3.5, §5.2.1, §5.9.2, §5.10.4, §6.5, §6.6,
 //! §6.6.1, §6.6.2, §6.6.3, §6.8, §6.9.1, §12.4.2.
+//!
+//! Contents:
+//! - `pub fn parseGenerate(self: *Parser, b: *parse_module.Body, comptime kind: token.Tag) Error!void`
+//! - `pub inline fn parseFor(self: *Parser, gen: anytype, tok: u32) Error!Ast.StmtId`
+//! - `pub inline fn parseIf(self: *Parser, gen: anytype, tok: u32) Error!Ast.StmtId`
+//! - `pub fn parseGenerateBlock(self: *Parser, b: *parse_module.Body) Error!Ast.StmtId`
+//! - `pub fn nameGenBlocks(self: *Parser, b: *parse_module.Body) error`
+//! - `pub fn checkGenBlockNames(self: *Parser, b: *parse_module.Body) error`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_expr = @import("expr.zig");
@@ -15,7 +24,6 @@ const token = @import("../token.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
 
-// -----------------------------------------------------------------------
 // A.4.2 generate constructs: LRM §6.6
 //
 // A generate construct becomes one `Ast.AnalogBlock` whose body is the
@@ -25,7 +33,6 @@ const Error = parser.Error;
 // §6.9.1 concatenates a module's analog blocks in source order, and
 // unrolling order is source order, so a generated block lands in the slot
 // it would occupy written out by hand.
-// -----------------------------------------------------------------------
 
 /// Parses one generate construct (`kind` is `for`, `if` or `case`) and
 /// appends it to `b.analog`. `gen_construct` is bumped only on the outermost
@@ -35,6 +42,9 @@ const Error = parser.Error;
 /// An `else if` chain nests in the outer construct's block, so it inherits
 /// the id, which is §6.6.2's direct-nesting exception.
 pub fn parseGenerate(self: *Parser, b: *parse_module.Body, comptime kind: token.Tag) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     if (self.gen_construct_depth == 0) self.gen_construct += 1;
     b.gen_count += 1; // §6.6.3 this construct's number in its scope
     self.gen_construct_depth += 1;
@@ -138,6 +148,9 @@ pub inline fn parseIf(self: *Parser, gen: anytype, tok: u32) Error!Ast.StmtId {
 /// where the trip count is known, not here where it is not. Digital execution
 /// declares each iteration's own nets from `Ast.GenItems` in its block scope.
 pub fn parseGenerateBlock(self: *Parser, b: *parse_module.Body) Error!Ast.StmtId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     if (self.segmentDue()) return self.segment(parseGenerateBlock, .{ self, b });
     self.enter();
     defer self.leave();
@@ -284,6 +297,9 @@ pub fn parseGenerateBlock(self: *Parser, b: *parse_module.Body) Error!Ast.StmtId
 /// once `b`'s scope is complete, so a later declaration still counts. Gives up
 /// adding zeroes after eight.
 pub fn nameGenBlocks(self: *Parser, b: *parse_module.Body) error{OutOfMemory}!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     for (b.gen_auto.items) |g| {
         var zeros: usize = 0;
         const name = while (true) : (zeros += 1) {
@@ -295,6 +311,44 @@ pub fn nameGenBlocks(self: *Parser, b: *parse_module.Body) error{OutOfMemory}!vo
     }
     b.gen_auto.clearRetainingCapacity();
 }
+
+/// Reports E0238 for a loop generate whose variable is not a declared genvar,
+/// and E0230 for a named generate block whose name clashes with another
+/// declaration in the scope (§6.6.1, §6.6.2, §6.8). A block name is a
+/// declaration whether or not the scheme selects the block, so the scheme is
+/// not consulted. Call it once at the end of the module, since a clashing
+/// declaration may follow the construct. Reports and carries on; only OOM
+/// propagates.
+///
+/// ponytail: two named blocks collide only across different outermost
+/// constructs, so a loop generate nested inside one arm of a conditional is
+/// let off too, which §6.6.2 does not license. Keying on the construct itself
+/// needs generate blocks to be real scope objects, which §6.6.3 hierarchical
+/// names want as well.
+pub fn checkGenBlockNames(self: *Parser, b: *parse_module.Body) error{OutOfMemory}!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    // A.4.2 `genvar_initialization ::= genvar_identifier = constant_expression`,
+    // and a genvar_identifier is what a `genvar_declaration` introduces.
+    for (b.gen_loops.items) |l| if (std.mem.findScalar(Ast.StrId, b.genvars.items, l.name) == null)
+        try self.report(l.tok, .E0238, "`{s}`", .{self.file.strings.get(l.name)});
+    for (b.gen_blocks.items, 0..) |g, i| {
+        const clash = inDeclSpaces(b, g.name) or processBlockNamed(self, b, g.name) or
+            nameIn(Ast.Subroutine, b.tasks.items, g.name) or
+            other: {
+                for (b.gen_blocks.items[0..i]) |h| {
+                    if (h.name == g.name and h.construct != g.construct) break :other true;
+                }
+                break :other false;
+            };
+        if (clash) try self.report(g.tok, .E0230, "`{s}`", .{
+            self.file.strings.get(g.name),
+        });
+    }
+}
+
+// ---- private ----
 
 /// Whether `name` is explicitly declared in the scope `b` collected: the
 /// declaration spaces `checkGenBlockNames` reads, plus instances and events.
@@ -337,39 +391,6 @@ fn processBlockNamed(self: *const Parser, b: *const parse_module.Body, name: Ast
         };
     }
     return false;
-}
-
-/// Reports E0238 for a loop generate whose variable is not a declared genvar,
-/// and E0230 for a named generate block whose name clashes with another
-/// declaration in the scope (§6.6.1, §6.6.2, §6.8). A block name is a
-/// declaration whether or not the scheme selects the block, so the scheme is
-/// not consulted. Call it once at the end of the module, since a clashing
-/// declaration may follow the construct. Reports and carries on; only OOM
-/// propagates.
-///
-/// ponytail: two named blocks collide only across different outermost
-/// constructs, so a loop generate nested inside one arm of a conditional is
-/// let off too, which §6.6.2 does not license. Keying on the construct itself
-/// needs generate blocks to be real scope objects, which §6.6.3 hierarchical
-/// names want as well.
-pub fn checkGenBlockNames(self: *Parser, b: *parse_module.Body) error{OutOfMemory}!void {
-    // A.4.2 `genvar_initialization ::= genvar_identifier = constant_expression`,
-    // and a genvar_identifier is what a `genvar_declaration` introduces.
-    for (b.gen_loops.items) |l| if (std.mem.findScalar(Ast.StrId, b.genvars.items, l.name) == null)
-        try self.report(l.tok, .E0238, "`{s}`", .{self.file.strings.get(l.name)});
-    for (b.gen_blocks.items, 0..) |g, i| {
-        const clash = inDeclSpaces(b, g.name) or processBlockNamed(self, b, g.name) or
-            nameIn(Ast.Subroutine, b.tasks.items, g.name) or
-            other: {
-                for (b.gen_blocks.items[0..i]) |h| {
-                    if (h.name == g.name and h.construct != g.construct) break :other true;
-                }
-                break :other false;
-            };
-        if (clash) try self.report(g.tok, .E0230, "`{s}`", .{
-            self.file.strings.get(g.name),
-        });
-    }
 }
 
 /// Whether `name` is the `.name` of one of `decls`. Comparing `StrId`s

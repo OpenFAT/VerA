@@ -6,7 +6,7 @@
 //!
 //! Every declaration here is reached from outside the module: `src/main.zig`,
 //! `src/vpi/`, `src/codegen/exe/tb*`, `tests/`, and the Zig text that
-//! `src/zigbuild/orchestrator.zig` and `src/codegen/digital/emit.zig` generate (`sim.rt`,
+//! `src/zigbuild/orchestrator.zig` and `src/codegen/digital/` generate (`sim.rt`,
 //! `sim.digital`, `sim.mixed`). The generated text is why a rename here is a
 //! golden change, not only a compile error.
 //! Clauses: none here; each file's header names the ones its code cites.
@@ -18,7 +18,7 @@ pub const time = @import("time.zig");
 /// The region-ordered event queue (IEEE 1364-2005 §11, VAMS §8.5).
 pub const scheduler = @import("scheduler.zig");
 /// The VAMS §8 coordinator that steps a digital `Run` beside an analog solver.
-pub const mixed = @import("mixed.zig");
+pub const mixed = @import("mixed/root.zig");
 /// The runtime an `--emit-exe` executable links: native designs and devices.
 pub const rt = @import("rt/root.zig");
 

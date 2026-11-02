@@ -9,11 +9,12 @@ model cannot assert about itself.
 
 The first two take the exact `vera` the build made (`zig build
 test`). The profiles (`PROFILES` below, also under `zig build test`) need a real host bound through an adapter
-(`--adapter`, or `VERA_HOST_PROFILE_ADAPTER`); without one every assertion
-records a skip, never a pass. `tests/README.md` has the adapter protocol.
+(`--adapter`, or `VERA_HOST_PROFILE_ADAPTER`; `zig build test-host-profiles
+-Dhost-adapter=EXE`); without one every assertion fails, as does a scenario
+the adapter answers `unavailable`: unsupported fails, never skips. `tests/README.md` has the adapter protocol.
 `selftest` feeds the oracles wrong observations and checks they refuse; it
 is never conformance evidence. Each runner records its results as
-`<artifact>.test.<method>` rows, the names `SPECIALIZED.tsv` registers.
+`<artifact>.test.<method>` rows.
 """
 import argparse
 import copy
@@ -56,7 +57,7 @@ def decode_response(output):
         reason = response.get("reason")
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("unavailable host profile requires an applicability reason")
-        raise unittest.SkipTest(reason)
+        raise AssertionError(f"host profile unavailable: {reason}")
     if response.get("status") != "ok" or not isinstance(response.get("observations"), dict):
         raise ValueError("host profile response requires status ok and observations object")
     return response["observations"]
@@ -65,7 +66,7 @@ def decode_response(output):
 class HostProfileCase(unittest.TestCase):
     def observe(self, scenario, source, setup):
         if ADAPTER is None:
-            self.skipTest(f"{scenario}: no real host adapter configured")
+            self.fail(f"{scenario}: no host adapter configured (--adapter, VERA_HOST_PROFILE_ADAPTER)")
         source = Path(source)
         if not source.is_absolute():
             source = ROOT / source
@@ -147,7 +148,7 @@ def run_cases(case_class, artifact, argv=None):
         unittest.defaultTestLoader.loadTestsFromTestCase(case_class)
     )
     write_results(args.results, result.rows)
-    return int(not result.wasSuccessful())
+    return int(not result.wasSuccessful() or bool(result.skipped))
 
 
 def run_vera_cases(case_class, artifact, argv=None):
@@ -164,7 +165,7 @@ def run_vera_cases(case_class, artifact, argv=None):
         unittest.defaultTestLoader.loadTestsFromTestCase(case_class)
     )
     write_results(args.results, result.rows)
-    return int(not result.wasSuccessful() or (args.strict and bool(result.expectedFailures)))
+    return int(not result.wasSuccessful() or bool(result.skipped) or (args.strict and bool(result.expectedFailures)))
 
 
 # ---------------------------------------------------------------------------
@@ -1315,7 +1316,7 @@ class LanguageSemanticsObservations(HostProfileCase):
     Each scenario must query the elaborated language objects or live solver named
     in setup. Returning parsed declarations, requested values, or a reconstructed
     answer is not an observation. Missing semantic/solver/step instrumentation is
-    status=unavailable, hence a recorded skip; no adapter also skips.
+    status=unavailable, hence a failure; so is no adapter.
 
     resolved_nature_links: observations.links is {nature: {idt_nature,ddt_nature}}.
     discipline_user_attribute: observations.attributes contains actual retained
@@ -1678,7 +1679,7 @@ PROFILES = {
 # ===========================================================================
 
 class ProfileProtocolTests(unittest.TestCase):
-    def test_missing_adapter_records_skip_not_pass(self):
+    def test_missing_adapter_is_a_failure_not_a_skip(self):
         class Case(HostProfileCase):
             def test_observation(self):
                 self.observe("missing", __file__, {})
@@ -1686,10 +1687,10 @@ class ProfileProtocolTests(unittest.TestCase):
             result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=EvidenceResult).run(
                 unittest.defaultTestLoader.loadTestsFromTestCase(Case)
             )
-        self.assertEqual(result.rows, {"profile_observations.test.test_observation": "skip"})
+        self.assertEqual(result.rows, {"profile_observations.test.test_observation": "fail"})
 
-    def test_explicit_unavailability_requires_a_reason(self):
-        with self.assertRaises(unittest.SkipTest):
+    def test_explicit_unavailability_is_a_failure_with_its_reason(self):
+        with self.assertRaisesRegex(AssertionError, "no finite documented identifier limit"):
             decode_response(json.dumps({
                 "schema_version": 1, "status": "unavailable", "reason": "no finite documented identifier limit",
             }))

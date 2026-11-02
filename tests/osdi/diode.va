@@ -1,0 +1,23 @@
+// An ideal-exponential junction with a linear capacitance, shot noise and
+// SPICE junction limiting: the `vera --emit-osdi` fixture diode.sp loads in
+// ngspice. Every value it checks is derived by hand in that deck.
+`include "disciplines.vams"
+`include "constants.vams"
+
+module vdiode(a, c);
+    inout a, c;
+    electrical a, c;
+    parameter real is = 1e-14 from (0:inf);
+    parameter real n = 1 from (0:inf);
+    parameter real cj = 0 from [0:inf);
+    real vte, vcrit, vd, id;
+    analog begin
+        vte = n * $vt;
+        vcrit = vte * ln(vte / (`M_SQRT2 * is));
+        vd = $limit(V(a, c), "pnjlim", vte, vcrit);
+        id = is * (exp(vd / vte) - 1);
+        I(a, c) <+ id;
+        I(a, c) <+ ddt(cj * V(a, c));
+        I(a, c) <+ white_noise(2 * `P_Q * abs(id), "shot");
+    end
+endmodule

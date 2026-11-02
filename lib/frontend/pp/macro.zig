@@ -1,26 +1,38 @@
 //! Text macros: a `define or `undef line in, a macro table entry out; a macro
 //! use in, its expansion scanned into the output (arguments pre-expanded,
 //! recursion refused).
-//! LRM §2.7, §2.8.1, §10.4, §10.7; IEEE 1364 §19.3.
+//! Cites: LRM §2.7, §2.8.1, §10.4, §10.5, §10.7; IEEE 1364-2005 §19.3,
+//! §19.3.1; IEEE 1800-2017 §22.5.1 (the `" `\`" `` macro text forms).
+//!
+//! Expansion recursion (a body rescanned, an actual pre-expanded) runs
+//! through `Pp.nested`, so its depth is bounded by memory, and the cycle guard
+//! (`Pp.expanding_set`, E0118) is what makes a rescan terminate.
+//!
+//! Contents:
+//! - `pub fn handleDefine(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void`
+//! - `pub fn removeDefine(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void`
+//! - `pub fn expand(pp: *Pp, text: []const u8, at: usize, after_name: usize, name: []const u8) Error!usize`
 
 const std = @import("std");
-const Preprocessor = @import("../preprocessor.zig");
+const assert = std.debug.assert;
 const diag = @import("diag");
-const Error = Preprocessor.Error;
-const Macro = Preprocessor.Macro;
-const Pp = Preprocessor.Pp;
-const scan = Preprocessor.scan;
-const stringStop = Preprocessor.stringStop;
-const Rest = Preprocessor.Rest;
-const isSpace = Preprocessor.isSpace;
-const isIdentStart = Preprocessor.isIdentStart;
-const isIdentChar = Preprocessor.isIdentChar;
-const identEnd = Preprocessor.identEnd;
-const escapedEnd = Preprocessor.escapedEnd;
+const lexer = @import("../lexer.zig");
+const Pp = @import("Pp.zig");
+const Error = Pp.Error;
+const Macro = Pp.Macro;
+const pp_scan = @import("scan.zig");
+const scan = pp_scan.scan;
+const stringStop = pp_scan.stringStop;
+const Rest = pp_scan.Rest;
+const isIdentStart = pp_scan.isIdentStart;
+const directive_map = @import("directive.zig").directive_map;
+const isSpace = lexer.isSpace;
+const isIdentChar = lexer.isIdentChar;
+const identEnd = lexer.identEnd;
+const escapedEnd = lexer.escapedEnd;
 
-// ---------------------------------------------------------------------------
-// §10.4 `define / `undef
-// ---------------------------------------------------------------------------
+/// A macro use's trimmed actual arguments and the offset just past its `)`.
+const MacroArgs = struct { args: []const []const u8, end: usize };
 
 /// Parses a §10.4 `define and adds or replaces its macro. `rest` is everything
 /// after the word on one logical line, starting at offset `off`; `at` is the
@@ -28,6 +40,8 @@ const escapedEnd = Preprocessor.escapedEnd;
 /// E0109 (no name), E0143 (a directive's name), E0110-E0112 (the formal
 /// list), E0139 (text begins with __VAMS_) or E0145 (text splits a string).
 pub fn handleDefine(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void {
+    assert(off > at);
+    const macros_before = pp.macros.count();
     var r: Rest = .{ .s = rest };
     // Syntax 10-3 writes two different nonterminals into adjacent lines:
     //   formal_argument_identifier ::= simple_identifier
@@ -42,7 +56,7 @@ pub fn handleDefine(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void
     // predefined macro names; it shall be illegal to redefine a compiler
     // directive as a macro name." §10.1 Table 10-1 is the list, and it names
     // `__FILE__ and `__LINE__ too.
-    if (Preprocessor.directive_map.has(name) or std.mem.eql(u8, name, "__FILE__") or std.mem.eql(u8, name, "__LINE__"))
+    if (directive_map.has(name) or std.mem.eql(u8, name, "__FILE__") or std.mem.eql(u8, name, "__LINE__"))
         return pp.fail(pp.spanAt(off + r.i - name.len, off + r.i), .E0143, "`{s}` is a compiler directive", .{name});
 
     var m: Macro = .{ .body = "" };
@@ -105,12 +119,14 @@ pub fn handleDefine(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void
     // so `undef still has no effect on them.
     if (pp.macros.get(name)) |old| m.predefined = old.predefined;
     try pp.putMacro(name, m);
+    assert(pp.macros.count() >= macros_before);
 }
 
 /// Parses a §10.4 `undef and removes the macro; a §10.5 predefined macro is
 /// left alone, and an undefined name is not an error. Arguments as for
 /// `handleDefine`. Fails with E0113 when no name follows.
 pub fn removeDefine(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void {
+    assert(off > at);
     var r: Rest = .{ .s = rest };
     // Syntax 10-3: the operand is an identifier, simple or escaped (A.9.3),
     // so `` `undef \M-X `` withdraws what `` `define \M-X `` created.
@@ -121,38 +137,8 @@ pub fn removeDefine(pp: *Pp, rest: []const u8, at: usize, off: usize) Error!void
         if (m.predefined) return;
     }
     pp.removeMacro(name);
+    assert(!pp.macros.contains(name));
 }
-
-/// A macro body is one logical line: `\`+newline collapses to a space. The
-/// newlines it swallowed are re-emitted by the caller, so lines still line up.
-fn joinContinuations(pp: *Pp, body: []const u8) Error![]const u8 {
-    if (std.mem.findScalar(u8, body, '\n') == null) return body;
-    var out: std.ArrayList(u8) = .empty;
-    try out.ensureTotalCapacity(pp.scratch, body.len);
-    var i: usize = 0;
-    while (i < body.len) : (i += 1) {
-        if (body[i] == '\\') {
-            var k = i + 1;
-            while (k < body.len and (body[k] == ' ' or body[k] == '\t' or body[k] == '\r')) k += 1;
-            if (k < body.len and body[k] == '\n') {
-                // One separating space, unless the text already ends in one.
-                if (out.items.len != 0 and out.items[out.items.len - 1] != ' ')
-                    out.appendAssumeCapacity(' ');
-                i = k;
-                // Also eat the indentation of the continuation line.
-                while (i + 1 < body.len and (body[i + 1] == ' ' or body[i + 1] == '\t')) i += 1;
-                continue;
-            }
-        }
-        if (body[i] == '\n' or body[i] == '\r') continue;
-        out.appendAssumeCapacity(body[i]);
-    }
-    return out.items;
-}
-
-// ---------------------------------------------------------------------------
-// §10.4 macro expansion
-// ---------------------------------------------------------------------------
 
 /// Expands the macro use whose '`' is at `at`, with `after_name` just past the
 /// name, into `pp.out`. Handles §10.7 `__LINE__` and `__FILE__`. Returns the
@@ -163,8 +149,8 @@ fn joinContinuations(pp: *Pp, body: []const u8) Error![]const u8 {
 /// with E0119 when no stack can be reserved for the nesting. Asserts that
 /// `after_name` is past `at`, so the offset returned moves the scan.
 pub fn expand(pp: *Pp, text: []const u8, at: usize, after_name: usize, name: []const u8) Error!usize {
-    std.debug.assert(after_name > at);
-    std.debug.assert(after_name <= text.len);
+    assert(after_name > at);
+    assert(after_name <= text.len);
     if (!pp.emitting()) return after_name;
     // The whole use, backtick included: `FOO.
     const sp = pp.spanAt(at, after_name);
@@ -192,7 +178,7 @@ pub fn expand(pp: *Pp, text: []const u8, at: usize, after_name: usize, name: []c
         }
         var b = pp.failWith(sp, .E0115);
         b.msg("`{s}", .{name});
-        if (diag.didYouMeanMap(name, pp.macros)) |near| {
+        if (diag.didYouMeanMap(Macro, name, pp.macros)) |near| {
             // `sp` includes the backtick, so the replacement restores it.
             const repl = try pp.arena.print("`{s}", .{near});
             b.suggest(.{ .span = sp, .replacement = repl }, "did you mean `{s}`?", .{near});
@@ -304,7 +290,38 @@ pub fn expand(pp: *Pp, text: []const u8, at: usize, after_name: usize, name: []c
     // The invocation may have spanned lines; keep the count.
     try pp.putNewlines(text[at..end]);
     // `scan` resyncs the map to `end` when this returns.
+    assert(end >= after_name);
     return end;
+}
+
+// ---- private ----
+
+/// A macro body is one logical line: `\`+newline collapses to a space. The
+/// newlines it swallowed are re-emitted by the caller, so lines still line up.
+fn joinContinuations(pp: *Pp, body: []const u8) Error![]const u8 {
+    if (std.mem.findScalar(u8, body, '\n') == null) return body;
+    var out: std.ArrayList(u8) = .empty;
+    try out.ensureTotalCapacity(pp.scratch, body.len);
+    var i: usize = 0;
+    while (i < body.len) : (i += 1) {
+        if (body[i] == '\\') {
+            var k = i + 1;
+            while (k < body.len and (body[k] == ' ' or body[k] == '\t' or body[k] == '\r')) k += 1;
+            if (k < body.len and body[k] == '\n') {
+                // One separating space, unless the text already ends in one.
+                if (out.items.len != 0 and out.items[out.items.len - 1] != ' ')
+                    out.appendAssumeCapacity(' ');
+                i = k;
+                // Also eat the indentation of the continuation line.
+                while (i + 1 < body.len and (body[i + 1] == ' ' or body[i + 1] == '\t')) i += 1;
+                continue;
+            }
+        }
+        if (body[i] == '\n' or body[i] == '\r') continue;
+        out.appendAssumeCapacity(body[i]);
+    }
+    assert(std.mem.findScalar(u8, out.items, '\n') == null);
+    return out.items;
 }
 
 /// Replaces `arg.*` with that actual argument fully macro-expanded, on
@@ -313,6 +330,9 @@ pub fn expand(pp: *Pp, text: []const u8, at: usize, after_name: usize, name: []c
 /// body rescan. Backtick-free text is kept as is.
 fn expandArg(pp: *Pp, arg: *[]const u8, at: usize) Error!void {
     if (std.mem.findScalar(u8, arg.*, '`') == null) return;
+    // The output list is swapped out for the actual's own and swapped back.
+    const out_len = pp.out.items.len;
+    defer assert(pp.out.items.len == out_len);
     const saved_out = pp.out;
     const saved_site = pp.expand_site;
     const saved_actual = pp.in_actual;
@@ -328,15 +348,13 @@ fn expandArg(pp: *Pp, arg: *[]const u8, at: usize) Error!void {
     arg.* = pp.out.items;
 }
 
-/// A macro use's trimmed actual arguments and the offset just past its `)`.
-const MacroArgs = struct { args: []const []const u8, end: usize };
-
 /// Splits the top-level comma list opening at `lparen`. Nested (), [], {},
 /// string literals and escaped identifiers are opaque. A closer that does not
 /// match its opener, or a missing `)`, is E0120. The arguments slice `text`;
 /// the list is on `pp.scratch`. Asserts that `text[lparen]` is `(`.
 fn macroArgs(pp: *Pp, text: []const u8, lparen: usize, at: usize, name: []const u8) Error!MacroArgs {
-    std.debug.assert(text[lparen] == '(');
+    assert(text[lparen] == '(');
+    assert(lparen > at);
     var args: std.ArrayList([]const u8) = .empty;
     var opens: std.ArrayList(u8) = .empty;
     var i = lparen;
@@ -384,6 +402,7 @@ fn macroArgs(pp: *Pp, text: []const u8, lparen: usize, at: usize, name: []const 
 fn oneLine(pp: *Pp, arg: []const u8) Error![]const u8 {
     if (std.mem.findScalar(u8, arg, '\n') == null) return arg;
     const copy = try pp.scratch.dupe(u8, arg);
+    defer assert(copy.len == arg.len);
     var i: usize = 0;
     while (i < copy.len) : (i += 1) {
         if (copy[i] == '"') {
@@ -401,11 +420,12 @@ fn oneLine(pp: *Pp, arg: []const u8) Error![]const u8 {
 /// on `pp.scratch`. Strings, escaped identifiers, numbers and the name after a
 /// '`' are never substituted into. Asserts one actual per formal.
 fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []const []const u8) Error![]const u8 {
-    std.debug.assert(params.len == args.len);
+    assert(params.len == args.len);
     var out: std.ArrayList(u8) = .empty;
     try out.ensureTotalCapacity(pp.scratch, body.len);
 
     var i: usize = 0;
+    defer assert(i >= body.len);
     while (i < body.len) {
         const c = body[i];
         if (c == '"') {
@@ -486,6 +506,8 @@ fn substitute(pp: *Pp, body: []const u8, params: []const []const u8, args: []con
 /// vanishes; escape sequences and everything else are copied. A body that
 /// never closes it ends the string at the end of the body.
 fn stringify(pp: *Pp, out: *std.ArrayList(u8), body: []const u8, start: usize, params: []const []const u8, args: []const []const u8) Error!usize {
+    assert(params.len == args.len);
+    assert(start <= body.len);
     try out.append(pp.scratch, '"');
     var i = start;
     while (i < body.len) {

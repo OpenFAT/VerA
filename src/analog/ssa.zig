@@ -5,52 +5,25 @@
 //! rewritten), and must treat `.phi` rows as block headers: a phi is minted on
 //! demand, so its row can sit anywhere in the chain, even after the terminator.
 //!
-//! LRM clauses this file's code cites: §3.4.4, §5.7.
+//! Cites: §3.4.4, §5.7, §5.8, §5.9.
+//!
+//! Contents:
+//! - `pub const Place = enum`
+//! - `pub const SsaBuilder = struct` (`init`, `deinit`, `newPlace`, `addPredecessor`, `sealBlock`, `writeVariable`, `readVariable`)
 
 const std = @import("std");
 const Mir = @import("ir").Mir;
+const phi_value = @import("phi_value.zig");
+const dom_tree = @import("dom_tree.zig");
 const assert = std.debug.assert;
-
 // Spelled out, not inferred: sealBlock's addPhiOperands calls readFrom.
 const Error = std.mem.Allocator.Error;
+const Dom = dom_tree.Dom;
+const Span = dom_tree.Span;
+const no_dom = dom_tree.no_dom;
 
 /// A "place" is an assignable location (a variable or a lowered temp).
 pub const Place = enum(u32) { _ };
-
-/// End-of-list sentinel for the intrusive pools. Not 0: index 0 is a real slot.
-const list_end: u32 = std.math.maxInt(u32);
-
-/// "No definition recorded for this (place, block)" in the builder's map.
-///
-/// Not `Mir.Value.undef`, which is a legitimate stored result (a phi over only
-/// self-references collapses to it); confusing the two would re-run the
-/// recursive read and re-create the collapsed phi. Cells hold
-/// `@backingInt(value) + 1` so a zeroed chunk already reads as empty.
-/// `writeVariable` asserts no overflow.
-const absent: u32 = 0;
-
-/// "This (place, block) is a join whose predecessors are being read right
-/// now"; see the ≥2-preds arm of `readJoin`. A read that meets
-/// it has come round a cycle and mints the phi there (`climb`). Never
-/// a biased Value: `writeVariable` keeps the Value space two short of it.
-const pending: u32 = std.math.maxInt(u32);
-
-/// log2 of the cells per chunk of the `(place, slot)` map. A chunk is the
-/// unit that becomes resident, so this is the map's memory granularity: 64
-/// cells (256 B) against the 1024 of a 4 KiB page. A place's cells cluster
-/// along the slots between its definition and its last read, so finer
-/// chunks keep the map near its written cells and coarser ones only add
-/// zeros; a narrower one makes the directory grow instead.
-/// Measured on the memo cells psp103 and hisimhv_va leave behind: 64 cells
-/// fill 70-77%, 16 fill 89-92% but double the directory, which costs more
-/// than the zeros it saves.
-const chunk_bits = 6;
-const chunk_len = 1 << chunk_bits;
-
-/// `BlockState.slot` of a block with no memo cell yet.
-const no_slot: u32 = std.math.maxInt(u32);
-/// `BlockState.slot` of a block whose cells live in `arm_cells`, not the map.
-const arm_slot: u32 = no_slot - 1;
 
 /// Braun-style SSA builder over one `Mir`. Blocks are created by the caller
 /// (`Mir.addBlock`); the builder records edges, writes and reads, and emits
@@ -164,69 +137,6 @@ pub const SsaBuilder = struct {
         arm_mask: u32 = 0,
     };
 
-    /// A block's node in the dominator tree, filled when it is sealed.
-    ///
-    /// A read that reaches a sealed block with no cell for its place reads
-    /// back to the block's immediate dominator: its one predecessor, or
-    /// every predecessor of a join. Where nothing wrote the place in
-    /// between, that is the dominator's value, so `climb` goes straight
-    /// there, and on up while that holds. Without it a place read at the
-    /// end of a module climbs every block after its last write, and
-    /// memoizes a cell in each join: 10^4 instances, each with an `if`, a
-    /// named generate block's exit and its own branch share, took 5.5 s and
-    /// 865 MB.
-    ///
-    /// "Nothing wrote it" compares when blocks got their rows (`born`): a
-    /// place whose written blocks were all born before, or all after, every
-    /// block between the dominator and this one (`span`) was written in none
-    /// of them. A block inside a loop (sealed while a header is open), a
-    /// loop header and a block that held an incomplete phi get the span
-    /// that holds everything, never skipped: a read there can mint a phi,
-    /// and the skip must leave the MIR exactly as Braun's walk does.
-    const Dom = struct {
-        /// The immediate dominator, or `no_dom` for a root: the entry, or
-        /// a block with an unsealed predecessor or predecessors in
-        /// different trees (a loop header).
-        parent: u32 = no_dom,
-        /// An ancestor up to twice as far as the last one (Myers' skew
-        /// binary jump pointers): a climb is O(log depth).
-        jump: u32 = no_dom,
-        depth: u32 = 0,
-        /// `clock` when the block got its row.
-        born: u32 = 0,
-        /// `born` over this block and every block between `parent` and it:
-        /// a place written in no block of it ends this block with the value
-        /// it ended `parent` with.
-        span: Span = .all,
-        /// `span` over this block up to, not including, `jump`.
-        jspan: Span = .all,
-        /// Got a successor while unsealed (`open_loops`).
-        header: bool = false,
-        /// Held an incomplete phi.
-        phi: bool = false,
-        /// Has two or more predecessors.
-        join: bool = false,
-        /// A block from this one up to, not including, `jump` has two or
-        /// more predecessors.
-        jjoin: bool = false,
-    };
-    const no_dom: u32 = std.math.maxInt(u32);
-
-    /// An interval of `born` clocks.
-    const Span = struct {
-        lo: u32,
-        hi: u32,
-        const all: Span = .{ .lo = 0, .hi = std.math.maxInt(u32) };
-        const none: Span = .{ .lo = std.math.maxInt(u32), .hi = 0 };
-        fn join(a: Span, b: Span) Span {
-            return .{ .lo = @min(a.lo, b.lo), .hi = @max(a.hi, b.hi) };
-        }
-        /// Every block born in `w` is outside `self`.
-        fn misses(self: Span, w: Span) bool {
-            return w.hi < self.lo or w.lo > self.hi;
-        }
-    };
-
     /// `dir[off..][0..len]` holds columns `base .. base + len`.
     const Row = struct { base: u32 = 0, off: u32 = 0, len: u32 = 0 };
 
@@ -244,8 +154,6 @@ pub const SsaBuilder = struct {
         assert(@sizeOf(IncompletePhi) == 12);
         assert(@sizeOf(UserNode) == 8);
         assert(@sizeOf(ArmCell) == 12);
-        // Per block, beside `block_state`; `skipUp` reads 26 of its 36 bytes.
-        assert(@sizeOf(Dom) == 36);
         assert(@sizeOf(Row) == 12);
         assert(@sizeOf(JoinRead) <= 32);
     }
@@ -478,7 +386,7 @@ pub const SsaBuilder = struct {
             }
             const i = @backingInt(b);
             if (self.skip and sealed[i]) {
-                const up = self.skipUp(w, i);
+                const up = dom_tree.skipUp(self.dom.items, w, i);
                 if (up.to != i) {
                     resolve = resolve or up.join;
                     jumped = true;
@@ -541,7 +449,7 @@ pub const SsaBuilder = struct {
         const now = self.cells.items[j.cell];
         const val = if (now != pending)
             try self.fillPhi(@fromBackingInt(@intCast(now - 1)), pairs)
-        else if (sameValue(self.mir, pairs)) |same|
+        else if (phi_value.sameValue(self.mir, pairs)) |same|
             same
         else blk: {
             const phi = try self.mir.emitPhi(self.gpa, j.block, pairs);
@@ -660,16 +568,6 @@ pub const SsaBuilder = struct {
         try self.mir.setPhiPairs(self.gpa, self.mir.valueDef(phi).inst_result, pairs);
         for (pairs) |p| try self.addUser(p.value, phi);
         return self.tryRemoveTrivialPhi(phi);
-    }
-
-    /// The one value every pair resolves to (`.undef` for no pairs), or null
-    /// when they disagree: `tryRemoveTrivialPhi`'s rule for a phi that does
-    /// not exist yet, so there is no self-reference to skip.
-    fn sameValue(mir: *const Mir, pairs: []const Mir.PhiPair) ?Mir.Value {
-        if (pairs.len == 0) return .undef;
-        const first = mir.resolveAlias(pairs[0].value);
-        for (pairs[1..]) |p| if (mir.resolveAlias(p.value) != first) return null;
-        return first;
     }
 
     /// Collapse a phi whose operands all resolve to one value (self-references
@@ -810,26 +708,6 @@ pub const SsaBuilder = struct {
         }
     }
 
-    /// The highest ancestor of `b` (itself included) where a place written
-    /// in blocks born in `w` ends with the value it has at the end of `b`:
-    /// up the tree while each block passed has a `span` `w` misses.
-    /// `join`: a block passed has two or more predecessors.
-    fn skipUp(self: *const SsaBuilder, w: Span, b: u32) struct { to: u32, join: bool } {
-        const dom = self.dom.items;
-        var x = b;
-        var join = false;
-        while (dom[x].parent != no_dom and dom[x].span.misses(w)) {
-            if (dom[x].jspan.misses(w)) {
-                join = join or dom[x].jjoin;
-                x = dom[x].jump;
-            } else {
-                join = join or dom[x].join;
-                x = dom[x].parent;
-            }
-        }
-        return .{ .to = x, .join = join };
-    }
-
     /// Record "`user` (a phi) reads `value`". Sentinels never collapse, so they
     /// get no list.
     fn addUser(self: *SsaBuilder, value: Mir.Value, user: Mir.Value) Error!void {
@@ -857,7 +735,44 @@ pub const SsaBuilder = struct {
     }
 };
 
-// -------------------------------------------------------------------------
+/// End-of-list sentinel for the intrusive pools. Not 0: index 0 is a real slot.
+const list_end: u32 = std.math.maxInt(u32);
+
+/// "No definition recorded for this (place, block)" in the builder's map.
+///
+/// Not `Mir.Value.undef`, which is a legitimate stored result (a phi over only
+/// self-references collapses to it); confusing the two would re-run the
+/// recursive read and re-create the collapsed phi. Cells hold
+/// `@backingInt(value) + 1` so a zeroed chunk already reads as empty.
+/// `writeVariable` asserts no overflow.
+const absent: u32 = 0;
+
+/// "This (place, block) is a join whose predecessors are being read right
+/// now"; see the ≥2-preds arm of `readJoin`. A read that meets
+/// it has come round a cycle and mints the phi there (`climb`). Never
+/// a biased Value: `writeVariable` keeps the Value space two short of it.
+const pending: u32 = std.math.maxInt(u32);
+
+/// log2 of the cells per chunk of the `(place, slot)` map. A chunk is the
+/// unit that becomes resident, so this is the map's memory granularity: 64
+/// cells (256 B) against the 1024 of a 4 KiB page. A place's cells cluster
+/// along the slots between its definition and its last read, so finer
+/// chunks keep the map near its written cells and coarser ones only add
+/// zeros; a narrower one makes the directory grow instead.
+/// Measured on the memo cells psp103 and hisimhv_va leave behind: 64 cells
+/// fill 70-77%, 16 fill 89-92% but double the directory, which costs more
+/// than the zeros it saves.
+const chunk_bits = 6;
+
+const chunk_len = 1 << chunk_bits;
+
+/// `BlockState.slot` of a block with no memo cell yet.
+const no_slot: u32 = std.math.maxInt(u32);
+
+/// `BlockState.slot` of a block whose cells live in `arm_cells`, not the map.
+const arm_slot: u32 = no_slot - 1;
+
+// ---- private ----
 
 test "ssa: diamond phi, trivial collapse, loop phi, undefined read" {
     const gpa = std.testing.allocator;
@@ -1059,7 +974,7 @@ test "ssa: a sealed block with no predecessor reads undef, and sealing twice is 
     try std.testing.expectEqual(Mir.Value.undef, try b.readVariable(x, orphan));
     try std.testing.expectEqual(Mir.Value.f_two, try b.readVariable(x, entry));
     // No phi row was needed for either read.
-    try std.testing.expectEqual(@as(usize, 0), mir.insts.len);
+    try std.testing.expectEqual(@as(u32, 0), mir.instCount());
 }
 
 test "ssa: a short single-predecessor chain is climbed without memo cells, a long one memoizes its path" {

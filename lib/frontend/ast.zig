@@ -10,25 +10,103 @@
 //!
 //! This file holds the handles and `SourceFile`, the root that owns every
 //! store; the string table is `base`'s (interner.zig). The row types live by
-//! table: expressions in ast_expr.zig, declarations in ast_decl.zig, statements and their walks in
-//! ast_stmt.zig; the aliases below are their API.
+//! table: expressions in ast_expr.zig, module-scope declarations in
+//! ast_decl.zig, IEEE 1364 primitives in ast_prim.zig, the other design
+//! elements in ast_design.zig, statements and their walks in ast_stmt.zig;
+//! the aliases below are their API.
+//!
+//! Contents:
+//! - `pub const ExprId = @import("base").ExprId`
+//! - `pub const StrId = @import("base").StrId`
+//! - `pub const StringInterner = @import("base").StringInterner`
+//! - `pub const Type = @import("base").Type`
+//! - `pub const Direction = @import("base").Direction`
+//! - `pub const StmtId = enum(u32)`
+//! - `pub const PotentialOrFlow = enum(u8)`
+//! - `pub const UnaryOp = expr_file.UnaryOp`
+//! - `pub const BinaryOp = expr_file.BinaryOp`
+//! - `pub const branch_ref_hier_unnamed = expr_file.branch_ref_hier_unnamed`
+//! - `pub const ExprTag = expr_file.ExprTag`
+//! - `pub const Node = expr_file.Node`
+//! - `pub const ExprStore = expr_file.ExprStore`
+//! - `pub const IntLiteral = expr_file.IntLiteral`
+//! - `pub const Dim = decl_file.Dim`
+//! - `pub const ValueRange = decl_file.ValueRange`
+//! - `pub const ParamDecl = decl_file.ParamDecl`
+//! - `pub const AliasParam = decl_file.AliasParam`
+//! - `pub const VarDecl = decl_file.VarDecl`
+//! - `pub const NetKind = decl_file.NetKind`
+//! - `pub const Strength = decl_file.Strength`
+//! - `pub const NetStrength = decl_file.NetStrength`
+//! - `pub const Delay3 = decl_file.Delay3`
+//! - `pub const NetDecl = decl_file.NetDecl`
+//! - `pub const BranchDecl = decl_file.BranchDecl`
+//! - `pub const Port = decl_file.Port`
+//! - `pub const FuncArg = decl_file.FuncArg`
+//! - `pub const Subroutine = decl_file.Subroutine`
+//! - `pub const EventDecl = decl_file.EventDecl`
+//! - `pub const TfPort = decl_file.TfPort`
+//! - `pub const FuncDecl = decl_file.FuncDecl`
+//! - `pub const AnalogBlock = decl_file.AnalogBlock`
+//! - `pub const DiscreteBlock = decl_file.DiscreteBlock`
+//! - `pub const ContAssign = decl_file.ContAssign`
+//! - `pub const GateKind = prim_file.GateKind`
+//! - `pub const GateInst = prim_file.GateInst`
+//! - `pub const SpecEdge = prim_file.SpecEdge`
+//! - `pub const SpecPolarity = prim_file.SpecPolarity`
+//! - `pub const SpecPath = prim_file.SpecPath`
+//! - `pub const PulseControl = prim_file.PulseControl`
+//! - `pub const TimingCheck = prim_file.TimingCheck`
+//! - `pub const PullInst = prim_file.PullInst`
+//! - `pub const SwitchKind = prim_file.SwitchKind`
+//! - `pub const SwitchInst = prim_file.SwitchInst`
+//! - `pub const PrimTerm = prim_file.PrimTerm`
+//! - `pub const primTerms = prim_file.primTerms`
+//! - `pub const setPrimTerm = prim_file.setPrimTerm`
+//! - `pub const PortConn = decl_file.PortConn`
+//! - `pub const ParamOverride = decl_file.ParamOverride`
+//! - `pub const Defparam = decl_file.Defparam`
+//! - `pub const Instance = decl_file.Instance`
+//! - `pub const ModuleDecl = decl_file.ModuleDecl`
+//! - `pub const LteAttr = design_file.LteAttr`
+//! - `pub const NatureAttr = design_file.NatureAttr`
+//! - `pub const AttributeOwner = design_file.AttributeOwner`
+//! - `pub const AttributeBinding = design_file.AttributeBinding`
+//! - `pub const NatureDecl = design_file.NatureDecl`
+//! - `pub const DisciplineDecl = design_file.DisciplineDecl`
+//! - `pub const ParamsetDecl = design_file.ParamsetDecl`
+//! - `pub const ParamsetOverride = design_file.ParamsetOverride`
+//! - `pub const ConnectRulesDecl = design_file.ConnectRulesDecl`
+//! - `pub const ConnectInsertion = design_file.ConnectInsertion`
+//! - `pub const ConnectResolution = design_file.ConnectResolution`
+//! - `pub const UdpRow = prim_file.UdpRow`
+//! - `pub const UdpDecl = prim_file.UdpDecl`
+//! - `pub const LibCell = design_file.LibCell`
+//! - `pub const ConfigRule = design_file.ConfigRule`
+//! - `pub const ConfigDecl = design_file.ConfigDecl`
+//! - `pub const Stmt = stmt_file.Stmt`
+//! - `pub const StmtRow = stmt_file.StmtRow`
+//! - `pub const ProcContinuous = stmt_file.ProcContinuous`
+//! - `pub const CaseKind = stmt_file.CaseKind`
+//! - `pub const CaseArm = stmt_file.CaseArm`
+//! - `pub const GenItems = stmt_file.GenItems`
+//! - `pub const SeqBlock = stmt_file.SeqBlock`
+//! - `pub const SourceFile = struct`: `HierIndex`, `hierIndices`, `stmtLte`, `exprLte`, `userModules`, `tablePrimitives`, `netlistModules`, `empty`, `Compilation`, `overlay`, `deinit`, `seedFrom`, `addStmt`, `stmt`, `stmtTok`, `seqBlockMut`, `seqBlocks`, `next`, `Edge`, `stmtEdges`, `stmtWrites`, `lvalueBase`, `str`, `intern`, `natureAttrExpr`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const expr_file = @import("ast_expr.zig");
 const decl_file = @import("ast_decl.zig");
+const prim_file = @import("ast_prim.zig");
+const design_file = @import("ast_design.zig");
 const stmt_file = @import("ast_stmt.zig");
-
-// ---------------------------------------------------------------------------
-// Handles
-// ---------------------------------------------------------------------------
-
 /// Handle into the expression columns (LRM annex A expression grammar),
 /// `base`'s.
 pub const ExprId = @import("base").ExprId;
-/// Handle into the statement pool. LRM §5 behavioral statements.
-pub const StmtId = enum(u32) { none = std.math.maxInt(u32), _ };
+
 /// Handle into the string intern table. LRM §2.8 identifiers, §2.7 strings.
 pub const StrId = @import("base").StrId;
+
 /// The §2.7/§2.8 intern table (`base`'s), kept here as the AST's own name.
 pub const StringInterner = @import("base").StringInterner;
 
@@ -40,85 +118,152 @@ pub const Type = @import("base").Type;
 /// (`base`'s, which documents the variants).
 pub const Direction = @import("base").Direction;
 
+const testing = std.testing;
+
+/// Handle into the statement pool. LRM §5 behavioral statements.
+pub const StmtId = enum(u32) { none = std.math.maxInt(u32), _ };
+
 /// LRM §3.6.1 / A.1.7 `potential_or_flow`.
 pub const PotentialOrFlow = enum(u8) { potential, flow };
 
 // Expressions: LRM §4.2-§4.6, A.8 (ast_expr.zig).
 pub const UnaryOp = expr_file.UnaryOp;
+
 pub const BinaryOp = expr_file.BinaryOp;
+
 pub const branch_ref_hier_unnamed = expr_file.branch_ref_hier_unnamed;
+
 pub const ExprTag = expr_file.ExprTag;
+
 pub const Node = expr_file.Node;
+
 pub const ExprStore = expr_file.ExprStore;
+
+pub const IntLiteral = expr_file.IntLiteral;
 
 // Declarations: LRM ch3, §4.7, ch6, §7.7, A.5, IEEE 1364-2005 §13.3 (ast_decl.zig).
 pub const Dim = decl_file.Dim;
+
 pub const ValueRange = decl_file.ValueRange;
+
 pub const ParamDecl = decl_file.ParamDecl;
+
 pub const AliasParam = decl_file.AliasParam;
+
 pub const VarDecl = decl_file.VarDecl;
+
 pub const NetKind = decl_file.NetKind;
+
 pub const Strength = decl_file.Strength;
+
 pub const NetStrength = decl_file.NetStrength;
+
 pub const Delay3 = decl_file.Delay3;
+
 pub const NetDecl = decl_file.NetDecl;
+
 pub const BranchDecl = decl_file.BranchDecl;
+
 pub const Port = decl_file.Port;
+
 pub const FuncArg = decl_file.FuncArg;
+
 pub const Subroutine = decl_file.Subroutine;
+
 pub const EventDecl = decl_file.EventDecl;
+
 pub const TfPort = decl_file.TfPort;
+
 pub const FuncDecl = decl_file.FuncDecl;
+
 pub const AnalogBlock = decl_file.AnalogBlock;
+
 pub const DiscreteBlock = decl_file.DiscreteBlock;
+
 pub const ContAssign = decl_file.ContAssign;
-pub const GateKind = decl_file.GateKind;
-pub const GateInst = decl_file.GateInst;
-pub const SpecEdge = decl_file.SpecEdge;
-pub const SpecPolarity = decl_file.SpecPolarity;
-pub const SpecPath = decl_file.SpecPath;
-pub const PulseControl = decl_file.PulseControl;
-pub const TimingCheck = decl_file.TimingCheck;
-pub const PullInst = decl_file.PullInst;
-pub const SwitchKind = decl_file.SwitchKind;
-pub const SwitchInst = decl_file.SwitchInst;
-pub const PrimTerm = decl_file.PrimTerm;
-pub const primTerms = decl_file.primTerms;
-pub const setPrimTerm = decl_file.setPrimTerm;
+
+pub const GateKind = prim_file.GateKind;
+
+pub const GateInst = prim_file.GateInst;
+
+pub const SpecEdge = prim_file.SpecEdge;
+
+pub const SpecPolarity = prim_file.SpecPolarity;
+
+pub const SpecPath = prim_file.SpecPath;
+
+pub const PulseControl = prim_file.PulseControl;
+
+pub const TimingCheck = prim_file.TimingCheck;
+
+pub const PullInst = prim_file.PullInst;
+
+pub const SwitchKind = prim_file.SwitchKind;
+
+pub const SwitchInst = prim_file.SwitchInst;
+
+pub const PrimTerm = prim_file.PrimTerm;
+
+pub const primTerms = prim_file.primTerms;
+
+pub const setPrimTerm = prim_file.setPrimTerm;
+
 pub const PortConn = decl_file.PortConn;
+
 pub const ParamOverride = decl_file.ParamOverride;
+
 pub const Defparam = decl_file.Defparam;
+
 pub const Instance = decl_file.Instance;
+
 pub const ModuleDecl = decl_file.ModuleDecl;
-pub const LteAttr = decl_file.LteAttr;
-pub const NatureAttr = decl_file.NatureAttr;
-pub const AttributeOwner = decl_file.AttributeOwner;
-pub const AttributeBinding = decl_file.AttributeBinding;
-pub const NatureDecl = decl_file.NatureDecl;
-pub const DisciplineDecl = decl_file.DisciplineDecl;
-pub const ParamsetDecl = decl_file.ParamsetDecl;
-pub const ParamsetOverride = decl_file.ParamsetOverride;
-pub const ConnectRulesDecl = decl_file.ConnectRulesDecl;
-pub const ConnectInsertion = decl_file.ConnectInsertion;
-pub const ConnectResolution = decl_file.ConnectResolution;
-pub const UdpRow = decl_file.UdpRow;
-pub const UdpDecl = decl_file.UdpDecl;
-pub const LibCell = decl_file.LibCell;
-pub const ConfigRule = decl_file.ConfigRule;
-pub const ConfigDecl = decl_file.ConfigDecl;
+
+pub const LteAttr = design_file.LteAttr;
+
+pub const NatureAttr = design_file.NatureAttr;
+
+pub const AttributeOwner = design_file.AttributeOwner;
+
+pub const AttributeBinding = design_file.AttributeBinding;
+
+pub const NatureDecl = design_file.NatureDecl;
+
+pub const DisciplineDecl = design_file.DisciplineDecl;
+
+pub const ParamsetDecl = design_file.ParamsetDecl;
+
+pub const ParamsetOverride = design_file.ParamsetOverride;
+
+pub const ConnectRulesDecl = design_file.ConnectRulesDecl;
+
+pub const ConnectInsertion = design_file.ConnectInsertion;
+
+pub const ConnectResolution = design_file.ConnectResolution;
+
+pub const UdpRow = prim_file.UdpRow;
+
+pub const UdpDecl = prim_file.UdpDecl;
+
+pub const LibCell = design_file.LibCell;
+
+pub const ConfigRule = design_file.ConfigRule;
+
+pub const ConfigDecl = design_file.ConfigDecl;
 
 // Statements: LRM ch5, A.6 (ast_stmt.zig).
 pub const Stmt = stmt_file.Stmt;
-pub const StmtRow = stmt_file.StmtRow;
-pub const ProcContinuous = stmt_file.ProcContinuous;
-pub const CaseKind = stmt_file.CaseKind;
-pub const CaseArm = stmt_file.CaseArm;
-pub const GenItems = stmt_file.GenItems;
-pub const SeqBlock = stmt_file.SeqBlock;
 
-// ---------------------------------------------------------------------------
-// Source file: LRM §1 source_text, A.1.2
-// ---------------------------------------------------------------------------
+pub const StmtRow = stmt_file.StmtRow;
+
+pub const ProcContinuous = stmt_file.ProcContinuous;
+
+pub const CaseKind = stmt_file.CaseKind;
+
+pub const CaseArm = stmt_file.CaseArm;
+
+pub const GenItems = stmt_file.GenItems;
+
+pub const SeqBlock = stmt_file.SeqBlock;
 
 /// Root of one parsed file (LRM §1 source_text, annex A). Arena-owned; the
 /// decl slices are never freed by `deinit`.
@@ -156,7 +301,7 @@ pub const SourceFile = struct {
     configs: []const ConfigDecl = &.{}, // IEEE 1364-2005 §13.3
 
     /// How many leading entries of `modules` are the annex E prelude (Table E.1
-    /// SPICE primitives, prepended as source by `Preprocessor.spice_primitives`)
+    /// SPICE primitives, prepended as source by `annex_e.spice_primitives`)
     /// rather than the user's declarations. E.3.3 prefers a user module of the
     /// same name, so lookups search `userModules()` first; and §6.2.2's top must
     /// be a module the user wrote. Kept with `--no-std-defs` (E.2); set by the caller,
@@ -165,7 +310,7 @@ pub const SourceFile = struct {
     /// How many leading entries of `natures` are annex D.1's, preloaded with
     /// the prelude. Zero with `--no-std-defs`; set by the caller.
     builtin_natures: u32 = 0,
-    /// The source `include`d annex D.1 itself (`Preprocessor.Output.annex_d_included`),
+    /// The source `include`d annex D.1 itself (`preprocessor.Output.annex_d_included`),
     /// so the `builtin_natures` take part in §3.13.2's uniqueness rule
     /// (specification/Vague_Decisions.md VD-096). Set by the caller.
     annex_d_included: bool = false,
@@ -216,6 +361,7 @@ pub const SourceFile = struct {
     /// whose main token is `tok`, in segment order; empty when every select
     /// folded. Linear in `hier_indices`, which only genvar-indexed names fill.
     pub fn hierIndices(self: *const SourceFile, tok: u32) []const ExprId {
+        assert(tok != std.math.maxInt(u32));
         for (self.hier_indices.items) |h| if (h.tok == tok) return h.indices;
         return &.{};
     }
@@ -241,7 +387,9 @@ pub const SourceFile = struct {
 
     /// Returns `modules` minus the annex E prelude. See `builtin_modules`.
     pub fn userModules(self: *const SourceFile) []const ModuleDecl {
-        return self.modules[@min(self.builtin_modules, self.modules.len)..];
+        const user = self.modules[@min(self.builtin_modules, self.modules.len)..];
+        assert(user.len <= self.modules.len);
+        return user;
     }
 
     /// Returns the Table E.1 rows: the prelude minus its netlist-derived tail.
@@ -275,7 +423,7 @@ pub const SourceFile = struct {
     /// `hier_indices` are borrowed from `base` (never appended to). `base` must outlive the overlay and
     /// must not change while it lives. Asserts `base` is a parse.
     pub fn overlay(base: *const SourceFile, c: Compilation) SourceFile {
-        std.debug.assert(base.base == null);
+        assert(base.base == null);
         return .{
             .base = base,
             .strings = .continuing(&base.strings),
@@ -339,11 +487,11 @@ pub const SourceFile = struct {
     /// counts (`builtin_modules` and the rest) are not copied.
     /// On OOM `self` holds a partial copy that `deinit(gpa)` frees.
     /// Asserts `src` is a parse, not an overlay.
-    pub fn seedFrom(self: *SourceFile, gpa: std.mem.Allocator, src: *const SourceFile) !void {
-        std.debug.assert(src.base == null and self.base == null);
-        std.debug.assert(self.strings.strings.items.len == 0);
-        std.debug.assert(self.exprs.nodes.len == 0);
-        std.debug.assert(self.stmts.items.len == 0);
+    pub fn seedFrom(self: *SourceFile, gpa: std.mem.Allocator, src: *const SourceFile) std.mem.Allocator.Error!void {
+        assert(src.base == null and self.base == null);
+        assert(self.strings.len() == 0);
+        assert(self.exprs.nodes.len == 0);
+        assert(self.stmts.items.len == 0);
         self.strings = try src.strings.clone(gpa);
         self.exprs.nodes = try src.exprs.nodes.clone(gpa);
         self.exprs.pool = try src.exprs.pool.clone(gpa);
@@ -379,9 +527,9 @@ pub const SourceFile = struct {
     /// `.block`'s `SeqBlock` goes to `blocks`. On OOM nothing is appended.
     /// Invalidates `seqBlockMut` pointers and `seqBlocks` iterators.
     /// Asserts the pool holds fewer than `maxInt(u32)` statements.
-    pub fn addStmt(self: *SourceFile, gpa: std.mem.Allocator, s: Stmt, main_tok: u32) !StmtId {
+    pub fn addStmt(self: *SourceFile, gpa: std.mem.Allocator, s: Stmt, main_tok: u32) std.mem.Allocator.Error!StmtId {
         const id: u32 = self.baseStmts() + @as(u32, @intCast(self.stmts.items.len));
-        std.debug.assert(id != @backingInt(StmtId.none));
+        assert(id != @backingInt(StmtId.none));
         try self.stmts.ensureUnusedCapacity(gpa, 1);
         try self.stmt_toks.ensureUnusedCapacity(gpa, 1);
         if (s == .block) try self.blocks.ensureUnusedCapacity(gpa, 1);
@@ -393,13 +541,17 @@ pub const SourceFile = struct {
             inline else => |payload, tag| @unionInit(StmtRow, @tagName(tag), payload), // else: every other arm is stored as it is
         });
         self.stmt_toks.appendAssumeCapacity(main_tok);
+        // The token column is parallel to the pool.
+        assert(self.stmt_toks.items.len == self.stmts.items.len);
         return @fromBackingInt(@intCast(id));
     }
 
     /// Returns statement `id` by value, since the pool may grow during parsing.
     pub fn stmt(self: *const SourceFile, id: StmtId) Stmt {
+        assert(id != .none);
         const o = self.baseStmts();
         if (@backingInt(id) < o) return self.base.?.stmt(id);
+        assert(@backingInt(id) - o < self.stmts.items.len);
         return switch (self.stmts.items[@backingInt(id) - o]) {
             .block => |b| .{ .block = self.blocks.items[@backingInt(b) - self.baseBlocks()] },
             inline else => |payload, tag| @unionInit(Stmt, @tagName(tag), payload), // else: every other arm is stored as it is
@@ -408,6 +560,8 @@ pub const SourceFile = struct {
 
     /// Returns the token statement `id` is reported at.
     pub fn stmtTok(self: *const SourceFile, id: StmtId) u32 {
+        assert(id != .none);
+        assert(self.stmt_toks.items.len == self.stmts.items.len);
         const o = self.baseStmts();
         if (@backingInt(id) < o) return self.base.?.stmtTok(id);
         return self.stmt_toks.items[@backingInt(id) - o];
@@ -418,7 +572,8 @@ pub const SourceFile = struct {
     /// is a `.block` and this file is a parse. Invalidated by the next
     /// `addStmt`.
     pub fn seqBlockMut(self: *SourceFile, id: StmtId) *SeqBlock {
-        std.debug.assert(self.base == null);
+        assert(self.base == null);
+        assert(self.stmts.items[@backingInt(id)] == .block);
         return &self.blocks.items[@backingInt(self.stmts.items[@backingInt(id)].block)];
     }
 
@@ -439,6 +594,7 @@ pub const SourceFile = struct {
 
         /// Returns the next block, or null after the last.
         pub fn next(it: *SeqBlockIterator) ?*const SeqBlock {
+            assert(it.i <= it.first.len + it.then.len);
             if (it.i == it.first.len + it.then.len) return null;
             defer it.i += 1;
             return if (it.i < it.first.len) &it.first[it.i] else &it.then[it.i - it.first.len];
@@ -454,24 +610,65 @@ pub const SourceFile = struct {
 
     /// Returns the interned name `id`; asserts `id != .none`.
     pub fn str(self: *const SourceFile, id: StrId) []const u8 {
+        assert(id != .none);
         return self.strings.get(id);
     }
 
     /// Interns `s`, which is borrowed and must outlive the file.
-    pub fn intern(self: *SourceFile, gpa: std.mem.Allocator, s: []const u8) !StrId {
-        return self.strings.intern(gpa, s);
+    pub fn intern(self: *SourceFile, gpa: std.mem.Allocator, s: []const u8) std.mem.Allocator.Error!StrId {
+        const id = try self.strings.intern(gpa, s);
+        assert(id != .none);
+        return id;
     }
 
-    pub const natureAttrExpr = decl_file.natureAttrExpr;
+    pub const natureAttrExpr = design_file.natureAttrExpr;
 };
+
+// ---- private ----
+
+fn addStmtsOom(gpa: std.mem.Allocator) !void {
+    var f: SourceFile = .empty;
+    defer f.deinit(gpa);
+    for (0..20) |i| {
+        const rows = f.stmts.items.len;
+        const blocks = f.blocks.items.len;
+        const s: Stmt = if (i % 3 == 0) .{ .block = .{} } else .empty;
+        _ = f.addStmt(gpa, s, @intCast(i)) catch |err| {
+            // Nothing is appended, to any of the three columns.
+            try testing.expectEqual(rows, f.stmts.items.len);
+            try testing.expectEqual(rows, f.stmt_toks.items.len);
+            try testing.expectEqual(blocks, f.blocks.items.len);
+            return err;
+        };
+    }
+    try testing.expectEqual(@as(usize, 7), f.blocks.items.len);
+}
+
+/// The appends the overlay test makes: `n` = 0 the parse's half, 1 the
+/// overlay's.
+fn appendFileHalf(f: *SourceFile, gpa: std.mem.Allocator, n: u32) !StmtId {
+    _ = try f.intern(gpa, "x");
+    const e = try f.exprs.addInt(gpa, n, n);
+    _ = try f.addStmt(gpa, .{ .contribute = .{ .lhs = e, .rhs = e } }, 10 + n);
+    return f.addStmt(gpa, .{ .block = .{ .name = try f.intern(gpa, if (n == 0) "x" else "y") } }, 20 + n);
+}
+
+fn seedOom(gpa: std.mem.Allocator, src: *const SourceFile) !void {
+    var f: SourceFile = .empty;
+    // On OOM `f` holds a partial copy, which `deinit` frees.
+    defer f.deinit(gpa);
+    try f.seedFrom(gpa, src);
+    try testing.expectEqual(src.stmts.items.len, f.stmts.items.len);
+    try testing.expectEqual(src.exprs.logic.items.len, f.exprs.logic.items.len);
+}
 
 test {
     _ = expr_file;
     _ = decl_file;
+    _ = prim_file;
+    _ = design_file;
     _ = stmt_file;
 }
-
-const testing = std.testing;
 
 test "the module views partition `modules` in order, counts clamped to its length" {
     var mods: [5]ModuleDecl = undefined;
@@ -540,7 +737,7 @@ test "addStmt/stmt round-trip every arm, and the token column follows" {
         .{ .jump = .{ .kind = .ret, .value = e } },
     };
     // One of each arm, so a new arm must be added here.
-    comptime std.debug.assert(arms.len == @typeInfo(Stmt).@"union".field_names.len);
+    comptime assert(arms.len == @typeInfo(Stmt).@"union".field_names.len);
     for (arms, 0..) |arm, i| {
         const id = try f.addStmt(gpa, arm, @intCast(i));
         try testing.expectEqual(@as(u32, @intCast(i)), @backingInt(id));
@@ -548,24 +745,6 @@ test "addStmt/stmt round-trip every arm, and the token column follows" {
         try testing.expectEqual(@as(u32, @intCast(i)), f.stmtTok(id));
     }
     try testing.expectEqual(@as(usize, 1), f.blocks.items.len);
-}
-
-fn addStmtsOom(gpa: std.mem.Allocator) !void {
-    var f: SourceFile = .empty;
-    defer f.deinit(gpa);
-    for (0..20) |i| {
-        const rows = f.stmts.items.len;
-        const blocks = f.blocks.items.len;
-        const s: Stmt = if (i % 3 == 0) .{ .block = .{} } else .empty;
-        _ = f.addStmt(gpa, s, @intCast(i)) catch |err| {
-            // Nothing is appended, to any of the three columns.
-            try testing.expectEqual(rows, f.stmts.items.len);
-            try testing.expectEqual(rows, f.stmt_toks.items.len);
-            try testing.expectEqual(blocks, f.blocks.items.len);
-            return err;
-        };
-    }
-    try testing.expectEqual(@as(usize, 7), f.blocks.items.len);
 }
 
 test "addStmt appends nothing on OOM" {
@@ -629,15 +808,6 @@ test "seedFrom copies the growing stores, borrows the decls, and the copy grows 
     try testing.expectEqual(@as(usize, 1), src.lte_attrs.items.len);
 }
 
-/// The appends the overlay test makes: `n` = 0 the parse's half, 1 the
-/// overlay's.
-fn appendFileHalf(f: *SourceFile, gpa: std.mem.Allocator, n: u32) !StmtId {
-    _ = try f.intern(gpa, "x");
-    const e = try f.exprs.addInt(gpa, n, n);
-    _ = try f.addStmt(gpa, .{ .contribute = .{ .lhs = e, .rhs = e } }, 10 + n);
-    return f.addStmt(gpa, .{ .block = .{ .name = try f.intern(gpa, if (n == 0) "x" else "y") } }, 20 + n);
-}
-
 test "overlay: the parse's ids read through it, its own continue them, and the parse never changes" {
     const gpa = testing.allocator;
     var parse: SourceFile = .empty;
@@ -676,15 +846,6 @@ test "overlay: the parse's ids read through it, its own continue them, and the p
     try testing.expectEqual(@as(usize, 2), parse.stmts.items.len);
     try testing.expectEqual(@as(u32, 1), parse.exprs.len());
     try testing.expectEqual(@as(?StrId, null), parse.strings.find("y"));
-}
-
-fn seedOom(gpa: std.mem.Allocator, src: *const SourceFile) !void {
-    var f: SourceFile = .empty;
-    // On OOM `f` holds a partial copy, which `deinit` frees.
-    defer f.deinit(gpa);
-    try f.seedFrom(gpa, src);
-    try testing.expectEqual(src.stmts.items.len, f.stmts.items.len);
-    try testing.expectEqual(src.exprs.logic.items.len, f.exprs.logic.items.len);
 }
 
 test "seedFrom on OOM leaves a partial copy that deinit frees, at every allocation" {

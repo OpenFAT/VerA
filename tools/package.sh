@@ -14,8 +14,10 @@
 #   PKGBUILD                                  (AUR vera-bin, packaging/aur/)
 #   vera.rb                                   (Homebrew, packaging/homebrew/)
 # The PKGBUILD and the formula download the release tarballs, so their
-# sha256 fields are those tarballs' own; the contract and LICENSE fields are
-# this tree's files, which the tag serves from raw.githubusercontent.com.
+# sha256 fields are those tarballs' own; the LICENSE field is this tree's file,
+# which the tag serves from raw.githubusercontent.com, and the contract field is
+# the tag's source archive (lib/contract.zig and the lib/contract/ it imports),
+# downloaded here once the tag is pushed (all zeros before, on a pull request).
 # Needs nfpm on PATH (`nix shell nixpkgs#nfpm`).
 set -euo pipefail
 check=; [ "${1:-}" = --check ] && { check=1; shift; }
@@ -46,6 +48,15 @@ rm -rf pkg
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 tarball() { local f="vera-v$v-$1.tar.gz"; [ -f "$f" ] || { echo "package.sh: $f is missing" >&2; exit 1; }; sha "$f"; }
+# Before the tag is pushed (a pull request's cross.yaml run) the archive does
+# not exist yet: the recipes then carry an all-zero hash, which no download
+# matches, and say so. publish.yaml runs on the pushed tag and hashes the real one.
+if body=$(curl -fsSL "https://github.com/OpenFAT/VerA/archive/refs/tags/v$v.tar.gz" | sha256sum); then
+  archive=${body%% *}
+else
+  archive=0000000000000000000000000000000000000000000000000000000000000000
+  echo "package.sh: tag v$v is not pushed; the recipes' contract archive hash is all zeros" >&2
+fi
 zig=$(sed -n 's/.*\.minimum_zig_version = "\(.*\)".*/\1/p' "$root/build.zig.zon")
 render() {
   sed -e "s|@VERSION@|$v|g" -e "s|@ZIG@|$zig|g" \
@@ -53,7 +64,7 @@ render() {
       -e "s|@AARCH64_LINUX_SHA256@|$(tarball aarch64-linux-gnu)|g" \
       -e "s|@X86_64_MACOS_SHA256@|$(tarball x86_64-macos)|g" \
       -e "s|@AARCH64_MACOS_SHA256@|$(tarball aarch64-macos)|g" \
-      -e "s|@CONTRACT_SHA256@|$(sha "$root/lib/contract.zig")|g" \
+      -e "s|@CONTRACT_ARCHIVE_SHA256@|$archive|g" \
       -e "s|@LICENSE_SHA256@|$(sha "$root/LICENSE")|g" "$1"
 }
 render "$root/packaging/aur/PKGBUILD.in" > PKGBUILD

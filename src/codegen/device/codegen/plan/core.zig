@@ -2,6 +2,11 @@
 //! computed once per eval: its live-out set and field order, the §5.6.1.2
 //! path latches and §5.10 held values that read it, its name, and the float
 //! mode it compiles in. Clauses: §4.3, §4.5, §5.6.1.2, §5.9, §5.10, §9.4.
+//!
+//! Contents:
+//! - `pub const Error = std.mem.Allocator.Error`
+//! - `pub const Core = struct`
+//! - `pub fn plan(in: Input, jobs: []const Job) Error!Core`
 
 const std = @import("std");
 const Mir = @import("ir").Mir;
@@ -13,10 +18,10 @@ const float_mode = @import("../float/mode.zig");
 const plan_setup = @import("prove").setup;
 const callee = Mir.callee;
 const assert = std.debug.assert;
+const Fixture = @import("prove").Fixture;
 
 /// Allocation only: a name has no length bound (VAMS 2.8, VD-054).
 pub const Error = std.mem.Allocator.Error;
-const none_u32 = std.math.maxInt(u32);
 
 /// The shared core's plan.
 pub const Core = struct {
@@ -61,7 +66,6 @@ pub const Core = struct {
     /// whose caller stores every held value back unconditionally. Empty: none.
     in_place: []const bool = &.{},
 };
-
 // ---------------------------------------------------- the shared core ----
 //
 // One declaration returns every unit target, rather than a function per
@@ -72,6 +76,89 @@ pub const Core = struct {
 // per `eval`), so merging gives one core per `eval` and one per `q`. The cost
 // is the per-unit `@setFloatMode` (see `Core.mode`).
 
+const none_u32 = std.math.maxInt(u32);
+
+const Mark = struct {
+    in: Input,
+    cds: plan_setup.ControlDeps,
+    need: []bool,
+    blk: []bool,
+    work: std.ArrayList(Mir.Value) = .empty,
+    /// Blocks marked by `block` whose controlling branches are not yet.
+    blk_work: std.ArrayList(u32) = .empty,
+
+    fn mark(m: *Mark, v0: Mir.Value) Error!void {
+        assert(m.need.len == m.in.an.nv);
+        const v = m.in.an.rv(v0);
+        if (m.need[@backingInt(v)]) return;
+        m.need[@backingInt(v)] = true;
+        try m.work.append(m.in.arena, v);
+        assert(m.work.items.len <= m.in.an.nv); // `need` queues each value once
+    }
+
+    /// Block `b` runs only as the branches it is control-dependent on say.
+    /// A worklist, not a recursion: a chain of control dependences is as
+    /// deep as the source nests its `if`s, which has no bound.
+    fn block(m: *Mark, b: u32) Error!void {
+        assert(m.blk.len == m.in.an.nb);
+        try m.pushBlock(b);
+        while (m.blk_work.pop()) |bb| for (m.cds.of(bb)) |c| {
+            try m.mark(plan_setup.branchCond(m.in, c.branch).?);
+            try m.pushBlock(c.branch);
+        };
+        if (b < m.blk.len) assert(m.blk[b]);
+    }
+
+    fn pushBlock(m: *Mark, b: u32) Error!void {
+        assert(m.blk.len == m.in.an.nb);
+        if (b >= m.blk.len or m.blk[b]) return;
+        m.blk[b] = true;
+        try m.blk_work.append(m.in.arena, b);
+        assert(m.blk_work.items.len <= m.in.an.nb); // `blk` queues each block once
+    }
+
+    fn visit(m: *Mark, v: Mir.Value) Error!void {
+        assert(m.need.len == m.in.an.nv);
+        assert(m.need[@backingInt(v)]); // Only a marked value is queued.
+        const def = m.in.mir.valueDef(v);
+        if (def != .inst_result) return;
+        const inst = def.inst_result;
+        try m.block(m.in.an.def_block[@backingInt(v)]);
+        switch (m.in.mir.instData(inst)) {
+            .unary => |d| try m.mark(d.operand),
+            .binary => |d| {
+                try m.mark(d.lhs);
+                try m.mark(d.rhs);
+            },
+            .ternary => |d| {
+                try m.mark(d.cond);
+                try m.mark(d.then_val);
+                try m.mark(d.else_val);
+            },
+            .call => |d| for (d.args) |x| try m.mark(x),
+            .load => |d| {
+                try m.mark(d.arr);
+                try m.mark(d.index);
+            },
+            .store => |d| {
+                try m.mark(d.arr);
+                try m.mark(d.index);
+                try m.mark(d.value);
+            },
+            // A phi's value is its operand on the edge taken, and the edge
+            // taken is its predecessor's branch.
+            .phi => |d| for (0..d.count) |j| {
+                const p = m.in.mir.phiPair(inst, @intCast(j));
+                try m.mark(p.value);
+                const pb: u32 = @backingInt(p.block);
+                try m.block(pb);
+                if (plan_setup.branchCond(m.in, pb)) |c| try m.mark(c);
+            },
+            .anew, .branch, .jump => {},
+        }
+    }
+};
+
 /// Decides what the one emitted body returns: every unit target,
 /// deduplicated and in job order, plus the path-latch operands; slices are
 /// owned by `in.arena`.
@@ -81,6 +168,7 @@ pub const Core = struct {
 /// declaration names: adding a contribution at the end of a module appends
 /// fields and renumbers none. Fails only on allocation.
 pub fn plan(in: Input, jobs: []const Job) Error!Core {
+    assert(in.an.vty.len == in.an.nv);
     const a = in.arena;
     var self: Core = .{};
     self.lo_idx = try a.alloc(u32, in.an.nv);
@@ -127,10 +215,14 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
         self.acc_vals = qv.items;
         self.acc_lo = ql.items;
     }
+    assert(self.prev_vals.len == self.prev_lo.len);
+    assert(self.acc_vals.len == self.acc_lo.len);
     self.mode = float_mode.coreMode(jobs);
     self.lo_vals = vals.items;
     // Exit invariant: `lo_idx` and `lo_vals` are inverse on the live-outs.
     for (self.lo_vals, 0..) |v, k| assert(self.lo_idx[@backingInt(v)] == k);
+    for (self.prev_lo) |k| assert(k < self.lo_vals.len);
+    for (self.acc_lo) |k| assert(k < self.lo_vals.len);
     // §5.10 which core field each held variable's write-back reads. Done
     // here rather than by scanning `jobs` in `emitStateMachine`, because
     // `lo_idx` is only meaningful once every job has been folded in.
@@ -138,6 +230,7 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
     for (in.lowered.held_vars.items, 0..) |h, i| {
         const v = in.an.rv(h.final);
         self.held_idx[i] = if (v == .f_zero) none_u32 else self.lo_idx[@backingInt(v)];
+        if (self.held_idx[i] != none_u32) assert(self.held_idx[i] < self.lo_vals.len);
     }
     if (self.lo_vals.len == 0) return self;
     try heldOnly(in, jobs, &self);
@@ -149,8 +242,11 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
         // and this one cannot.
         .target = "core",
     });
+    assert(self.name.len != 0);
     return self;
 }
+
+// ---- private ----
 
 /// §5.10 marks the stores into a held array that nothing `eval`/`q` returns
 /// can observe, per store result Value; leaves `held_only` empty when there
@@ -168,8 +264,10 @@ pub fn plan(in: Input, jobs: []const Job) Error!Core {
 /// phi edge is control-dependent on. A store nothing needed reads is
 /// skippable.
 fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
+    assert(out.held_only.len == 0);
+    assert(out.lo_vals.len != 0);
     const a = in.arena;
-    const n: u32 = @intCast(in.mir.insts.len);
+    const n = in.mir.instCount();
     var any = false;
     for (0..n) |ii| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
@@ -179,8 +277,7 @@ fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
     }
     if (!any) return;
 
-    const cds = try plan_setup.controlDeps(in, in.an.ipdom);
-    var m: Mark = .{ .in = in, .cds = .{ .off = cds.off, .cd = cds.cd }, .need = try a.alloc(bool, in.an.nv), .blk = try a.alloc(bool, in.an.nb) };
+    var m: Mark = .{ .in = in, .cds = try plan_setup.controlDeps(in), .need = try a.alloc(bool, in.an.nv), .blk = try a.alloc(bool, in.an.nb) };
     @memset(m.need, false);
     @memset(m.blk, false);
     for (jobs) |job| if (evalRoot(job.kind)) try m.mark(job.target);
@@ -192,6 +289,7 @@ fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
         for (d.args) |x| try m.mark(x);
     }
     while (m.work.pop()) |v| try m.visit(v);
+    assert(m.blk_work.items.len == 0);
 
     const skip = try a.alloc(bool, in.an.nv);
     @memset(skip, false);
@@ -207,6 +305,8 @@ fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
     }
     out.eval_need = m.need;
     if (some) out.held_only = skip;
+    assert(out.eval_need.len == in.an.nv);
+    if (!some) assert(out.held_only.len == 0);
 }
 
 /// The jobs `eval`, `q` and `evalQ` read out of the core (`dispatch.zig`).
@@ -214,86 +314,11 @@ fn evalRoot(k: Job.Kind) bool {
     return switch (k) {
         .resist, .react, .retained, .table_effect, .timepoint, .status => true,
         // `updateState`/`acceptQ`, `limit`, `seed`, `advanceIteration`,
-        // `noisePsd`, `acStim`, the schedule, `vpiContribs`/`vpiShares` and
-        // §9.4 display read these.
-        .op_input, .ctrl, .held, .limit_arg, .limit_old, .reject_iteration, .reject_step, .noise, .ac_stim, .timer_period, .vpi, .display => false,
+        // `noisePsd`, `acStim`, the schedule, `vpiContribs`/`vpiShares`,
+        // `opVars` and §9.4 display read these.
+        .op_input, .ctrl, .held, .limit_arg, .limit_old, .reject_iteration, .reject_step, .noise, .ac_stim, .timer_period, .vpi, .op_var, .display => false,
     };
 }
-
-const Mark = struct {
-    in: Input,
-    cds: struct { off: []const u32, cd: []const plan_setup.Cd },
-    need: []bool,
-    blk: []bool,
-    work: std.ArrayList(Mir.Value) = .empty,
-    /// Blocks marked by `block` whose controlling branches are not yet.
-    blk_work: std.ArrayList(u32) = .empty,
-
-    fn mark(m: *Mark, v0: Mir.Value) Error!void {
-        const v = m.in.an.rv(v0);
-        if (m.need[@backingInt(v)]) return;
-        m.need[@backingInt(v)] = true;
-        try m.work.append(m.in.arena, v);
-    }
-
-    /// Block `b` runs only as the branches it is control-dependent on say.
-    /// A worklist, not a recursion: a chain of control dependences is as
-    /// deep as the source nests its `if`s, which has no bound.
-    fn block(m: *Mark, b: u32) Error!void {
-        try m.pushBlock(b);
-        while (m.blk_work.pop()) |bb| for (m.cds.cd[m.cds.off[bb]..m.cds.off[bb + 1]]) |c| {
-            try m.mark(plan_setup.branchCond(m.in, c.a).?);
-            try m.pushBlock(c.a);
-        };
-    }
-
-    fn pushBlock(m: *Mark, b: u32) Error!void {
-        if (b >= m.blk.len or m.blk[b]) return;
-        m.blk[b] = true;
-        try m.blk_work.append(m.in.arena, b);
-    }
-
-    fn visit(m: *Mark, v: Mir.Value) Error!void {
-        const def = m.in.mir.valueDef(v);
-        if (def != .inst_result) return;
-        const inst = def.inst_result;
-        try m.block(m.in.an.def_block[@backingInt(v)]);
-        switch (m.in.mir.instData(inst)) {
-            .unary => |d| try m.mark(d.operand),
-            .binary => |d| {
-                try m.mark(d.lhs);
-                try m.mark(d.rhs);
-            },
-            .ternary => |d| {
-                try m.mark(d.cond);
-                try m.mark(d.then_val);
-                try m.mark(d.else_val);
-            },
-            .call => |d| for (d.args) |x| try m.mark(x),
-            .load => |d| {
-                try m.mark(d.arr);
-                try m.mark(d.index);
-            },
-            .store => |d| {
-                try m.mark(d.arr);
-                try m.mark(d.index);
-                try m.mark(d.value);
-            },
-            // A phi's value is its operand on the edge taken, and the edge
-            // taken is its predecessor's branch.
-            .phi => |d| for (0..d.count) |j| {
-                const p = m.in.mir.phiPair(inst, @intCast(j));
-                try m.mark(p.value);
-                const pb: u32 = @backingInt(p.block);
-                try m.block(pb);
-                if (plan_setup.branchCond(m.in, pb)) |c| try m.mark(c);
-            },
-            .anew, .branch, .jump => {},
-        }
-    }
-};
-
-const Fixture = @import("prove").Fixture;
 
 test "live-outs are deduplicated in job order; display stays out; held values index them" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };

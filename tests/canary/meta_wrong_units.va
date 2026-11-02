@@ -1,0 +1,14 @@
+// CANARY: a `//! meta` row with the wrong units. The parameter is declared
+// with units="Ohms"; the directive states "Ohm", so the row check must print
+// ok=0 rather than pass any row that names the parameter.
+//! meta parameter r desc="Resistance" units="Ohm"
+//! bias V(p) = 1.0, V(n) = 0.0
+`include "check.vh"
+module canary_meta_wrong_units(p, n);
+  inout p, n; electrical p, n;
+  (* desc="Resistance", units="Ohms" *) parameter real r = 1k;
+  analog begin
+    `CHECKX("1 V across 1 kOhm", V(p, n) / r, 1e-3);
+    I(p, n) <+ V(p, n) / r;
+  end
+endmodule

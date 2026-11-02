@@ -5,10 +5,11 @@ top level, and a simulator (the *host*) imports it as a module and calls
 them. Nothing is behind a vtable: every entry point is a generic Zig
 function the host instantiates at compile time with its own arithmetic.
 
-The rules every device follows are one file, `lib/contract.zig` in the
-repository, installed as `share/vera/contract.zig` by `zig build install`.
-The generated device imports it as the module `contract`, and so does your
-host. The rest of this part quotes it by declaration name; when this book
+The rules every device follows are the contract: `lib/contract.zig` in the
+repository and the `lib/contract/` files it imports, installed as
+`share/vera/contract.zig` and `share/vera/contract/` by `zig build install`.
+The generated device imports the root as the module `contract`, and so does
+your host; Zig finds the files under `contract/` beside it. The rest of this part quotes it by declaration name; when this book
 and that file disagree, the file is right.
 
 Here is everything the diode from the [minimal host](minimal-host.md)
@@ -168,7 +169,7 @@ can.
 | limiting and start | `limit`, `limit_reads`, `limit_writes`, `seed`, `collapse`, `collapse_full`, `u_nodeset` | [state](state.md) |
 | time | `nextBreakpoint`, `pendingBreakpoint`, `delays` | [state](state.md) |
 | small signal | `noise_gens`, `noisePsd`, `noise_tables`, `noiseTablePoints`, `ac_gens`, `acStim`, `ac_dyn_slots`, `acDyn` | [tables](tables.md) |
-| metadata and output | `u_kinds`, `u_abstol`, `decl_meta`, `mc_param`, `status_sites`, `say_sites`, `say`, `file_io`, `systf_calls`, `display` | [tables](tables.md) |
+| metadata and output | `u_kinds`, `u_abstol`, `decl_meta`, `op_vars`, `opVars`, `mc_param`, `status_sites`, `say_sites`, `say`, `file_io`, `systf_calls`, `display` | [tables](tables.md) |
 | analog VPI | `vpiContribs`, `vpi_contrib_access`, `vpi_contrib_hi`, `vpi_contrib_lo`, `vpi_contrib_flow_u`: the contribution rows an LRM chapter 12 analog VPI host reads, emitted only when a program that embeds VerA as a library sets `Options.vpi_contribs` (VerA's VPI host does; no command-line flag sets it). `vpiShares`, `vpi_share_row`: when two instances' unnamed branches over one node pair share a row, each instance's own share of it (the flow of that instance's branch), by row | none |
 | batching | `batch_ok`, `batch_lead`, `batch_inst`, `mutable_eval` | [batching](batching.md) |
 | card | `derive`, `checkShape`, `checkCard`, `checkRange`, `Setup`, `setup`, `setup_simparams`, `setup_chunks`, `setupInstance`, `attempt`, `precompute` | above, and [linking](linking.md) |

@@ -1,6 +1,6 @@
-# One execution report joins fixture, host, reference and VPI evidence.
-# The native backend is a separate job; the external HDL tools are external.yaml's
-# and the size sweep is the nightly's.
+# The fixture runner's and the harness's own checks. The conformance suite
+# itself (`zig build conformance`, the suite's `conform` harness) is
+# external.yaml's; the size sweep is the nightly's.
 name: conformance
 
 on:
@@ -16,22 +16,18 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  ledger:
+  selftest:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
+          submodules: true  # tests/conformance: the fixtures
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
-      - name: Audit and evidence accounting tests
+      - name: Harness selftests
         run: |
           nix develop -c python3 tools/conformance.py selftest
           nix develop -c python3 tests/host.py selftest
-      - name: Build-step inventory
-        run: nix develop -c python3 tools/conformance.py steps
-      - name: Fixture cites against the requirement ledger
-        run: nix develop -c python3 tools/conformance.py lint-cites
 
   fixtures:
     runs-on: ubuntu-latest
@@ -39,35 +35,16 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
+          submodules: true  # tests/conformance: the fixtures
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
-      - name: Execute suites and measure coverage
-        run: nix develop -c python3 tools/conformance.py run --jobs=2 --output=/tmp/vera-conformance
-      - name: Fixture verdict ratchet
+      - name: AMS fixtures
+        run: nix develop -c zig build -Doptimize=ReleaseFast suite -- ams
+      - name: Digital fixtures
         if: always()
-        shell: bash
-        run: |
-          runs=(/tmp/vera-conformance/*)
-          python3 tools/conformance.py ratchet --verdicts="${runs[0]}/ams.tsv"
-      - name: Publish the measured summary
+        run: nix develop -c zig build -Doptimize=ReleaseFast suite -- devices
+      - name: VPI fixtures
         if: always()
-        shell: bash
-        run: |
-          runs=(/tmp/vera-conformance/*)
-          mkdir -p /tmp/vera-measured
-          cp "${runs[0]}/report.md" /tmp/vera-measured/measured.md
-          cp "${runs[0]}/report.json" "${runs[0]}"/*.log /tmp/vera-measured/
-          cat /tmp/vera-measured/measured.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: execution-results
-          path: /tmp/vera-conformance/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: measured
-          path: /tmp/vera-measured/
+        run: nix develop -c zig build -Doptimize=ReleaseFast suite -- vpi
 
   native:
     runs-on: ubuntu-latest
@@ -75,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
+          submodules: true  # tests/conformance: the fixtures
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
       - name: All digital transcripts through emitted executables
         run: nix develop -c zig build suite -- devices --native

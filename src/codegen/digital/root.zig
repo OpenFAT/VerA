@@ -1,61 +1,82 @@
-//! An elaborated IEEE 1364-2005 design (the interpreter's `sim.digital.Run`,
-//! until B4 gives this module IR of its own) -> Zig text that runs on
-//! `sim.rt`: an `--emit-exe` executable's root (`program`), or a contract
-//! device an analog host loads (`emitDevice`). Re-exports and `emitDevice`
-//! only; emit.zig, emit_expr.zig and plan.zig import each other directly.
-//! Clauses: those of emit.zig's header.
-
-const std = @import("std");
-const diag = @import("diag");
-const sim_digital = @import("sim").digital;
-/// The emitter itself, for the tests of what it writes (`tests/unit.zig`).
-pub const emit = @import("emit.zig");
+//! The `digital` module: an elaborated IEEE 1364-2005 design (the
+//! interpreter's `sim.digital.Run`) -> Zig text that runs on `sim.rt`: an
+//! `--emit-exe` executable's root (`program`), or a contract device an
+//! analog host loads (`emitDevice`); and a `.v` source -> Yosys RTLIL
+//! (`rtlil`). Re-exports only.
+//! Cites: those of each file's header.
+//!
+//! Contents:
+//! - `pub const Schedule = plan.Schedule`
+//! - `pub const Logic = Emitter.Logic`
+//! - `pub const Reason = Emitter.Reason`
+//! - `pub const Embed = program_root.Embed`
+//! - `pub const Program = program_root.Program`
+//! - `pub const program = program_root.program`
+//! - `pub const Device = device_root.Device`
+//! - `pub const DeviceRoot = device_root.DeviceRoot`
+//! - `pub const device = device_root.device`
+//! - `pub const emitDevice = device_root.emitDevice`
+//! - `pub const rtlil`
 
 /// `--emit-rtlil`: the design as Yosys RTLIL.
 pub const rtlil = @import("rtlil.zig");
+const Emitter = @import("Emitter.zig");
+const device_root = @import("device.zig");
+const plan = @import("plan.zig");
+const program_root = @import("program.zig");
+
 /// `vera --schedule=`: same-time events in FIFO order, or levelized.
-pub const Schedule = emit.Schedule;
+pub const Schedule = plan.Schedule;
 /// `vera --state=`: which logic the executable computes.
-pub const Logic = emit.Logic;
+pub const Logic = Emitter.Logic;
+/// Why an `.auto` executable stays 4-state throughout, and where.
+pub const Reason = Emitter.Reason;
+/// What `vera --emit-exe` was given, which a fallback root embeds.
+pub const Embed = program_root.Embed;
+/// `program`'s result: the executable's root text, native or not.
+pub const Program = program_root.Program;
 /// The root module of a design's `--emit-exe` executable, native or the
 /// interpreter fallback.
-pub const program = emit.program;
-
-/// A `.v` design as a contract device an analog host loads (`rt.Device`).
-const DeviceZig = struct {
-    /// The top module's name.
-    name: []const u8,
-    /// The device's Zig root; it imports the modules `contract` and `sim`.
-    zig: []const u8,
-};
-
-/// `source`'s top module as a contract device (`emit.device`), 4-state and
-/// under `schedule`. A design that cannot be one is E1103 in `bag` and
-/// `error.DigitalFailed`; a 1 s tick (no `timescale) is W1155.
-pub fn emitDevice(arena: std.mem.Allocator, source: []const u8, opts: sim_digital.Options, schedule: Schedule, bag: *diag.Bag) sim_digital.Error!DeviceZig {
-    return @import("base").deep_stack.runGuarded(0, emitDeviceDeep, .{ arena, source, opts, schedule, bag });
-}
-
-fn emitDeviceDeep(arena: std.mem.Allocator, source: []const u8, opts: sim_digital.Options, schedule: Schedule, bag: *diag.Bag) sim_digital.Error!DeviceZig {
-    var discard: std.Io.Writer.Discarding = .init(&.{});
-    var r = try sim_digital.elaborate(arena, source, opts, bag, &discard.writer);
-    const top = r.file.modules[r.scope_info.items[0].def];
-    const at: diag.Span = .{ .start = r.starts[top.main_tok], .end = r.starts[top.main_tok] };
-    switch (try emit.device(arena, &r, opts.file_name, schedule)) {
-        .zig => |text| {
-            if (r.finest == 0) try bag.add(.lower, .W1155, at, "module `{s}`: no `timescale sets a finer precision", .{r.file.str(top.name)});
-            return .{ .name = r.file.str(top.name), .zig = text };
-        },
-        .refused => |why| {
-            try bag.add(.lower, .E1103, at, "module `{s}`: {s}", .{ r.file.str(top.name), why });
-            return error.DigitalFailed;
-        },
-    }
-}
+pub const program = program_root.program;
+/// A device root, or why a design cannot be one.
+pub const Device = device_root.Device;
+/// `emitDevice`'s result: the top module's name and the device's root.
+pub const DeviceRoot = device_root.DeviceRoot;
+/// The contract device of an elaborated design's top module.
+pub const device = device_root.device;
+/// A `.v` source's top module as a contract device, with its diagnostics.
+pub const emitDevice = device_root.emitDevice;
 
 test {
-    _ = emit;
-    _ = @import("emit_expr.zig");
-    _ = @import("plan.zig");
+    _ = @import("assign.zig");
+    _ = @import("calls.zig");
+    _ = @import("design_table.zig");
+    _ = device_root;
+    _ = @import("drivers.zig");
+    _ = Emitter;
+    _ = @import("expr.zig");
+    _ = @import("expr_real.zig");
+    _ = @import("expr_select.zig");
+    _ = @import("expr_system.zig");
+    _ = @import("instruction.zig");
+    _ = @import("layout.zig");
+    _ = @import("native.zig");
+    _ = @import("nets.zig");
+    _ = plan;
+    _ = @import("plan_nodes.zig");
+    _ = @import("plane_words.zig");
+    _ = @import("processes.zig");
+    _ = program_root;
     _ = rtlil;
+    _ = @import("rtlil_emitter.zig");
+    _ = @import("rtlil_expr.zig");
+    _ = @import("rtlil_fold.zig");
+    _ = @import("rtlil_module.zig");
+    _ = @import("rtlil_proc.zig");
+    _ = @import("rtlil_table.zig");
+    _ = @import("settle.zig");
+    _ = @import("show.zig");
+    _ = @import("step_local.zig");
+    _ = @import("tasks.zig");
+    _ = @import("timing.zig");
 }

@@ -11,27 +11,41 @@
 //! `lowerNoise` per small-signal call; `noiseCoeff` runs when `contrib.zig`
 //! accumulates a `<+` that carries a generator.
 //!
-//! LRM clauses this file's code cites: §1.3.1.2, §2, §2.8, §2.9, §3.2.2, §3.4,
-//! §3.4.4, §3.6.1.2, §3.6.2.3, §3.13.1, §4.2, §4.2.12, §4.2.13, §4.5, §4.5.1,
-//! §4.5.2, §4.5.3, §4.5.4, §4.5.5, §4.5.6, §4.5.7, §4.5.8, §4.5.9, §4.5.10,
-//! §4.5.11, §4.5.12, §4.5.13, §4.5.14, §4.5.15, §4.6.3, §4.6.4, §4.6.4.1,
-//! §4.6.4.2, §4.6.4.3, §4.6.4.6, §5.5.3, §5.8, §5.8.1, §5.9, §5.9.3, §6.8,
-//! §9.21.
+//! Cites: §1.3.1.2, §2.8, §2.9, §3.4, §3.4.4, §3.6.1.2, §3.6.2.3, §3.11,
+//! §3.12, §3.13.1, §4.2, §4.2.13, §4.5, §4.5.1, §4.5.2, §4.5.3, §4.5.4,
+//! §4.5.5, §4.5.6, §4.5.7, §4.5.8, §4.5.9, §4.5.10, §4.5.11, §4.5.12,
+//! §4.5.13, §4.5.14, §4.5.15, §4.6.4, §5.5.3, §5.8.1, §5.9, §5.9.3, §6.8,
+//! A.8.2, A.8.3, §9.21.
+//!
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub fn isHistoryless(name: []const u8) bool`
+//! - `pub fn checkOperatorPlace(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bool`
+//! - `pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
+//! - `pub fn opDdt(self: *Lower, tok: u32, x: Mir.Value, abstol: f64, lte: bool) Oom!Mir.Value`
+//! - `pub fn interpQuad(self: *Lower, a: Ast.LteAttr) Oom!bool`
+//! - `pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Value`
+//! - `pub const NatureRef = union`
+//! - `pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef`
+//! - `pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.ExprId) Oom!bool`
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const diag = @import("diag");
+const Mir = @import("ir").Mir;
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
-const lower_contrib = @import("contrib.zig");
-const lower_control = @import("control.zig");
 const lower_discipline = @import("discipline.zig");
 const lower_expr = @import("expr.zig");
 const lower_hier_name = @import("hier_name.zig");
 const lower_node = @import("node.zig");
-const lower_table_model = @import("table_model.zig");
 const lower_shape = @import("shape.zig");
-const Ast = @import("frontend").Ast;
-const diag = @import("diag");
-const Mir = @import("ir").Mir;
+const lower_expr_select = @import("expr_select.zig");
+const lower_math = @import("math.zig");
+const lower_static = @import("static.zig");
+const lower_branch = @import("branch.zig");
+const lower_reactive = @import("reactive.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const TypedValue = Lower.TypedValue;
@@ -43,6 +57,20 @@ pub const State = struct {
     /// `readsUnknown`'s visited set, cleared and reused per walk rather than
     /// allocated per `idt` site.
     unknown_seen: std.AutoHashMapUnmanaged(Mir.Value, void) = .empty,
+    /// `readsUnknown`'s pending values. A worklist, not recursion: a value's
+    /// dependences are as long as the straight-line code before it, which no
+    /// parse nesting measures (`y = y + 1.0;` 5000 times overflowed the stack).
+    unknown_work: std.ArrayList(Mir.Value) = .empty,
+};
+
+/// A resolved §5.5.3 `nature_attribute_reference` (`a.potential.abstol`): its
+/// constant value, or the attribute name when Syntax 5-4 bans it ("shall not be
+/// used for the access, ddt_nature, or idt_nature attributes ... nor any other
+/// attribute whose value is not a constant expression").
+pub const NatureRef = union(enum) {
+    value: Const,
+    /// The attribute named, for the message.
+    banned: []const u8,
 };
 
 /// Reports whether `name` is one of the two A.8.2 `analog_filter_function_call`
@@ -57,6 +85,7 @@ pub fn isHistoryless(name: []const u8) bool {
 /// path that lowers one must call this, including `lowerReactive`'s `ddt` spine,
 /// which bypasses `lowerFilter`. Returns false when the operator must not be lowered.
 pub fn checkOperatorPlace(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bool {
+    assert(e == .none or self.exprValid(e));
     if (self.restrict) |ctx| {
         try self.err(self.file.exprs.mainTok(e), .E0422, "not allowed in {s}", .{ctx});
         return false;
@@ -90,6 +119,8 @@ pub fn checkOperatorPlace(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!boo
 /// stays a distinct `call` (one Instance state slot per site, §4.5.2). Vector
 /// coefficient arguments (§4.5.11, §4.5.12) are flattened as `<count>, e0, e1, ...`.
 pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
     const ex = &self.file.exprs;
     const name = self.file.str(ex.strOf(e));
     const args = ex.args(e);
@@ -98,13 +129,13 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     // §4.5.6 ddx(f, V(node)): the second argument is a probe, not a value;
     // it names the unknown to differentiate with respect to.
     if (std.mem.eql(u8, name, "ddx")) {
-        if (args.len != 2) return lower_expr.arityError(self, e, name, 2);
+        if (args.len != 2) return lower_math.arityError(self, e, name, 2);
         const f = try self.toReal(try lower_expr.lowerExpr(self, args[0]));
         if (ex.tag(args[1]) != .branch_access) {
             try self.err(self.file.exprs.mainTok(e), .E0504, "", .{});
             return poison;
         }
-        const t = try lower_contrib.branchOf(self, args[1]) orelse return poison;
+        const t = try lower_branch.branchOf(self, args[1]) orelse return poison;
         // §4.5.6: "The second argument shall be the potential of a scalar net
         // or port or the flow through a branch, because these are the unknown
         // variables in the system of equations for the analog solver."
@@ -213,7 +244,7 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         try vals.append(self.arena, if (tv.ty == .string) tv.v else try self.toReal(tv));
     }
     if (std.mem.eql(u8, name, "ddt"))
-        return .{ .v = try opDdt(self, ex.mainTok(e), vals.items[0], opAbstol(self, args, 1), try lower_contrib.opSiteLte(self, e)), .ty = .real };
+        return .{ .v = try opDdt(self, ex.mainTok(e), vals.items[0], opAbstol(self, args, 1), try lower_reactive.opSiteLte(self, e)), .ty = .real };
     if (std.mem.eql(u8, name, "idt"))
         return .{ .v = try opIdt(self, e, vals.items), .ty = .real };
     const callee = if (std.mem.eql(u8, name, "absdelay") and try absdelayQuad(self, e)) "absdelay$quad" else name;
@@ -224,83 +255,12 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 /// s - d/dt(x) = 0 and x its charge. So DC reads the clause's zero, and the
 /// host integrates and truncation-checks x like any charge. Returns V(s).
 pub fn opDdt(self: *Lower, tok: u32, x: Mir.Value, abstol: f64, lte: bool) Oom!Mir.Value {
+    assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
+    assert(self.valueValid(x));
     const s = try lower_node.opStateNode(self, "ddt", abstol);
     const v = try lower_node.probe(self, s);
-    try lower_contrib.stampOpRow(self, tok, s, v, x, true, lte);
+    try lower_reactive.stampOpRow(self, tok, s, v, x, true, lte);
     return v;
-}
-
-/// §4.5.4 `idt` as the unknown §4.5.2 introduces: s, whose charge is s
-/// itself and whose resistive half is -x, so the host solves ds/dt = x. The
-/// static solve swaps that half for s - ic, since idt() "returns the initial
-/// condition (ic) if specified" there, and without an ic keeps -x: "the idt
-/// operator must be contained within a negative feedback loop that forces its
-/// argument to zero". Returns the operator's value.
-fn opIdt(self: *Lower, e: Ast.ExprId, vals: []const Mir.Value) Oom!Mir.Value {
-    // ponytail: §4.5.5 idtmod stays in the device (`zIdtmod`), wrapped every
-    // step. As a host unknown its state grows without bound, and a free-running
-    // VCO's phase drifts with the rounding of |s|. Upgrade: a host that re-bases
-    // the unknown on each wrap.
-    const x = vals[0];
-    const s = try lower_node.opStateNode(self, "idt", opAbstol(self, self.file.exprs.args(e), abstolSlot("idt").?));
-    const v = try lower_node.probe(self, s);
-    // An argument that reads no unknown has no loop to force it, and the
-    // undefined DC output takes the 0 an ic of 0 gives, which keeps the
-    // static solve regular.
-    const ic: ?Mir.Value = if (vals.len > 1) vals[1] else if (!try readsUnknown(self, x)) .f_zero else null;
-    // assert: s holds still while it is nonzero (`idt$hold`).
-    const hold: ?Mir.Value = if (vals.len > 2) try self.emit(.fne, &.{ vals[2], .f_zero }) else null;
-    var f = try self.emit(.fneg, &.{x});
-    if (hold) |h| f = try self.emit(.select, &.{ h, .f_zero, f });
-    if (ic) |c| f = try self.emit(.select, &.{ try self.call("op$static", &.{}), try self.emit(.fsub, &.{ v, c }), f });
-    try lower_contrib.stampOpRow(self, self.file.exprs.mainTok(e), s, f, v, false, try lower_contrib.opSiteLte(self, e));
-    return if (hold != null) self.call("idt$hold", &.{ v, ic.?, vals[2] }) else v;
-}
-
-/// Whether `v` can read an unknown of the solve: a probe, or anything the walk
-/// does not see through (a phi, an array, a committed latch).
-fn readsUnknown(self: *Lower, v: Mir.Value) Oom!bool {
-    const seen = &self.analog_op_state.unknown_seen;
-    seen.clearRetainingCapacity();
-    return unknownWalk(self, v, seen);
-}
-
-fn unknownWalk(self: *Lower, v0: Mir.Value, seen: *std.AutoHashMapUnmanaged(Mir.Value, void)) Oom!bool {
-    const v = self.mir.resolveAlias(v0);
-    if ((try seen.getOrPut(self.arena, v)).found_existing) return false;
-    const inst = switch (self.mir.valueDef(v)) {
-        .undef, .float_const, .int_const, .str_const, .param_ref => return false,
-        .block_param => return true,
-        .inst_result => |i| i,
-    };
-    return switch (self.mir.instData(inst)) {
-        .unary => |u| u.op == .path_prev or u.op == .path_acc or try unknownWalk(self, u.operand, seen),
-        .binary => |b| try unknownWalk(self, b.lhs, seen) or try unknownWalk(self, b.rhs, seen),
-        .ternary => |t| try unknownWalk(self, t.cond, seen) or try unknownWalk(self, t.then_val, seen) or
-            try unknownWalk(self, t.else_val, seen),
-        .call => |c| for (c.args) |a| {
-            if (try unknownWalk(self, a, seen)) break true;
-        } else false,
-        .phi, .branch, .jump, .anew, .load, .store => true,
-    };
-}
-
-/// The tolerance of an operator's unknown: its §4.5.3/§4.5.4 abstol or nature
-/// argument in `slot`, folded at the parameters' declared defaults, else the
-/// 1e-6 an undisciplined net gets.
-fn opAbstol(self: *Lower, args: []const Ast.ExprId, slot: usize) f64 {
-    if (slot >= args.len or args[slot] == .none) return 1e-6;
-    if (natureAbstol(self, args[slot])) |t| return t;
-    const c = lower_constfold.constEval(self, args[slot]) orelse return 1e-6;
-    return if (c == .str) 1e-6 else c.asReal();
-}
-
-/// Reports whether `absdelay` call `e` interpolates quadratically, from VerA's
-/// `vera_interp` attribute, innermost wins: the call's own suffix, then the nearest
-/// enclosing statement's (`interp_stack`), then §4.5.7's "linear interpolation".
-fn absdelayQuad(self: *Lower, e: Ast.ExprId) Oom!bool {
-    if (self.file.exprLte(e, .vera_interp)) |a| return interpQuad(self, a);
-    return self.interp_stack.last() orelse false;
 }
 
 /// Returns whether a `vera_interp` value selects quadratic (2) over linear (1, the
@@ -318,6 +278,220 @@ pub fn interpQuad(self: *Lower, a: Ast.LteAttr) Oom!bool {
         return false;
     }
     return v == 2;
+}
+
+/// Returns the value in operator `name`'s tolerance slot, A.8.3's
+/// `abstol_expression ::= constant_expression | nature_identifier`, or null
+/// after reporting E0515 for an expression that moves during the analysis:
+/// Table 4-20 lists abstol among each operator's "Constant expression
+/// arguments", and "The constant expressions remain static throughout an
+/// analysis" (§4.5.14). Judged on what the value depends on, so a tolerance
+/// held in a variable that only literals and parameters reach still passes.
+pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Value {
+    assert(e == .none or self.exprValid(e));
+    if (natureAbstol(self, e)) |t| return try self.mir.addFloatConst(self.arena, t);
+    // A `.banned` §5.5.3 reference has no value and gets its E0359 here.
+    const tv = try lower_expr.lowerExpr(self, e);
+    if (tv.ty != .string and !try lower_static.isStaticValue(self, tv.v)) {
+        try self.err(self.file.exprs.mainTok(e), .E0515, "`{s}()` abstol is a constant expression argument (Table 4-20), and this one moves during the analysis", .{name});
+        return null;
+    }
+    return if (tv.ty == .string) tv.v else try self.toReal(tv);
+}
+
+/// Resolves `e` as `net.potential.attr` or `net.flow.attr` through the net's
+/// discipline, or returns null when it is a §6.8 hierarchical name instead.
+/// `abstol` comes from `DisciplineInfo`, where a §3.6.2.3 discipline override is applied.
+pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
+    assert(e == .none or self.exprValid(e));
+    const parts = self.file.exprs.nameParts(e);
+    if (parts.len != 3) return null;
+    const half = self.file.str(parts[1]);
+    const is_potential = std.mem.eql(u8, half, "potential");
+    if (!is_potential and !std.mem.eql(u8, half, "flow")) return null;
+
+    const dname = if (self.design.attribute_disciplines.get(e)) |disc| self.file.str(disc) else blk: {
+        const net = self.file.str(parts[0]);
+        // §5.5.3 "the attributes for a net or a branch": a §3.12 branch reads
+        // the discipline of its terminals, which §3.11 makes compatible; the
+        // lo terminal when hi is ground.
+        const idx = self.node_voltages.get(net) orelse if (self.branches.get(net)) |b|
+            (if (b.hi == ground) b.lo else b.hi)
+        else
+            self.port_branches.get(net) orelse return null;
+        if (idx == ground) return null;
+        break :blk self.out.nodes.items(.disc)[idx];
+    };
+    const attr = self.file.str(parts[2]);
+
+    if (std.mem.eql(u8, attr, "abstol")) {
+        const info = self.out.disciplines.get(dname) orelse return null;
+        return .{ .value = .{ .real = if (is_potential) info.potential_abstol else info.flow_abstol } };
+    }
+    // ponytail: reuse compatibility's first-declaration lookup.
+    const d = lower_discipline.disciplineDecl(self, dname) orelse return null;
+    const nat = if (is_potential) d.potential else d.flow;
+    if (nat == .none) return null;
+    const v = self.file.natureAttrExpr(nat, attr) orelse return .{ .banned = attr };
+    return .{ .value = lower_constfold.constEval(self, v) orelse return .{ .banned = attr } };
+}
+
+/// Appends a vector argument to `out` as `<count>, e0, e1, ...`: a §4.5.11/§4.5.12
+/// filter coefficient vector or §9.21/§4.6.4 data vector, spelled as an assignment
+/// pattern `'{a,b}` or an array name (§3.4.4). Returns false when `a` is a scalar,
+/// appending nothing. Invalidates element pointers of `out` if it grows.
+pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.ExprId) Oom!bool {
+    assert(a == .none or self.exprValid(a));
+    const ex = &self.file.exprs;
+    switch (ex.tag(a)) {
+        .assign_pattern, .concat => {
+            const elems = try lower_shape.patternElems(self, a);
+            try out.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(elems.len)));
+            for (elems) |el|
+                try out.append(self.arena, try self.toReal(try lower_expr.lowerExpr(self, el)));
+            return true;
+        },
+        .ident => {
+            const name = self.file.str(ex.strOf(a));
+            const info = self.arrays.get(name) orelse return false;
+            // §4.5.11's coefficient slot is a flat vector: a multidimensional
+            // array has no reading as a list of poles and is left to the
+            // ordinary path, which reports it (E0356).
+            if (info.dims.len != 1) return false;
+            const d = info.dims[0];
+            try out.append(self.arena, try self.mir.addIntConst(self.arena, d.count()));
+            var index: [1]i64 = undefined;
+            for (0..@intCast(d.count())) |k| {
+                lower_shape.shapeSubscripts(info.dims, k, &index);
+                const el = (try lower_expr_select.arrayElemValue(self, name, &index)) orelse return true;
+                try out.append(self.arena, try self.toReal(el));
+            }
+            return true;
+        },
+        // A.8.2's third shape, for both `analog_filter_function_arg` and
+        // `noise_table_input_arg`: `parameter_identifier [ msb_constant_expression
+        // : lsb_constant_expression ]`, the elements from msb to lsb.
+        .index => {
+            const sel = ex.rhs(a);
+            if (ex.tag(ex.lhs(a)) != .ident or ex.tag(sel) != .range) return false;
+            const name = self.file.str(ex.strOf(ex.lhs(a)));
+            const info = self.arrays.get(name) orelse return false;
+            if (info.dims.len != 1) return false;
+            const d = info.dims[0];
+            // A refused select is still a vector, of no elements, so the
+            // caller's `<count>, elements` slice stays well formed.
+            var ends: [2]i64 = undefined;
+            for ([2]Ast.ExprId{ ex.lhs(sel), ex.rhs(sel) }, &ends) |b, *end| {
+                const c = lower_constfold.shapeEval(self, b) orelse {
+                    try self.err(ex.mainTok(b), .E0308, "in the part select of `{s}`", .{name});
+                    try out.append(self.arena, try self.mir.addIntConst(self.arena, 0));
+                    return true;
+                };
+                end.* = c.asInt();
+                if (end.* < d.lo or end.* > d.hi) {
+                    try self.err(ex.mainTok(b), .E0310, "index {d} is outside `{s}[{d}:{d}]`", .{ end.*, name, d.lo, d.hi });
+                    try out.append(self.arena, try self.mir.addIntConst(self.arena, 0));
+                    return true;
+                }
+            }
+            const n = @abs(ends[1] - ends[0]) + 1;
+            const step: i64 = if (ends[1] >= ends[0]) 1 else -1;
+            try out.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(n)));
+            for (0..@as(usize, @intCast(n))) |k| {
+                const el = (try lower_expr_select.arrayElemValue(self, name, &.{ends[0] + step * @as(i64, @intCast(k))})) orelse return true;
+                try out.append(self.arena, try self.toReal(el));
+            }
+            return true;
+        },
+        else => return false, // else: not one of A.8.2's vector shapes; the ordinary path lowers or reports it
+    }
+}
+
+// ---- private ----
+
+/// §4.5.4 `idt` as the unknown §4.5.2 introduces: s, whose charge is s
+/// itself and whose resistive half is -x, so the host solves ds/dt = x. The
+/// static solve swaps that half for s - ic, since idt() "returns the initial
+/// condition (ic) if specified" there, and without an ic keeps -x: "the idt
+/// operator must be contained within a negative feedback loop that forces its
+/// argument to zero". Returns the operator's value.
+fn opIdt(self: *Lower, e: Ast.ExprId, vals: []const Mir.Value) Oom!Mir.Value {
+    assert(e == .none or self.exprValid(e));
+    assert(self.blockValid(self.cur));
+    // ponytail: §4.5.5 idtmod stays in the device (`zIdtmod`), wrapped every
+    // step. As a host unknown its state grows without bound, and a free-running
+    // VCO's phase drifts with the rounding of |s|. Upgrade: a host that re-bases
+    // the unknown on each wrap.
+    const x = vals[0];
+    const s = try lower_node.opStateNode(self, "idt", opAbstol(self, self.file.exprs.args(e), abstolSlot("idt").?));
+    const v = try lower_node.probe(self, s);
+    // An argument that reads no unknown has no loop to force it, and the
+    // undefined DC output takes the 0 an ic of 0 gives, which keeps the
+    // static solve regular.
+    const ic: ?Mir.Value = if (vals.len > 1) vals[1] else if (!try readsUnknown(self, x)) .f_zero else null;
+    // assert: s holds still while it is nonzero (`idt$hold`).
+    const hold: ?Mir.Value = if (vals.len > 2) try self.emit(.fne, &.{ vals[2], .f_zero }) else null;
+    var f = try self.emit(.fneg, &.{x});
+    if (hold) |h| f = try self.emit(.select, &.{ h, .f_zero, f });
+    if (ic) |c| f = try self.emit(.select, &.{ try self.call("op$static", &.{}), try self.emit(.fsub, &.{ v, c }), f });
+    try lower_reactive.stampOpRow(self, self.file.exprs.mainTok(e), s, f, v, false, try lower_reactive.opSiteLte(self, e));
+    return if (hold != null) self.call("idt$hold", &.{ v, ic.?, vals[2] }) else v;
+}
+
+/// Whether `v` can read an unknown of the solve: a probe, or anything the walk
+/// does not see through (a phi, an array, a committed latch).
+fn readsUnknown(self: *Lower, v: Mir.Value) Oom!bool {
+    assert(self.valueValid(v));
+    const st = &self.analog_op_state;
+    st.unknown_seen.clearRetainingCapacity();
+    st.unknown_work.clearRetainingCapacity();
+    try st.unknown_work.append(self.arena, v);
+    // The answer is the disjunction over the reachable set, so the visit
+    // order is free; each value is judged once, so the walk ends within the
+    // MIR's operand edges.
+    const steps_max = 3 * self.mir.instCount() + self.mir.extra.items.len + 1;
+    var steps: usize = 0;
+    while (st.unknown_work.pop()) |v0| : (steps += 1) {
+        assert(steps <= steps_max);
+        const x = self.mir.resolveAlias(v0);
+        if ((try st.unknown_seen.getOrPut(self.arena, x)).found_existing) continue;
+        const inst = switch (self.mir.valueDef(x)) {
+            .undef, .float_const, .int_const, .str_const, .param_ref => continue,
+            .block_param => return true,
+            .inst_result => |i| i,
+        };
+        switch (self.mir.instData(inst)) {
+            .unary => |u| {
+                if (u.op == .path_prev or u.op == .path_acc) return true;
+                try st.unknown_work.append(self.arena, u.operand);
+            },
+            .binary => |bn| try st.unknown_work.appendSlice(self.arena, &.{ bn.lhs, bn.rhs }),
+            .ternary => |t| try st.unknown_work.appendSlice(self.arena, &.{ t.cond, t.then_val, t.else_val }),
+            .call => |c| try st.unknown_work.appendSlice(self.arena, c.args),
+            .phi, .branch, .jump, .anew, .load, .store => return true,
+        }
+    }
+    assert(st.unknown_work.items.len == 0);
+    return false;
+}
+
+/// The tolerance of an operator's unknown: its §4.5.3/§4.5.4 abstol or nature
+/// argument in `slot`, folded at the parameters' declared defaults, else the
+/// 1e-6 an undisciplined net gets.
+fn opAbstol(self: *Lower, args: []const Ast.ExprId, slot: usize) f64 {
+    if (slot >= args.len or args[slot] == .none) return 1e-6;
+    if (natureAbstol(self, args[slot])) |t| return t;
+    const c = lower_constfold.constEval(self, args[slot]) orelse return 1e-6;
+    return if (c == .str) 1e-6 else c.asReal();
+}
+
+/// Reports whether `absdelay` call `e` interpolates quadratically, from VerA's
+/// `vera_interp` attribute, innermost wins: the call's own suffix, then the nearest
+/// enclosing statement's (`interp_stack`), then §4.5.7's "linear interpolation".
+fn absdelayQuad(self: *Lower, e: Ast.ExprId) Oom!bool {
+    assert(e == .none or self.exprValid(e));
+    if (self.file.exprLte(e, .vera_interp)) |a| return interpQuad(self, a);
+    return self.interp_stack.last() orelse false;
 }
 
 /// Which argument of an analog operator is its tolerance, or null for an
@@ -354,27 +528,10 @@ fn abstolSlot(name: []const u8) ?usize {
     return null;
 }
 
-/// Returns the value in operator `name`'s tolerance slot, A.8.3's
-/// `abstol_expression ::= constant_expression | nature_identifier`, or null
-/// after reporting E0515 for an expression that moves during the analysis:
-/// Table 4-20 lists abstol among each operator's "Constant expression
-/// arguments", and "The constant expressions remain static throughout an
-/// analysis" (§4.5.14). Judged on what the value depends on, so a tolerance
-/// held in a variable that only literals and parameters reach still passes.
-pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Value {
-    if (natureAbstol(self, e)) |t| return try self.mir.addFloatConst(self.arena, t);
-    // A `.banned` §5.5.3 reference has no value and gets its E0359 here.
-    const tv = try lower_expr.lowerExpr(self, e);
-    if (tv.ty != .string and !try lower_control.isStaticValue(self, tv.v)) {
-        try self.err(self.file.exprs.mainTok(e), .E0515, "`{s}()` abstol is a constant expression argument (Table 4-20), and this one moves during the analysis", .{name});
-        return null;
-    }
-    return if (tv.ty == .string) tv.v else try self.toReal(tv);
-}
-
 /// The abstol a bare `nature_identifier` or `net.potential.abstol` in a tolerance
 /// slot stands for, or null. A variable or parameter with the same name wins (§2.8).
 fn natureAbstol(self: *Lower, e: Ast.ExprId) ?f64 {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     // §5.5.3's other spelling of the same value, `n1.potential.abstol`. Its last
     // sentence makes the two interchangeable in this slot.
@@ -402,51 +559,6 @@ fn natureAbstol(self: *Lower, e: Ast.ExprId) ?f64 {
         return lower_discipline.natureOf(self, id).abstol orelse 0;
     }
     return null;
-}
-
-/// A resolved §5.5.3 `nature_attribute_reference` (`a.potential.abstol`): its
-/// constant value, or the attribute name when Syntax 5-4 bans it ("shall not be
-/// used for the access, ddt_nature, or idt_nature attributes ... nor any other
-/// attribute whose value is not a constant expression").
-pub const NatureRef = union(enum) {
-    value: Const,
-    /// The attribute named, for the message.
-    banned: []const u8,
-};
-/// Resolves `e` as `net.potential.attr` or `net.flow.attr` through the net's
-/// discipline, or returns null when it is a §6.8 hierarchical name instead.
-/// `abstol` comes from `DisciplineInfo`, where a §3.6.2.3 discipline override is applied.
-pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
-    const parts = self.file.exprs.nameParts(e);
-    if (parts.len != 3) return null;
-    const half = self.file.str(parts[1]);
-    const is_potential = std.mem.eql(u8, half, "potential");
-    if (!is_potential and !std.mem.eql(u8, half, "flow")) return null;
-
-    const dname = if (self.attribute_disciplines.get(e)) |disc| self.file.str(disc) else blk: {
-        const net = self.file.str(parts[0]);
-        // §5.5.3 "the attributes for a net or a branch": a §3.12 branch reads
-        // the discipline of its terminals, which §3.11 makes compatible; the
-        // lo terminal when hi is ground.
-        const idx = self.node_voltages.get(net) orelse if (self.branches.get(net)) |b|
-            (if (b.hi == ground) b.lo else b.hi)
-        else
-            self.port_branches.get(net) orelse return null;
-        if (idx == ground) return null;
-        break :blk self.out.nodes.items(.disc)[idx];
-    };
-    const attr = self.file.str(parts[2]);
-
-    if (std.mem.eql(u8, attr, "abstol")) {
-        const info = self.out.disciplines.get(dname) orelse return null;
-        return .{ .value = .{ .real = if (is_potential) info.potential_abstol else info.flow_abstol } };
-    }
-    // ponytail: reuse compatibility's first-declaration lookup.
-    const d = lower_discipline.disciplineDecl(self, dname) orelse return null;
-    const nat = if (is_potential) d.potential else d.flow;
-    if (nat == .none) return null;
-    const v = self.file.natureAttrExpr(nat, attr) orelse return .{ .banned = attr };
-    return .{ .value = lower_constfold.constEval(self, v) orelse return .{ .banned = attr } };
 }
 
 /// §4.5.5-§4.5.10 control-argument bounds (E0516). Only folded operands are judged:
@@ -535,532 +647,6 @@ fn nullZerosOk(name: []const u8) bool {
         if (std.mem.eql(u8, name, f)) return true;
     }
     return false;
-}
-
-/// Appends a vector argument to `out` as `<count>, e0, e1, ...`: a §4.5.11/§4.5.12
-/// filter coefficient vector or §9.21/§4.6.4 data vector, spelled as an assignment
-/// pattern `'{a,b}` or an array name (§3.4.4). Returns false when `a` is a scalar,
-/// appending nothing. Invalidates element pointers of `out` if it grows.
-pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.ExprId) Oom!bool {
-    const ex = &self.file.exprs;
-    switch (ex.tag(a)) {
-        .assign_pattern, .concat => {
-            const elems = try lower_shape.patternElems(self, a);
-            try out.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(elems.len)));
-            for (elems) |el|
-                try out.append(self.arena, try self.toReal(try lower_expr.lowerExpr(self, el)));
-            return true;
-        },
-        .ident => {
-            const name = self.file.str(ex.strOf(a));
-            const info = self.arrays.get(name) orelse return false;
-            // §4.5.11's coefficient slot is a flat vector: a multidimensional
-            // array has no reading as a list of poles and is left to the
-            // ordinary path, which reports it (E0356).
-            if (info.dims.len != 1) return false;
-            const d = info.dims[0];
-            try out.append(self.arena, try self.mir.addIntConst(self.arena, d.count()));
-            var index: [1]i64 = undefined;
-            for (0..@intCast(d.count())) |k| {
-                lower_shape.shapeSubscripts(info.dims, k, &index);
-                const el = (try lower_expr.arrayElemValue(self, name, &index)) orelse return true;
-                try out.append(self.arena, try self.toReal(el));
-            }
-            return true;
-        },
-        // A.8.2's third shape, for both `analog_filter_function_arg` and
-        // `noise_table_input_arg`: `parameter_identifier [ msb_constant_expression
-        // : lsb_constant_expression ]`, the elements from msb to lsb.
-        .index => {
-            const sel = ex.rhs(a);
-            if (ex.tag(ex.lhs(a)) != .ident or ex.tag(sel) != .range) return false;
-            const name = self.file.str(ex.strOf(ex.lhs(a)));
-            const info = self.arrays.get(name) orelse return false;
-            if (info.dims.len != 1) return false;
-            const d = info.dims[0];
-            // A refused select is still a vector, of no elements, so the
-            // caller's `<count>, elements` slice stays well formed.
-            var ends: [2]i64 = undefined;
-            for ([2]Ast.ExprId{ ex.lhs(sel), ex.rhs(sel) }, &ends) |b, *end| {
-                const c = lower_constfold.shapeEval(self, b) orelse {
-                    try self.err(ex.mainTok(b), .E0308, "in the part select of `{s}`", .{name});
-                    try out.append(self.arena, try self.mir.addIntConst(self.arena, 0));
-                    return true;
-                };
-                end.* = c.asInt();
-                if (end.* < d.lo or end.* > d.hi) {
-                    try self.err(ex.mainTok(b), .E0310, "index {d} is outside `{s}[{d}:{d}]`", .{ end.*, name, d.lo, d.hi });
-                    try out.append(self.arena, try self.mir.addIntConst(self.arena, 0));
-                    return true;
-                }
-            }
-            const n = @abs(ends[1] - ends[0]) + 1;
-            const step: i64 = if (ends[1] >= ends[0]) 1 else -1;
-            try out.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(n)));
-            for (0..@as(usize, @intCast(n))) |k| {
-                const el = (try lower_expr.arrayElemValue(self, name, &.{ends[0] + step * @as(i64, @intCast(k))})) orelse return true;
-                try out.append(self.arena, try self.toReal(el));
-            }
-            return true;
-        },
-        else => return false, // else: not one of A.8.2's vector shapes; the ordinary path lowers or reports it
-    }
-}
-
-/// Lowers a §4.6.4 noise source call. It contributes only in a small-signal noise
-/// analysis; codegen decides that from the call name (the value is 0 in DC).
-pub fn lowerNoise(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
-    const ex = &self.file.exprs;
-    const name = self.file.str(ex.strOf(e));
-    // VerA's `vera_timepoint` (§2.9): a source is a stamp, not a value.
-    if (self.tp_cur != null) {
-        try self.err(ex.mainTok(e), .E0530, "the noise function `{s}` (§4.6.4)", .{name});
-        return poison;
-    }
-    // A.8.2 analog_small_signal_function_call brackets only trailing optional
-    // arguments; no form has an `_or_null` slot, so an empty one has no meaning.
-    for (ex.args(e)) |a| if (a == .none) {
-        try self.err(ex.mainTok(e), .E0505, "`{s}()` (A.8.2 gives the small-signal functions no empty slot)", .{name});
-        return poison;
-    };
-    // A.8.2 `ac_stim ( [ " analysis_identifier " [ , analog_expression ...`:
-    // the quotation marks are in the production, so the analysis name is a
-    // string literal.
-    if (std.mem.eql(u8, name, "ac_stim")) if (ex.args(e).len != 0) {
-        const a0 = ex.args(e)[0];
-        if (a0 != .none and ex.tag(a0) != .str_literal) {
-            try self.err(ex.mainTok(a0), .E0521, "", .{});
-            return poison;
-        }
-        // A name that is not a Table 4-21 small-signal kind matches the
-        // analysis the host labels with it (`contract.acStimActive`, VD-109),
-        // so the device reads the host's Table 9-28 `analysis_name`.
-        if (a0 != .none) {
-            const s = self.file.str(ex.strOf(a0));
-            if (!std.mem.eql(u8, s, "ac") and !std.mem.eql(u8, s, "noise")) self.out.uses.insert(.host_strings);
-        }
-    };
-    // Syntax 4-4 `flicker_noise ( analog_expression , analog_expression
-    // [ , string ] )`: only the name is bracketed. §4.6.4.2's "1/f^exp" has no
-    // default exponent, so a one-argument call has no spectrum to invent.
-    if (std.mem.eql(u8, name, "flicker_noise")) {
-        var n: usize = 0;
-        for (ex.args(e)) |a| n += @intFromBool(a != .none);
-        if (n < 2) {
-            try self.err(ex.mainTok(e), .E0522, "got {d} argument(s)", .{n});
-            return poison;
-        }
-    }
-    // Syntax 4-4: each noise function's optional last argument is `string`,
-    // §4.6.4.1's "name argument [that] acts as a label for the noise source".
-    const label_at: ?usize = if (std.mem.eql(u8, name, "white_noise") or
-        std.mem.eql(u8, name, "noise_table") or std.mem.eql(u8, name, "noise_table_log"))
-        1
-    else if (std.mem.eql(u8, name, "flicker_noise"))
-        2
-    else
-        null;
-    if (label_at) |li| if (ex.args(e).len > li and ex.args(e)[li] != .none) {
-        const a = ex.args(e)[li];
-        const c = lower_constfold.constEval(self, a);
-        if (c == null or c.? != .str) {
-            try self.err(ex.mainTok(a), .E0573, "`{s}()` argument {d} is its label", .{ name, li + 1 });
-            return poison;
-        }
-    };
-    var vals: std.ArrayList(Mir.Value) = .empty;
-    defer vals.deinit(self.arena);
-    // §4.6.4 the PSD arguments, positionally: arg 0 is the power, arg 1 of
-    // `flicker_noise` is the exponent. Recorded here, the only place the call's
-    // arguments are lowered. The seeds are §4.6.3's `ac_stim` defaults: "The
-    // default magnitude is one (1) and the default phase is zero (0)".
-    var psd: [2]Mir.Value = if (std.mem.eql(u8, name, "ac_stim"))
-        .{ .f_one, .f_zero }
-    else
-        .{ .f_zero, .f_one };
-    var reals: usize = 0;
-    // §4.6.4.3/.4 the table itself: `appendVectorArg` writes the count, then the
-    // elements, so the pairs are the slice after the count.
-    var tab: ?struct { usize, usize } = null;
-    // A.8.2's `noise_table_input_arg` is argument 0 of `noise_table`/
-    // `noise_table_log` only; every other form's trailing `string` is a label.
-    const table_input = std.mem.eql(u8, name, "noise_table") or
-        std.mem.eql(u8, name, "noise_table_log");
-    for (ex.args(e), 0..) |a, ai| {
-        if (a == .none) continue;
-        const at = vals.items.len;
-        // §4.6.4.3's FILE form of the input: "When the input is a file name,
-        // the indicated file will contain the frequency / power pairs. The
-        // file name argument shall be constant". So the pairs are compile-time
-        // data and land in the same slot the vector form fills.
-        if (table_input and ai == 0) if (lower_constfold.constEval(self, a)) |c| if (c == .str) {
-            if (try lower_table_model.readNoiseTableFile(self, e, c.str)) |pairs| {
-                try vals.append(self.arena, try self.mir.addIntConst(self.arena, @intCast(pairs.len)));
-                for (pairs) |x| try vals.append(self.arena, try self.mir.addFloatConst(self.arena, x));
-                if (tab == null) tab = .{ at + 1, vals.items.len };
-            }
-            continue;
-        };
-        // The same slot is the only one a vector belongs in: anywhere else a
-        // pattern or an array is an ordinary operand, which `lowerExpr` judges.
-        if (table_input and ai == 0 and try appendVectorArg(self, &vals, a)) {
-            // Indices, not a slice: `vals` keeps growing and may reallocate.
-            if (tab == null) tab = .{ at + 1, vals.items.len };
-            continue;
-        }
-        const tv = try lower_expr.lowerExpr(self, a);
-        if (tv.ty == .string) {
-            try vals.append(self.arena, tv.v);
-            continue;
-        }
-        const rv = try self.toReal(tv);
-        if (reals < 2) psd[reals] = rv;
-        reals += 1;
-        try vals.append(self.arena, rv);
-    }
-    // §4.6.4.1 `white_noise(pwr[, name])` has one real argument, so its `.f_one`
-    // exponent seed is never read as a spectrum; `flicker_noise` always
-    // overwrites it (E0522 above refuses the call that would not).
-    try self.noise_psd.put(self.arena, @backingInt(e), psd);
-    if (tab) |r| try self.noise_tab.put(
-        self.arena,
-        @backingInt(e),
-        try self.arena.dupe(Mir.Value, vals.items[r[0]..r[1]]),
-    );
-    const result = try self.call(name, vals.items);
-    try self.noise_val.put(self.arena, @backingInt(e), result);
-    return .{ .v = result, .ty = .real };
-}
-
-/// A §4.6.4.6 noise coefficient, `∂contribution/∂generator`. A noise function is an
-/// amplitude combined linearly, so for correlated noise ("the output of one noise
-/// function for more than one noise source") the derivative is the constant factor
-/// the branch applies to it:
-///   absent     the generator does not occur here, so its coefficient is 0 and
-///              this statement adds nothing to the branch's total;
-///   nonlinear  it occurs in a shape no single factor describes (squared, in a
-///              denominator, inside a call), so there is no coefficient;
-///   value      the factor.
-const Coeff = union(enum) { absent, nonlinear, value: Mir.Value };
-
-/// Returns `-v`, folded when `v` is a literal so the coefficient renders inline in
-/// `noisePsd` instead of taking a core live-out slot.
-pub fn coeffNeg(self: *Lower, v: Mir.Value) Oom!Mir.Value {
-    if (self.mir.valueDef(self.mir.resolveAlias(v)) == .float_const)
-        return self.mir.addFloatConst(self.arena, -self.mir.valueDef(self.mir.resolveAlias(v)).float_const);
-    return self.emit(.fneg, &.{v});
-}
-
-/// `a · b`, with the identity folded away. The derivative of `c * n` is
-/// `c * 1`, and emitting that multiply would hide the constant from
-/// `psdConst`.
-fn coeffMul(self: *Lower, a: Mir.Value, b: Mir.Value) Oom!Mir.Value {
-    if (a == .f_one) return b;
-    if (b == .f_one) return a;
-    return self.emit(.fmul, &.{ a, b });
-}
-
-/// Returns the coefficient of generator `n` in contribution value `v`, emitting the
-/// few arithmetic nodes it needs over values the MIR already holds (no re-lowering,
-/// so no side effect repeats).
-pub fn noiseCoeff(self: *Lower, v: Mir.Value, n: Mir.Value) Oom!Coeff {
-    const gen = self.mir.resolveAlias(n);
-    var reach = try reachOf(self, gen, v);
-    defer reach.deinit(self.arena);
-    return coeffAt(self, v, gen, &reach, 0, null);
-}
-
-/// The Values of `v`'s cone whose operands, along the edges `coeffAt` follows,
-/// lead to `gen`: off this set the walk answers `.absent` without descending, so
-/// its cost is the generator-bearing paths and not every path of the DAG. An
-/// unsealed phi (no operands yet) is kept in, since what it will carry is
-/// unknown. Indexed by `@backingInt(value)`. O(cone) per fixpoint pass, not
-/// O(values): a module of n noisy `<+` would otherwise lower in O(n²).
-fn reachOf(self: *Lower, gen: Mir.Value, v: Mir.Value) Oom!std.bit_set.Dynamic {
-    const mir = self.mir;
-    const n = Mir.Value.first_dynamic + mir.defs.len;
-    var reach = try std.bit_set.Dynamic.initEmpty(self.arena, n);
-    errdefer reach.deinit(self.arena);
-    reach.set(@backingInt(gen));
-    // The cone: every instruction result `v`'s operand edges lead to, phis'
-    // back edges included, which is all `coeffAt` can visit.
-    var seen = try std.bit_set.Dynamic.initEmpty(self.arena, n);
-    defer seen.deinit(self.arena);
-    var cone: std.ArrayList(Mir.Value) = .empty;
-    defer cone.deinit(self.arena);
-    var stack: std.ArrayList(Mir.Value) = .empty;
-    defer stack.deinit(self.arena);
-    try stack.append(self.arena, mir.resolveAlias(v));
-    while (stack.pop()) |x| {
-        if (seen.isSet(@backingInt(x))) continue;
-        seen.set(@backingInt(x));
-        const inst = switch (mir.valueDef(x)) {
-            .inst_result => |i| i,
-            .undef, .float_const, .int_const, .str_const, .param_ref, .block_param => continue,
-        };
-        try cone.append(self.arena, x);
-        switch (mir.instData(inst)) {
-            .unary => |u| try stack.append(self.arena, mir.resolveAlias(u.operand)),
-            .binary => |bn| try stack.appendSlice(self.arena, &.{ mir.resolveAlias(bn.lhs), mir.resolveAlias(bn.rhs) }),
-            .ternary => |t| try stack.appendSlice(self.arena, &.{ mir.resolveAlias(t.then_val), mir.resolveAlias(t.else_val) }),
-            .phi => |p| for (0..p.count) |k| try stack.append(self.arena, mir.resolveAlias(mir.phiPair(inst, @intCast(k)).value)),
-            .call => |c| for (c.args) |arg| try stack.append(self.arena, mir.resolveAlias(arg)),
-            .anew, .branch, .jump => {},
-            .load => |l| try stack.appendSlice(self.arena, &.{ mir.resolveAlias(l.arr), mir.resolveAlias(l.index) }),
-            .store => |st| try stack.appendSlice(self.arena, &.{ mir.resolveAlias(st.arr), mir.resolveAlias(st.index), mir.resolveAlias(st.value) }),
-        }
-    }
-    // Operands precede their users except along a phi's back edge or an
-    // alias onto a later value; those need another pass.
-    std.mem.sortUnstable(Mir.Value, cone.items, {}, struct {
-        fn lt(_: void, l: Mir.Value, r: Mir.Value) bool {
-            return @backingInt(l) < @backingInt(r);
-        }
-    }.lt);
-    var changed = true;
-    var passes: usize = 0;
-    while (changed) : (passes += 1) {
-        // Each pass that continues sets a bit, and the cone has that many.
-        std.debug.assert(passes <= cone.items.len);
-        changed = false;
-        for (cone.items) |x| {
-            if (reach.isSet(@backingInt(x))) continue;
-            if (operandReaches(mir, mir.valueDef(x).inst_result, &reach)) {
-                reach.set(@backingInt(x));
-                changed = true;
-            }
-        }
-    }
-    return reach;
-}
-
-fn reached(mir: *const Mir, reach: *const std.bit_set.Dynamic, v: Mir.Value) bool {
-    return reach.isSet(@backingInt(mir.resolveAlias(v)));
-}
-
-fn operandReaches(mir: *const Mir, inst: Mir.Inst, reach: *const std.bit_set.Dynamic) bool {
-    return switch (mir.instData(inst)) {
-        .unary => |u| reached(mir, reach, u.operand),
-        .binary => |b| reached(mir, reach, b.lhs) or reached(mir, reach, b.rhs),
-        // `coeffAt` differentiates the arms; the condition selects, it is not scaled.
-        .ternary => |t| reached(mir, reach, t.then_val) or reached(mir, reach, t.else_val),
-        .phi => |p| {
-            if (p.count == 0) return true;
-            for (0..p.count) |k| if (reached(mir, reach, mir.phiPair(inst, @intCast(k)).value)) return true;
-            return false;
-        },
-        .call => |c| {
-            for (c.args) |arg| if (reached(mir, reach, arg)) return true;
-            return false;
-        },
-        .anew, .branch, .jump => false,
-        .load => |l| reached(mir, reach, l.arr) or reached(mir, reach, l.index),
-        .store => |st| reached(mir, reach, st.arr) or reached(mir, reach, st.index) or reached(mir, reach, st.value),
-    };
-}
-
-/// The phis the walk is inside, innermost first. A loop-header phi reaches
-/// itself again through its back edge; meeting one already on the path is a
-/// generator fed back into itself, which no single factor describes.
-const PhiPath = struct { inst: Mir.Inst, up: ?*const PhiPath };
-
-fn coeffAt(self: *Lower, v: Mir.Value, gen: Mir.Value, reach: *const std.bit_set.Dynamic, depth: u16, path: ?*const PhiPath) Oom!Coeff {
-    if (depth == 64) return .nonlinear;
-    const value = self.mir.resolveAlias(v);
-    if (value == gen) return .{ .value = .f_one };
-    if (!reach.isSet(@backingInt(value))) return .absent;
-    const inst = switch (self.mir.valueDef(value)) {
-        .inst_result => |i| i,
-        // A constant, a parameter or a probe cannot contain the generator.
-        .undef, .float_const, .int_const, .str_const, .param_ref, .block_param => return .absent,
-    };
-    switch (self.mir.instData(inst)) {
-        .unary => |u| {
-            const d = try coeffAt(self, u.operand, gen, reach, depth + 1, path);
-            if (d == .absent) return .absent;
-            if (u.op != .fneg or d == .nonlinear) return .nonlinear;
-            return .{ .value = try coeffNeg(self, d.value) };
-        },
-        .binary => |b| {
-            const da = try coeffAt(self, b.lhs, gen, reach, depth + 1, path);
-            const db = try coeffAt(self, b.rhs, gen, reach, depth + 1, path);
-            if (da == .absent and db == .absent) return .absent;
-            if (da == .nonlinear or db == .nonlinear) return .nonlinear;
-            switch (b.op) {
-                .fadd, .fsub => {
-                    // A side that does not mention the generator contributes
-                    // the zero this skips rather than emits.
-                    if (da == .absent) return .{
-                        .value = if (b.op == .fadd) db.value else try coeffNeg(self, db.value),
-                    };
-                    if (db == .absent) return .{ .value = da.value };
-                    return .{ .value = try self.emit(if (b.op == .fadd) .fadd else .fsub, &.{ da.value, db.value }) };
-                },
-                // The generator on both sides of a multiply is the generator
-                // squared, which has no coefficient.
-                .fmul => {
-                    if (da != .absent and db != .absent) return .nonlinear;
-                    if (da == .absent) return .{ .value = try coeffMul(self, b.lhs, db.value) };
-                    return .{ .value = try coeffMul(self, da.value, b.rhs) };
-                },
-                // Dividing BY the generator is nonlinear for the same reason.
-                .fdiv => {
-                    if (db != .absent) return .nonlinear;
-                    return .{ .value = try self.emit(.fdiv, &.{ da.value, b.rhs }) };
-                },
-                // The rest of the two-operand ops: a generator under any of them
-                // is no longer an amplitude scaled by a factor (an integer op
-                // would have to round it, a comparison or a min/max selects on
-                // it, pow/hypot/atan2/fmod are not linear in it).
-                .fmod,
-                .iadd,
-                .isub,
-                .imul,
-                .idiv,
-                .imod,
-                .flt,
-                .fgt,
-                .fle,
-                .fge,
-                .feq,
-                .fne,
-                .ilt,
-                .igt,
-                .ile,
-                .ige,
-                .ieq,
-                .ine,
-                .logand,
-                .logor,
-                .bitand,
-                .bitor,
-                .bitxor,
-                .bitxnor,
-                .shl,
-                .shr,
-                .pow,
-                .hypot,
-                .fmin,
-                .fmax,
-                .imin,
-                .imax,
-                .ipow,
-                .atan2,
-                => return .nonlinear,
-                // `instData` decodes `.binary` only for `opClass(op) == .binary`.
-                .fneg,
-                .ineg,
-                .lognot,
-                .bitnot,
-                .sqrt,
-                .exp,
-                .expm1,
-                .ln,
-                .ln1p,
-                .log10,
-                .floor,
-                .ceil,
-                .fabs,
-                .iabs,
-                .sin,
-                .cos,
-                .tan,
-                .asin,
-                .acos,
-                .atan,
-                .sinh,
-                .cosh,
-                .tanh,
-                .asinh,
-                .acosh,
-                .atanh,
-                .fi_cast,
-                .if_cast,
-                .opt_barrier,
-                .dstop,
-                .path_prev,
-                .path_acc,
-                .select,
-                .phi,
-                .branch,
-                .jump,
-                .call,
-                .anew,
-                .fload,
-                .iload,
-                .store,
-                => unreachable,
-            }
-        },
-        // §4.2.12 `?:`: either arm may carry the generator, and which arm runs
-        // is a solve-time question, so the coefficient is the same conditional.
-        .ternary => |t| {
-            const dy = try coeffAt(self, t.then_val, gen, reach, depth + 1, path);
-            const dn = try coeffAt(self, t.else_val, gen, reach, depth + 1, path);
-            if (dy == .absent and dn == .absent) return .absent;
-            if (dy == .nonlinear or dn == .nonlinear) return .nonlinear;
-            return .{ .value = try self.emit(.select, &.{
-                t.cond,
-                if (dy == .absent) .f_zero else dy.value,
-                if (dn == .absent) .f_zero else dn.value,
-            }) };
-        },
-        // §5.8 `if` and §4.2.12 `?:` both arrive here as a CFG diamond (ifconv
-        // makes the `.select` later): the coefficient of a phi is the phi of the
-        // incoming coefficients.
-        .phi => |p| {
-            // An unsealed loop header's phi has no operands yet, so nothing is
-            // known about what it carries.
-            if (p.count == 0) return .nonlinear;
-            var up = path;
-            while (up) |f| : (up = f.up) if (f.inst == inst) return .nonlinear;
-            const here: PhiPath = .{ .inst = inst, .up = path };
-            const coeffs = try self.arena.alloc(Mir.PhiPair, p.count);
-            var any = false;
-            var same = true;
-            for (coeffs, 0..) |*c, k| {
-                const pair = self.mir.phiPair(inst, @intCast(k));
-                const before = self.mir.blockLast(self.cur);
-                const d = try coeffAt(self, pair.value, gen, reach, depth + 1, &here);
-                // What that walk emitted (`x/r` has coefficient `1/r`) landed in
-                // `self.cur`, after the join, where the edge from `pair.block`
-                // cannot carry it. Its operands are sub-terms of `pair.value`,
-                // so they exist at the end of that block: compute it there.
-                if (!self.mir.moveTailBefore(self.cur, before, pair.block)) return .nonlinear;
-                const cv: Mir.Value = switch (d) {
-                    .absent => .f_zero,
-                    .nonlinear => return .nonlinear,
-                    .value => |x| blk: {
-                        any = true;
-                        break :blk x;
-                    },
-                };
-                c.* = .{ .block = pair.block, .value = cv };
-                if (cv != coeffs[0].value) same = false;
-            }
-            if (!any) return .absent;
-            // One value on every edge is available at the join already.
-            if (same) return .{ .value = coeffs[0].value };
-            return .{ .value = try self.mir.emitPhi(self.arena, self.mir.instBlock(inst), coeffs) };
-        },
-        // A call's arguments are reachable, so whether the generator occurs is
-        // answerable even though the derivative is not.
-        .call => |c| {
-            for (c.args) |arg| if (try coeffAt(self, arg, gen, reach, depth + 1, path) != .absent) return .nonlinear;
-            return .absent;
-        },
-        // Terminators define no value, so no Value resolves to one.
-        .branch, .jump => unreachable,
-        // §3.2.2 a generator stored into an array is no longer an amplitude
-        // scaled by a factor of this expression: like a call's argument, it
-        // can only be detected, not differentiated through the storage.
-        .anew => return .absent,
-        .load => |l| return if (try coeffAt(self, l.arr, gen, reach, depth + 1, path) == .absent and
-            try coeffAt(self, l.index, gen, reach, depth + 1, path) == .absent) .absent else .nonlinear,
-        .store => |st| return if (try coeffAt(self, st.arr, gen, reach, depth + 1, path) == .absent and
-            try coeffAt(self, st.index, gen, reach, depth + 1, path) == .absent and
-            try coeffAt(self, st.value, gen, reach, depth + 1, path) == .absent) .absent else .nonlinear,
-    }
 }
 
 test isHistoryless {
@@ -1244,17 +830,22 @@ test "§4.5 analog operators: argument shapes and bounds" {
     });
 }
 
-test "§4.6 small-signal sources: arguments and labels" {
-    try Lower.expectBodies(&.{
-        // §4.6.4.1 `white_noise(pwr[, name])`: the power is a scalar. Only
-        // `noise_table`'s input (§4.6.4.3) is a vector.
-        .{ .src = "analog I(p) <+ white_noise('{1.0, 2.0});", .code = .E0509 },
-        .{ .src = "analog I(p) <+ white_noise(1e-20);", .code = null },
-        // Syntax 4-4: the optional last argument is a string label.
-        .{ .src = "analog I(p) <+ white_noise(1e-20, 3);", .code = .E0573 },
-        // §4.6.4.2: 1/f^exp has no default exponent.
-        .{ .src = "analog I(p) <+ flicker_noise(1e-20);", .code = .E0522 },
-        // A.8.2 puts the quotation marks inside `ac_stim`'s production.
-        .{ .src = "analog I(p) <+ ac_stim(1);", .code = .E0521 },
-    });
+test "readsUnknown: a 5000-statement dependence chain under idt is judged on a 1 MiB stack" {
+    // Width, not nesting: `y = y + 1.0;` 5000 times is a 5000-deep chain of
+    // `fadd` values, so the recursive walk from `idt(y)` overflowed the stack.
+    // Oracle: the module lowers with no diagnostic (the chain starts at a
+    // constant, so `idt` takes its zero initial condition).
+    const gpa = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    try src.appendSlice(gpa, "module m(p, n);\n  inout p, n;\n  electrical p, n;\n  real y;\n  analog begin\n    y = 0.0;\n");
+    for (0..5000) |_| try src.appendSlice(gpa, "    y = y + V(p, n);\n");
+    try src.appendSlice(gpa, "    I(p, n) <+ idt(y);\n  end\nendmodule\n");
+    var h: Lower.Harness = undefined;
+    try h.init(gpa, src.items);
+    defer h.deinit();
+    _ = try h.lowerOnStack(1 << 20) orelse {
+        h.dump();
+        return error.TestUnexpectedResult;
+    };
 }

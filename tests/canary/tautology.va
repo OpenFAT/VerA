@@ -1,0 +1,11 @@
+// CANARY: got and want are the same expression, so the check cannot fail.
+//! lrm 5.6.3
+//! bias V(p) = 1.5, V(n) = 0.25
+`include "check.vh"
+module canary_tautology(p, n);
+  inout p, n; electrical p, n;
+  analog begin
+    `CHECK("compared with itself", V(p, n), V(p, n), 1e-12);
+    I(p, n) <+ V(p, n) / 1k;
+  end
+endmodule

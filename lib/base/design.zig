@@ -1,21 +1,36 @@
-//! The rows elaboration publishes that stages after lowering read: a §7.8.4
+//! The rows elaboration publishes for the stages after lowering: a §7.8.4
 //! inserted connect module, a §3.4 `--param` override, the §7.4.4
-//! discipline-resolution mode and a §9.18 Table 9-29 system parameter.
-//! Elaboration (`Elaborate`, `hier_param`) aliases them, and `Lowered`
-//! carries them without importing elaboration.
-//! Imports only std.
+//! discipline-resolution mode, and a §9.18 Table 9-29 system parameter with
+//! its spelling ↔ kind mapping, initial value and domain. Elaboration
+//! (`Elaborate`, `hier_param`) aliases them, and `Lowered` carries them
+//! without importing elaboration.
 //!
-//! LRM clauses this file's code cites: §3.4, §6.3.6, §7.4.4, §7.8.4, §9.18, F.2.2.
+//! Cites: VAMS-2023 §3.4, §6.3.6, §7.4.4, §7.8.4, §9.18 (Table 9-29), F.2.2.
+//!
+//! Contents:
+//! - `pub const Inserted = struct { path, inst, port, module, name, upper_port, lower_port: []const u8 }`
+//! - `pub const DisciplineResolution = enum(u8) { basic, detail }`
+//! - `pub const ParamOverride = struct { name: []const u8, value: f64, text: []const u8 = "" }`
+//! - `pub const SystemParam = enum(u8) { angle, hflip, mfactor, vflip, xposition, yposition }`
+//! - `SystemParam.all: []const SystemParam`
+//! - `SystemParam.fromName(spelling: []const u8) ?SystemParam`
+//! - `SystemParam.name(self: SystemParam) []const u8`
+//! - `SystemParam.initial(self: SystemParam) f64`
+//! - `SystemParam.allows(self: SystemParam, value: f64) bool`
+//! - `SystemParam.constrained(self: SystemParam) bool`
+//! - `SystemParam.domain(self: SystemParam) []const u8`
 
 const std = @import("std");
+const assert = std.debug.assert;
 
 /// One port §7.8.4 re-pointed at a connect module (`elab/insert.zig`), by
-/// name. In the module instance at `path` (instance prefix, separator
+/// name. In the module instance at `path` (the instance prefix, separator
 /// included, empty at the top), port `port` of child `inst` is connected to
 /// the bridge `name`'s `lower_port` instead of its upper connection, and the
 /// bridge (an instance of `module`) takes that upper connection on
 /// `upper_port`. Merged ports share a bridge, so `name` repeats. The segment
 /// between the child and the bridge is `name ++ sep ++ lower_port`.
+/// Every slice is borrowed from elaboration's arena and dies with it.
 pub const Inserted = struct {
     path: []const u8,
     inst: []const u8,
@@ -26,22 +41,23 @@ pub const Inserted = struct {
     lower_port: []const u8,
 };
 
-/// §7.4.4 "There are two modes for this method of resolution, basic (the
-/// default) and detail"; F.2.2: "The selection of this algorithm instead of
-/// the default shall be controlled by a simulator option" (VerA's is
+/// §7.4.4's two modes of discipline resolution: "basic (the default) and
+/// detail". F.2.2: "The selection of this algorithm instead of the default
+/// shall be controlled by a simulator option" (VerA's is
 /// `--discipline-resolution=`). The mode decides where connect modules go
 /// (`segment.down`, read by `insert.plan`).
-pub const DisciplineResolution = enum { basic, detail };
+pub const DisciplineResolution = enum(u8) { basic, detail };
 
-/// §3.4 compile-time overrides, shared with Lower.Options. Elaboration needs
-/// their final values when a §6.4.2 overload choice depends on a top parameter.
-/// `text` is the value as typed: a string parameter takes it verbatim. `value`
-/// is that text read as a number, NaN when it is not one.
+/// A §3.4 compile-time override, shared with `Lower.Options`. Elaboration
+/// needs the final values when a §6.4.2 overload choice depends on a top
+/// parameter. `text` is the value as typed, which a string parameter takes
+/// verbatim; `value` is that text read as a number, NaN when it is not one.
+/// Both slices are borrowed from the caller (the command line).
 pub const ParamOverride = struct { name: []const u8, value: f64, text: []const u8 = "" };
 
 /// One §9.18 Table 9-29 hierarchical system parameter. The tag is the
-/// spelling without its `$`.
-pub const SystemParam = enum {
+/// spelling without its `$`; §6.3.6 names exactly these six.
+pub const SystemParam = enum(u8) {
     angle,
     hflip,
     mfactor,
@@ -52,10 +68,13 @@ pub const SystemParam = enum {
     /// Every kind, in declaration order (the order elaboration reports them).
     pub const all = std.enums.values(SystemParam);
 
-    /// Returns the kind `spelling` names, `$` included, or null.
+    /// Returns the kind `spelling` names, `$` included, or null when it names
+    /// none (no `$`, a different case, a suffix).
     pub fn fromName(spelling: []const u8) ?SystemParam {
         if (spelling.len == 0 or spelling[0] != '$') return null;
-        return std.meta.stringToEnum(SystemParam, spelling[1..]);
+        const kind = std.meta.stringToEnum(SystemParam, spelling[1..]) orelse return null;
+        assert(std.mem.eql(u8, kind.name(), spelling)); // The pair of `name`.
+        return kind;
     }
 
     /// Returns the source spelling, `$` included.
@@ -65,21 +84,25 @@ pub const SystemParam = enum {
         };
     }
 
-    /// Returns Table 9-29's value for an instance nothing sets: the
-    /// composition's identity (0 for the sums, 1 for the products).
+    /// Returns Table 9-29's value for an instance nothing sets: the identity
+    /// of the kind's composition down the hierarchy (0 for the sums, 1 for
+    /// the products). The value is always one `allows` accepts.
     pub fn initial(self: SystemParam) f64 {
-        return switch (self) {
-            .angle, .xposition, .yposition => 0,
-            .hflip, .mfactor, .vflip => 1,
+        const value: f64 = switch (self) {
+            .angle, .xposition, .yposition => 0.0,
+            .hflip, .mfactor, .vflip => 1.0,
         };
+        assert(self.allows(value));
+        return value;
     }
 
-    /// Returns whether `value` is in Table 9-29's domain for the kind.
+    /// Returns whether `value` is in Table 9-29's domain for the kind. A NaN
+    /// is in no constrained domain.
     pub fn allows(self: SystemParam, value: f64) bool {
         return switch (self) {
-            .angle => value >= 0 and value < 360,
-            .hflip, .vflip => value == 1 or value == -1,
-            .mfactor => value > 0,
+            .angle => value >= 0.0 and value < 360.0,
+            .hflip, .vflip => value == 1.0 or value == -1.0,
+            .mfactor => value > 0.0,
             .xposition, .yposition => true,
         };
     }
@@ -92,7 +115,8 @@ pub const SystemParam = enum {
         };
     }
 
-    /// Returns the domain `allows` checks, worded for a diagnostic.
+    /// Returns the domain `allows` checks, worded for a diagnostic; a
+    /// constrained kind's wording names its own spelling.
     pub fn domain(self: SystemParam) []const u8 {
         return switch (self) {
             .angle => "0 <= $angle < 360",
@@ -103,6 +127,11 @@ pub const SystemParam = enum {
         };
     }
 };
+
+comptime {
+    assert(@sizeOf(SystemParam) == 1);
+    assert(@sizeOf(DisciplineResolution) == 1);
+}
 
 test "SystemParam: spellings round-trip, and nothing else names a kind" {
     for (SystemParam.all) |k| try std.testing.expectEqual(@as(?SystemParam, k), SystemParam.fromName(k.name()));

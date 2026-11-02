@@ -4,6 +4,14 @@
 //! exact constant partials of every column they do not. Soundness is argued
 //! at `dispatch.emitDerivReads`, which formats the result. Clauses: §4.5.14
 //! (`ddx` reads a lane), §5.6.5 (a collapsible switch row's guarded stamps).
+//!
+//! Contents:
+//! - `pub const Entry = struct`
+//! - `pub const Term = struct`
+//! - `pub const LinRow = std.ArrayList(Term)`
+//! - `pub const JacConst = struct`
+//! - `pub fn lookup(row: LinRow, col: u32) f64`
+//! - `pub fn plan(arena: std.mem.Allocator, n_u: u32, deriv_reads: []const u64, ddx_reads: []const u64, limit_writes: []const u64, lin: [2][]const LinRow, guarded: []const Entry) std.mem.Allocator.Error!JacConst`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -17,14 +25,9 @@ pub const Entry = struct { row: u32, col: u32, g: f64, c: f64, when: ?u32 = null
 
 /// One recorded coefficient of a row: `k · x[col]`.
 pub const Term = struct { col: u32, k: f64 };
+
 /// One row of `Jac.lin`: its terms, one per column, in first-write order.
 pub const LinRow = std.ArrayList(Term);
-
-/// Returns the coefficient row `row` holds on `col`, 0 when it has none.
-pub fn lookup(row: LinRow, col: u32) f64 {
-    for (row.items) |t| if (t.col == col) return t.k;
-    return 0;
-}
 
 /// The two emitted tables.
 pub const JacConst = struct {
@@ -33,6 +36,13 @@ pub const JacConst = struct {
     /// Sorted by (row, col); only columns outside `mask`, only nonzero pairs.
     entries: []Entry,
 };
+
+/// Returns the coefficient row `row` holds on `col`, 0 when it has none.
+pub fn lookup(row: LinRow, col: u32) f64 {
+    assert(row.items.len <= std.math.maxInt(u32));
+    for (row.items) |t| if (t.col == col) return t.k;
+    return 0;
+}
 
 /// Returns the emitted `deriv_reads` mask and the constant-partial table,
 /// both owned by `arena`. Masks are `w` words (`codegen/mask.zig`).
@@ -45,8 +55,9 @@ pub const JacConst = struct {
 /// guarded, or under two guards) keeps its lane instead: `contract` wants
 /// (row, col) unique.
 ///
-/// Asserts that both `lin` halves hold `n_u` rows and that every guarded
-/// entry lies inside the matrix. Each row costs its terms, sorted, and a
+/// Asserts that both `lin` halves hold `n_u` rows, that the masks are wide
+/// enough for `n_u` unknowns, and that every guarded entry lies inside the
+/// matrix. Each row costs its terms, sorted, and a
 /// scan of `guarded`, so the whole is O(terms · log terms + n_u · guarded +
 /// guarded²).
 pub fn plan(
@@ -61,8 +72,13 @@ pub fn plan(
     const mask = try gen_mask.join(arena, deriv_reads, ddx_reads);
     gen_mask.orIn(mask, limit_writes);
     const n = n_u;
-    assert(lin[0].len == n and lin[1].len == n);
-    for (guarded) |e| assert(e.row < n and e.col < n);
+    assert(@as(usize, n) <= mask.len * 64);
+    assert(lin[0].len == n);
+    assert(lin[1].len == n);
+    for (guarded) |e| {
+        assert(e.row < n);
+        assert(e.col < n);
+    }
     for (guarded, 0..) |e, k| {
         const clash = lookup(lin[0][e.row], e.col) != 0 or lookup(lin[1][e.row], e.col) != 0 or
             for (guarded[0..k]) |p| {
@@ -94,21 +110,37 @@ pub fn plan(
             }
         }
     }
+    // Exit invariant `JacConst.entries` states: strictly ascending (row,
+    // col), off the mask, and never a zero pair.
+    for (out.items, 0..) |e, k| {
+        assert(!gen_mask.has(mask, e.col));
+        assert(e.g != 0 or e.c != 0);
+        if (k == 0) continue;
+        const p = out.items[k - 1];
+        assert(p.row <= e.row);
+        if (p.row == e.row) assert(p.col < e.col);
+    }
     return .{ .mask = mask, .entries = out.items };
 }
 
+// ---- private ----
+
 /// `lin` rows from a dense `n × n` coefficient matrix: the tests' spelling.
 fn rows(arena: std.mem.Allocator, n: u32, dense: []const f64) ![]LinRow {
+    assert(dense.len == @as(usize, n) * n);
     const out = try arena.alloc(LinRow, n);
     for (out, 0..) |*row, r| {
         row.* = .empty;
         for (0..n) |c| if (dense[r * n + c] != 0) try row.append(arena, .{ .col = @intCast(c), .k = dense[r * n + c] });
+        assert(row.items.len <= n);
     }
     return out;
 }
 
 /// `plan` over dense `n × n` halves and one-word masks: the tests' spelling.
 fn planDense(arena: std.mem.Allocator, n: u32, dr: u64, ddx: u64, lw: u64, g: []const f64, q: []const f64, guarded: []const Entry) !JacConst {
+    assert(n <= 64); // one-word masks
+    assert(g.len == q.len);
     return plan(arena, n, &.{dr}, &.{ddx}, &.{lw}, .{ try rows(arena, n, g), try rows(arena, n, q) }, guarded);
 }
 

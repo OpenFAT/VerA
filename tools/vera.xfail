@@ -4,3 +4,15 @@
 # listed here and on any listed test that passes (XPASS): delete its line.
 # Seed or refresh it from a run:
 #   grep '^FAIL' zig-out/conformance.tsv | cut -f2 > tools/vera.xfail
+verilog-a/ch05_analog_behavior/port_access_own_port_inside_instance_rejected.va # VerA now reads an instance port's flow exactly (CHANGELOG "The flow into an instance's port is read exactly", was E0997); the suite's fixture still expects the refusal
+verilog-a/ch05_analog_behavior/port_branch_own_port_inside_instance_rejected.va # as above: the port branch's flow is read exactly, no longer E0997
+verilog-a/ch05_analog_behavior/port_access_hierarchical_potential_source_rejected.va # as above: a hierarchical port flow through a potential source is read exactly, no longer E0997
+verilog-a/ch09_system_tasks/reject_simprobe_runtime_name.va # VerA accepts a run-time $simprobe name (§9.16 "or a string variable", CHANGELOG); the fixture expects the old refusal
+verilog-ams/annex_a_syntax/net_and_variable_types.va # an analog assignment to a reg is E0316 (§5.7 names integer, real or string targets; CHANGELOG revises VD-116); the fixture assigns `rbus`
+verilog-ams/ch07_mixed_signal/discrete_bus_part_select_above_31_analog_assigned.va # E0316, §5.7: analog assignment to a reg (CHANGELOG, VD-116 revised)
+verilog-ams/ch07_mixed_signal/wide_reg_held_across_evaluations.va # E0316, §5.7: analog assignment to a reg (CHANGELOG, VD-116 revised)
+verilog-ams/ch07_mixed_signal/wide_reg_matches_digital_300.va # E0316, §5.7: analog assignment to a reg (CHANGELOG, VD-116 revised)
+verilog-ams/ch07_mixed_signal/wide_reg_matches_digital_65600.va # E0316, §5.7: analog assignment to a reg (CHANGELOG, VD-116 revised)
+verilog-ams/ch07_mixed_signal/wide_reg_matches_digital_72.va # E0316, §5.7: analog assignment to a reg (CHANGELOG, VD-116 revised)
+verilog-ams/ch09_system_tasks/clog2_reg_analog_conversion.va # E0316, §5.7: analog assignment to a reg (CHANGELOG, VD-116 revised)
+verilog-ams/ch09_system_tasks/clog2_inferred_parameter_width.va # E0316, §5.7: analog assignment to a reg `child.bits` (CHANGELOG, VD-116 revised)

@@ -7,11 +7,24 @@
 //!
 //! LRM clauses cited: §2.7, §2.9, §3.2.2, §4.1, §4.2, §4.2.2, §4.2.10,
 //! §4.2.12, §4.3, §4.4, §4.5, §4.6, §4.7, §5.6.8.2, §5.10.2, §6.7, §6.7.1.
+//!
+//! Contents:
+//! - `pub fn parseExpr(self: *Parser) Error!Ast.ExprId`
+//! - `pub fn parsePostfix(self: *Parser) Error!Ast.ExprId`
+//! - `pub fn parseSelectAt(self: *Parser, base: Ast.ExprId, tok: u32) Error!Ast.ExprId`
+//! - `pub fn parseMinTypMax(self: *Parser) Error!Ast.ExprId`
+//! - `pub fn parsePrimary(self: *Parser) Error!Ast.ExprId`
+//! - `pub fn joinName(self: *Parser, parts: []const Ast.StrId) Error!Ast.StrId`
+//! - `pub fn parseNetRef(self: *Parser) Error!Ast.ExprId`
+//! - `pub fn parseNetLvalue(self: *Parser) Error!Ast.ExprId`
+//! - `pub fn parseCallArgs(self: *Parser) Error![]const Ast.ExprId`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_stmt = @import("stmt.zig");
+const parse_event = @import("event.zig");
 const token = @import("../token.zig");
 const Ast = @import("../ast.zig");
 const parse_hier = @import("hier.zig");
@@ -19,110 +32,23 @@ const parse_concat = @import("concat.zig");
 const parse_literal = @import("literal.zig");
 const Error = parser.Error;
 
-// -----------------------------------------------------------------------
-// A.8.3 expressions: LRM §4.1, §4.2 (precedence climbing)
-// -----------------------------------------------------------------------
+/// §4.2.12 `?:` sits below every binary operator (Table 4-3, last row).
+const prec_ternary: u8 = 1;
 
 /// Parses a full expression, conditional operator included (§4.1, §4.2).
 pub fn parseExpr(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     return parseExprPrec(self, prec_ternary);
-}
-
-/// Precedence climbing over LRM Table 4-3 (§4.2.2).
-fn parseExprPrec(self: *Parser, min_prec: u8) Error!Ast.ExprId {
-    var lhs = try parseUnary(self);
-    // Each operator folded into `lhs` makes its tree one level deeper, and
-    // every later walk recurses down that spine: it counts toward `deepest`.
-    const base = self.depth;
-    defer self.depth = base;
-    while (true) {
-        const t = self.peek();
-        // §4.2.12 conditional: lowest precedence, right associative.
-        if (t == .question and min_prec <= prec_ternary) {
-            const tok = self.pos;
-            self.nest();
-            self.pos += 1;
-            try self.ownedAttributes(.{ .kind = .expression, .tok = tok });
-            // Both arms nest a native level `parseUnary` has already left, so
-            // both count as frames (#29): `a ? b ? c ? ... : z : y` is as deep
-            // as `a ? b : c ? ...`.
-            const then_e = try self.descend(parseExprPrec, .{ self, prec_ternary });
-            _ = try self.expect(.colon);
-            const else_e = try self.descend(parseExprPrec, .{ self, prec_ternary });
-            lhs = try self.file.exprs.add(self.arena, .{
-                .tag = .ternary,
-                .main_tok = tok,
-                .lhs = lhs,
-                .rhs = then_e,
-                .extra = @backingInt(else_e),
-            });
-            continue;
-        }
-        // IEEE 1364-2005 A.8.3 `+:` / `-:` end an indexed part-select's base.
-        if ((t == .plus or t == .minus) and self.peekAt(1) == .colon) return lhs;
-        const op = binOp(t) orelse return lhs;
-        const prec = binopPrec(op);
-        if (prec < min_prec) return lhs;
-        const tok = self.pos;
-        // Annex C.5: "The case equality operators (===, !==) are not supported in Verilog-A."
-        if (self.verilog_a and (op == .case_eq or op == .case_neq)) try self.refuseDigital(tok, self.tokenText(tok));
-        self.nest();
-        self.pos += 1;
-        try self.ownedAttributes(.{ .kind = .expression, .tok = tok }); // A.8.3 binary suffix
-        // §4.2.2: "All operators associate left to right with the exception
-        // of the conditional operator". No `**` carve-out, so `2**3**2` is 64.
-        const rhs = try parseExprPrec(self, prec + 1);
-        lhs = try self.file.exprs.add(self.arena, .{
-            .tag = .binary,
-            .main_tok = tok,
-            .lhs = lhs,
-            .rhs = rhs,
-            .extra = @backingInt(op),
-        });
-    }
-}
-
-/// A.8.6 unary_operator (§4.2.1, §4.2.7 to §4.2.10). Unary binds tighter than
-/// every binary operator (Table 4-3, top row).
-fn parseUnary(self: *Parser) Error!Ast.ExprId {
-    // Every expression recursion (parentheses, `?:`) passes here.
-    if (self.segmentDue()) return self.segment(parseUnary, .{self});
-    self.enter();
-    defer self.leave();
-    const tok = self.pos;
-    const op: Ast.UnaryOp = switch (self.peek()) {
-        .plus => .plus,
-        .minus => .minus,
-        .bang => .logical_not,
-        .tilde => .bit_not,
-        .amp => .reduce_and,
-        .tilde_amp => .reduce_nand,
-        .pipe => .reduce_or,
-        .tilde_pipe => .reduce_nor,
-        // §4.2.10 reduction xor. Parsed like its siblings; lowering refuses it
-        // with E0320, which names the subset rule.
-        .caret => .reduce_xor,
-        .tilde_caret, .caret_tilde => .reduce_xnor,
-        else => return parsePostfix(self), // else: not a unary operator, so a postfix/primary operand
-    };
-    self.pos += 1;
-    try self.ownedAttributes(.{ .kind = .expression, .tok = tok }); // A.8.3 unary suffix
-    // A.8.3 `unary_operator { attribute_instance } primary` (VAMS-2023
-    // annex A: `analog_primary`): the operand is a primary, so `- -x`, `!!x`
-    // and `~ &x` are syntax errors (E0209 at the second operator) and
-    // `-(-x)` is the spelling. `a - -b` stays legal: binary, then unary.
-    const operand = try parsePostfix(self);
-    return self.file.exprs.add(self.arena, .{
-        .tag = .unary,
-        .main_tok = tok,
-        .lhs = operand,
-        .extra = @backingInt(op),
-    });
 }
 
 /// Parses a primary followed by any §3.2.2/§3.4.4 selects: `base[i]`,
 /// `base[msb:lsb]`.
 pub fn parsePostfix(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     var e = try parsePrimary(self);
     // Each select nests the tree one level, as an operator does.
     const base = self.depth;
@@ -139,6 +65,9 @@ pub fn parsePostfix(self: *Parser) Error!Ast.ExprId {
 /// `.index` node is reported at `tok`: the `[` itself, or a branch
 /// terminal's name, as for a bit-select (`parseNetRef`).
 pub fn parseSelectAt(self: *Parser, base: Ast.ExprId, tok: u32) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     _ = try self.expect(.lbracket);
     var idx = try parseExpr(self);
     if (self.eat(.colon)) { // A.8.3 analog_range_expression
@@ -167,6 +96,9 @@ pub fn parseSelectAt(self: *Parser, base: Ast.ExprId, tok: u32) Error!Ast.ExprId
 /// ponytail: a dropped member is never elaborated, so a name it misspells
 /// is not diagnosed. Keeping all three needs an AST node and a fold.
 pub fn parseMinTypMax(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const e = try parseExpr(self);
     if (!self.eat(.colon)) return e;
     const typ = try parseExpr(self);
@@ -179,6 +111,9 @@ pub fn parseMinTypMax(self: *Parser) Error!Ast.ExprId {
 /// concatenation, assignment pattern, name, call or branch probe. A token
 /// that begins none of them is E0209.
 pub fn parsePrimary(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     // A call this primary makes is a task enable when it heads a discrete
     // statement (`Parser.task_enable_head`); nothing nested in it is.
@@ -338,20 +273,18 @@ pub fn parsePrimary(self: *Parser) Error!Ast.ExprId {
 
     // Keyword-named calls. The groups are disjoint (token.zig's annex
     // A.8.2/A.6.5 test) and map one to one onto `ExprTag`.
-    const call_tag: Ast.ExprTag = if (token.isMathFunction(t))
-        .builtin_call // §4.3
-    else if (token.isFilterFunction(t))
-        .filter_call // §4.5
-    else if (token.isSmallSignalFunction(t))
-        .noise_call // §4.6
-    else if (token.isEventFunction(t))
-        .event_function // §5.10.3
-    else if (t == .kw_analysis)
-        .sys_call // §4.6.1 analysis_function_call
-    else if (t == .kw_initial_step or t == .kw_final_step)
-        return parse_stmt.parseEventTerm(self) // §5.10.2
-    else
-        return self.failAt(self.pos, .E0209, "found {s}", .{self.found(self.pos)});
+    const call_tag: Ast.ExprTag = switch (token.callGroup(t)) {
+        .math => .builtin_call, // §4.3
+        .filter => .filter_call, // §4.5
+        .small_signal => .noise_call, // §4.6
+        .event => .event_function, // §5.10.3
+        .none => if (t == .kw_analysis)
+            .sys_call // §4.6.1 analysis_function_call
+        else if (t == .kw_initial_step or t == .kw_final_step)
+            return parse_event.parseEventTerm(self) // §5.10.2
+        else
+            return self.failAt(self.pos, .E0209, "found {s}", .{self.found(self.pos)}),
+    };
 
     const name = try self.file.intern(self.arena, token.Tag.lexeme(t).?);
     self.pos += 1;
@@ -368,6 +301,185 @@ pub fn parsePrimary(self: *Parser) Error!Ast.ExprId {
     return id;
 }
 
+/// The flat name `a.b.c` of a §6.7 hierarchical name's parts, interned: the
+/// name elaboration gives the entity (`Elaborate.sep` is the same `.`), so
+/// `Lower.flatName` and this join must change together. `parts` must be
+/// nonempty (a name has at least one part).
+pub fn joinName(self: *Parser, parts: []const Ast.StrId) Error!Ast.StrId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    var n = parts.len - 1;
+    for (parts) |part| n += self.file.str(part).len;
+    var joined: std.ArrayList(u8) = try .initCapacity(self.arena, n);
+    for (parts, 0..) |part, i| {
+        if (i != 0) joined.appendAssumeCapacity('.');
+        joined.appendSliceAssumeCapacity(self.file.str(part));
+    }
+    return self.file.strings.intern(self.arena, joined.items);
+}
+
+/// Parses an A.8.9 / A.2.1.3 branch terminal: a net or branch name, optionally
+/// with a §5.5.2 bit select (`V(in[1])`).
+///
+/// The index is any expression: §5.5.2's "constant" admits a genvar, which is
+/// constant only part-way through elaboration, so lowering folds it (E0352).
+/// A §6.7.1 hierarchical terminal (`V(drv.a)`, `V($root.global_supply.vdd)`)
+/// becomes a `.hier_ident`, `$root` included as part 0, as in `parsePrimary`.
+///
+/// ponytail: no index inside a path (`u[0].a`); adding one needs a
+/// resolution rule, and `hier_ident` is already the shape it would use.
+pub fn parseNetRef(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const tok = self.pos;
+    const name = if (self.peek() == .system_identifier and self.tags[self.pos + 1] == .dot) blk: {
+        const root = try self.internTok(self.pos);
+        self.pos += 1;
+        break :blk root;
+    } else try self.expectIdent();
+    // §6.7 + §5.5.2: in `V(u.v[1])` the select applies to the whole path.
+    const base = if (self.eat(.dot))
+        try hierTerminal(self, &.{name}, tok)
+    else
+        try self.file.exprs.add(self.arena, .{ .tag = .ident, .main_tok = tok, .str = name });
+    if (self.peek() != .lbracket) return base;
+    // A.2.1.3 `branch_terminal ::= net_identifier [ constant_range_expression ]`:
+    // a bit, a part or an indexed part (`vecTerminal` judges which).
+    return parseSelectAt(self, base, tok);
+}
+
+/// Parses an A.8.5 `net_lvalue ::= hierarchical_net_identifier [ ... ]
+/// | { net_lvalue { , net_lvalue } }`, a primitive's output or inout
+/// terminal (A.3.3, A.5.4). A one-element concatenation is its element, the
+/// same bits (IEEE 1364-2005 §5.1.14); a wider one stays a `.concat` for the
+/// executor to judge.
+pub fn parseNetLvalue(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    if (self.peek() != .lbrace) return parseNetRef(self);
+    const c = try parse_concat.parseConcat(self, self.pos);
+    const ex = &self.file.exprs;
+    if (ex.tag(c) == .concat and ex.args(c).len == 1) return ex.args(c)[0];
+    return c;
+}
+
+/// Parses an A.8.2 / A.6.9 argument list, cursor on the `(`. An omitted
+/// argument (`f(a, , c)`) becomes `.none`, so lowering can apply the
+/// per-function defaults instead of guessing arity. The slice is arena-owned
+/// and exactly as long as the list.
+pub fn parseCallArgs(self: *Parser) Error![]const Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const mark = self.scratch_exprs.items.len;
+    defer self.scratch_exprs.shrinkRetainingCapacity(mark);
+    try pushCallArgs(self, null);
+    return self.arena.dupe(Ast.ExprId, self.scratch_exprs.items[mark..]);
+}
+
+// ---- private ----
+
+/// Precedence climbing over LRM Table 4-3 (§4.2.2).
+fn parseExprPrec(self: *Parser, min_prec: u8) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    var lhs = try parseUnary(self);
+    // Each operator folded into `lhs` makes its tree one level deeper, and
+    // every later walk recurses down that spine: it counts toward `deepest`.
+    const base = self.depth;
+    defer self.depth = base;
+    while (true) {
+        const t = self.peek();
+        // §4.2.12 conditional: lowest precedence, right associative.
+        if (t == .question and min_prec <= prec_ternary) {
+            const tok = self.pos;
+            self.nest();
+            self.pos += 1;
+            try self.ownedAttributes(.{ .kind = .expression, .tok = tok });
+            // Both arms nest a native level `parseUnary` has already left, so
+            // both count as frames (#29): `a ? b ? c ? ... : z : y` is as deep
+            // as `a ? b : c ? ...`.
+            const then_e = try self.descend(parseExprPrec, .{ self, prec_ternary });
+            _ = try self.expect(.colon);
+            const else_e = try self.descend(parseExprPrec, .{ self, prec_ternary });
+            lhs = try self.file.exprs.add(self.arena, .{
+                .tag = .ternary,
+                .main_tok = tok,
+                .lhs = lhs,
+                .rhs = then_e,
+                .extra = @backingInt(else_e),
+            });
+            continue;
+        }
+        // IEEE 1364-2005 A.8.3 `+:` / `-:` end an indexed part-select's base.
+        if ((t == .plus or t == .minus) and self.peekAt(1) == .colon) return lhs;
+        const op = binOp(t) orelse return lhs;
+        const prec = binopPrec(op);
+        if (prec < min_prec) return lhs;
+        const tok = self.pos;
+        // Annex C.5: "The case equality operators (===, !==) are not supported in Verilog-A."
+        if (self.verilog_a and (op == .case_eq or op == .case_neq)) try self.refuseDigital(tok, self.tokenText(tok));
+        self.nest();
+        self.pos += 1;
+        try self.ownedAttributes(.{ .kind = .expression, .tok = tok }); // A.8.3 binary suffix
+        // §4.2.2: "All operators associate left to right with the exception
+        // of the conditional operator". No `**` carve-out, so `2**3**2` is 64.
+        const rhs = try parseExprPrec(self, prec + 1);
+        lhs = try self.file.exprs.add(self.arena, .{
+            .tag = .binary,
+            .main_tok = tok,
+            .lhs = lhs,
+            .rhs = rhs,
+            .extra = @backingInt(op),
+        });
+    }
+}
+
+/// A.8.6 unary_operator (§4.2.1, §4.2.7 to §4.2.10). Unary binds tighter than
+/// every binary operator (Table 4-3, top row).
+fn parseUnary(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    // Every expression recursion (parentheses, `?:`) passes here.
+    if (self.segmentDue()) return self.segment(parseUnary, .{self});
+    self.enter();
+    defer self.leave();
+    const tok = self.pos;
+    const op: Ast.UnaryOp = switch (self.peek()) {
+        .plus => .plus,
+        .minus => .minus,
+        .bang => .logical_not,
+        .tilde => .bit_not,
+        .amp => .reduce_and,
+        .tilde_amp => .reduce_nand,
+        .pipe => .reduce_or,
+        .tilde_pipe => .reduce_nor,
+        // §4.2.10 reduction xor. Parsed like its siblings; lowering refuses it
+        // with E0320, which names the subset rule.
+        .caret => .reduce_xor,
+        .tilde_caret, .caret_tilde => .reduce_xnor,
+        else => return parsePostfix(self), // else: not a unary operator, so a postfix/primary operand
+    };
+    self.pos += 1;
+    try self.ownedAttributes(.{ .kind = .expression, .tok = tok }); // A.8.3 unary suffix
+    // A.8.3 `unary_operator { attribute_instance } primary` (VAMS-2023
+    // annex A: `analog_primary`): the operand is a primary, so `- -x`, `!!x`
+    // and `~ &x` are syntax errors (E0209 at the second operator) and
+    // `-(-x)` is the spelling. `a - -b` stays legal: binary, then unary.
+    const operand = try parsePostfix(self);
+    return self.file.exprs.add(self.arena, .{
+        .tag = .unary,
+        .main_tok = tok,
+        .lhs = operand,
+        .extra = @backingInt(op),
+    });
+}
+
 inline fn addCall(self: *Parser, tag: Ast.ExprTag, tok: u32, name: Ast.StrId, args: []const Ast.ExprId) Error!Ast.ExprId {
     const off = try self.file.exprs.addExprList(self.arena, args);
     return self.file.exprs.add(self.arena, .{
@@ -381,6 +493,9 @@ inline fn addCall(self: *Parser, tag: Ast.ExprTag, tok: u32, name: Ast.StrId, ar
 /// §4.4.1 branch_probe_function_call / §4.4.2 port_probe_function_call
 /// (A.8.2). `V(a)`, `V(a,b)`, `I(br)`, `I(<p>)`.
 fn parseAccess(self: *Parser, name: Ast.StrId, tok: u32) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     _ = try self.expect(.lparen);
     if (self.eat(.lt)) { // §5.4.3 port branch `I(<p>)`
         const port = try parseNetRef(self);
@@ -431,6 +546,9 @@ fn parseAccess(self: *Parser, name: Ast.StrId, tok: u32) Error!Ast.ExprId {
 /// A.2.1.3's `[ constant_expression ]`, which selects on the whole path as in
 /// `parseNetRef`.
 fn parseHierBranchRef(self: *Parser, name: Ast.StrId, tok: u32) Error!?Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const rooted = self.peek() == .system_identifier and std.mem.eql(u8, self.tokenText(self.pos), "$root");
     // The lookahead counts the parts the loop below then reads.
     const n_parts = blk: {
@@ -483,6 +601,9 @@ fn parseHierBranchRef(self: *Parser, name: Ast.StrId, tok: u32) Error!?Ast.ExprI
 /// One `branch_terminal` of a hierarchical unnamed branch on the instance
 /// path `prefix`, with its optional select (`parseHierBranchRef`).
 fn hierBranchTerminal(self: *Parser, prefix: []const Ast.StrId, tok: u32) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const base = try hierTerminal(self, prefix, tok);
     if (self.peek() != .lbracket) return base;
     self.pos += 1;
@@ -491,83 +612,19 @@ fn hierBranchTerminal(self: *Parser, prefix: []const Ast.StrId, tok: u32) Error!
     return self.file.exprs.add(self.arena, .{ .tag = .index, .main_tok = tok, .lhs = base, .rhs = idx });
 }
 
-/// The flat name `a.b.c` of a §6.7 hierarchical name's parts, interned: the
-/// name elaboration gives the entity (`Elaborate.sep` is the same `.`), so
-/// `Lower.flatName` and this join must change together. `parts` must be
-/// nonempty (a name has at least one part).
-pub fn joinName(self: *Parser, parts: []const Ast.StrId) Error!Ast.StrId {
-    var n = parts.len - 1;
-    for (parts) |part| n += self.file.str(part).len;
-    var joined: std.ArrayList(u8) = try .initCapacity(self.arena, n);
-    for (parts, 0..) |part, i| {
-        if (i != 0) joined.appendAssumeCapacity('.');
-        joined.appendSliceAssumeCapacity(self.file.str(part));
-    }
-    return self.file.strings.intern(self.arena, joined.items);
-}
-
 /// `prefix . id { . id }` as one `.hier_ident`, the cursor on the first `id`:
 /// a `branch_terminal` of the production above, or any dotted name whose head
 /// is already read.
 fn hierTerminal(self: *Parser, prefix: []const Ast.StrId, tok: u32) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     var parts: std.ArrayList(Ast.StrId) = .empty;
     try parts.appendSlice(self.arena, prefix);
     try parts.append(self.arena, try self.expectIdent());
     while (self.eat(.dot)) try parts.append(self.arena, try self.expectIdent());
     const off = try self.file.exprs.addStrList(self.arena, parts.items);
     return self.file.exprs.add(self.arena, .{ .tag = .hier_ident, .main_tok = tok, .extra = off });
-}
-
-/// Parses an A.8.9 / A.2.1.3 branch terminal: a net or branch name, optionally
-/// with a §5.5.2 bit select (`V(in[1])`).
-///
-/// The index is any expression: §5.5.2's "constant" admits a genvar, which is
-/// constant only part-way through elaboration, so lowering folds it (E0352).
-/// A §6.7.1 hierarchical terminal (`V(drv.a)`, `V($root.global_supply.vdd)`)
-/// becomes a `.hier_ident`, `$root` included as part 0, as in `parsePrimary`.
-///
-/// ponytail: no index inside a path (`u[0].a`); adding one needs a
-/// resolution rule, and `hier_ident` is already the shape it would use.
-pub fn parseNetRef(self: *Parser) Error!Ast.ExprId {
-    const tok = self.pos;
-    const name = if (self.peek() == .system_identifier and self.tags[self.pos + 1] == .dot) blk: {
-        const root = try self.internTok(self.pos);
-        self.pos += 1;
-        break :blk root;
-    } else try self.expectIdent();
-    // §6.7 + §5.5.2: in `V(u.v[1])` the select applies to the whole path.
-    const base = if (self.eat(.dot))
-        try hierTerminal(self, &.{name}, tok)
-    else
-        try self.file.exprs.add(self.arena, .{ .tag = .ident, .main_tok = tok, .str = name });
-    if (self.peek() != .lbracket) return base;
-    // A.2.1.3 `branch_terminal ::= net_identifier [ constant_range_expression ]`:
-    // a bit, a part or an indexed part (`vecTerminal` judges which).
-    return parseSelectAt(self, base, tok);
-}
-
-/// Parses an A.8.5 `net_lvalue ::= hierarchical_net_identifier [ ... ]
-/// | { net_lvalue { , net_lvalue } }`, a primitive's output or inout
-/// terminal (A.3.3, A.5.4). A one-element concatenation is its element, the
-/// same bits (IEEE 1364-2005 §5.1.14); a wider one stays a `.concat` for the
-/// executor to judge.
-pub fn parseNetLvalue(self: *Parser) Error!Ast.ExprId {
-    if (self.peek() != .lbrace) return parseNetRef(self);
-    const c = try parse_concat.parseConcat(self, self.pos);
-    const ex = &self.file.exprs;
-    if (ex.tag(c) == .concat and ex.args(c).len == 1) return ex.args(c)[0];
-    return c;
-}
-
-/// Parses an A.8.2 / A.6.9 argument list, cursor on the `(`. An omitted
-/// argument (`f(a, , c)`) becomes `.none`, so lowering can apply the
-/// per-function defaults instead of guessing arity. The slice is arena-owned
-/// and exactly as long as the list.
-pub fn parseCallArgs(self: *Parser) Error![]const Ast.ExprId {
-    const mark = self.scratch_exprs.items.len;
-    defer self.scratch_exprs.shrinkRetainingCapacity(mark);
-    try pushCallArgs(self, null);
-    return self.arena.dupe(Ast.ExprId, self.scratch_exprs.items[mark..]);
 }
 
 /// `parseCallArgs` onto `scratch_exprs` above its current length, for a
@@ -583,6 +640,9 @@ pub fn parseCallArgs(self: *Parser) Error![]const Ast.ExprId {
 /// discrete grammar keeps a function's `f()` for the same engine, which
 /// refuses it by arity (E1100).
 fn pushCallArgs(self: *Parser, user: ?Ast.StrId) Error!void {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const mark = self.scratch_exprs.items.len;
     _ = try self.expect(.lparen);
     if (self.peek() == .rparen) {
@@ -604,6 +664,9 @@ fn pushCallArgs(self: *Parser, user: ?Ast.StrId) Error!void {
 /// expression pool, with no list of their own. `task_enable`: the `.call`
 /// is A.6.9's task_enable, whose arguments §10.2.2 judges, not A.8.2.
 fn parseCall(self: *Parser, tag: Ast.ExprTag, tok: u32, name: Ast.StrId, task_enable: bool) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const mark = self.scratch_exprs.items.len;
     defer self.scratch_exprs.shrinkRetainingCapacity(mark);
     try pushCallArgs(self, if (tag == .call and !task_enable) name else null);
@@ -626,9 +689,6 @@ fn binopPrec(op: Ast.BinaryOp) u8 {
         .logical_or => 2,
     };
 }
-
-/// §4.2.12 `?:` sits below every binary operator (Table 4-3, last row).
-const prec_ternary: u8 = 1;
 
 /// A.8.6 binary_operator → `Ast.BinaryOp`, null for a token that is not one.
 /// `===`/`!==`/`<<<`/`>>>` are mapped, not rejected: lowering judges them in

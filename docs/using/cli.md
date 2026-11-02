@@ -32,7 +32,7 @@ flag never silently wins over an earlier one of another kind.
 | `--emit-zig` | write the device's Zig source to stdout, or to `-o PATH` | no |
 | `-o PATH` | implies `--emit-zig`, writing to `PATH` | no |
 | `--emit-verilog` | a behavioural Verilog model of a `.va`, for digital simulators | no |
-| `--emit-rtlil` | a `.v` design as Yosys RTLIL text, for synthesis: `yosys -p 'read_rtlil design.il; synth'`. One module per source module, a `process` per `always` block, parameters at their defaults; a construct outside the synthesizable subset (a loop, a memory, a real, a hierarchical name, a parameter override of a module outside the source) is refused by name with its line | no |
+| `--emit-rtlil` | a `.v` design as Yosys RTLIL text, for synthesis: `yosys -p 'read_rtlil design.il; synth'`. One module per source module, a `process` per `always` block, parameters at their defaults; a construct outside the synthesizable subset (a loop, a memory, a real, a hierarchical name, a parameter override of a module outside the source) is refused with a coded diagnostic (E1200–E1278, `vera --explain E12xx`) at its line | no |
 | `--check` | generate the device and type-check it with Zig against the contract, running the contract's conformance checks | yes |
 | `--emit-exe` | build a self-checking testbench from the source's `//!` directives (or a `.v` design's executable) and print its path | yes |
 | `--run` | `--emit-exe`, then run it; the testbench's exit status is `vera`'s | yes |
@@ -139,6 +139,7 @@ These matter to `--check`, `--emit-exe`, `--run` and `--emit-so`.
 | `--schedule=static\|fifo` | order of same-time events: combinational logic levelized (`static`, the default; IEEE 1364-2005 §11.4.1) or the interpreter's order |
 | `--state=auto\|2\|4` | `auto` (default) simulates 4-state until no x or z is live, then 2-state; `4` always 4-state; `2` makes every x or z a 0, which is **not** IEEE 1364 4-state logic (E1101) |
 | `--two-state` | `--state=2` |
+| `--negative-timing` | IEEE 1364-2005 §15.5.4's option: `$setuphold` and `$recrem` take negative limits, through one delayed copy per signal per instance (§15.5.1); off, a negative limit is 0 |
 | `--event-budget=N` | events allowed at one time step before a zero-delay loop is refused (default 10000000) |
 
 ## `--emit-verilog`

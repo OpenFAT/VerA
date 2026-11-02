@@ -1,7 +1,3 @@
 $ vera --run qsite.va
-=== qsite ===
 qsite count got=1 want=1 ok=1
 qsite[0] got=p+ n- lte want=p+ n- lte ok=1
---- point 0 ---
-  x[p] = 0.000000e0
-  x[n] = 0.000000e0

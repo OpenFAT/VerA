@@ -1,14 +1,16 @@
 //! Codegen probes: one `export fn` per loop the compiler, the emitters and
-//! the runtime must keep vectorised, so a later edit that makes one scalar
-//! again shows in the assembly. Nothing in the build runs this file. Build it
-//! by hand with
+//! the runtime must keep vectorised or branchless, so a later edit that
+//! undoes one shows in the assembly. `zig build test` (and `test-probe`)
+//! builds this file for x86_64_v3, ReleaseFast, with `-femit-asm`, and
+//! `tools/asm_probe.py` holds each function to its `expect:` line below:
+//! `vector>=N` counts packed (`ymm`) instructions (the per-element loop each
+//! one replaced has none), `branches==0` conditional jumps. By hand:
 //!
-//!   zig build-obj -OReleaseFast -mcpu=x86_64_v3 -fstrip -femit-asm=k.s -fno-emit-bin tests/codegen_probe.zig
+//!   zig build-obj -OReleaseFast -target x86_64-linux -mcpu=x86_64_v3 -fstrip -femit-asm=k.s -fno-emit-bin \
+//!     --dep kernels -Mroot=tests/codegen_probe.zig --dep contract -Mkernels=lib/kernels/root.zig -Mcontract=lib/contract.zig
+//!   python3 tools/asm_probe.py tests/codegen_probe.zig k.s
 //!
-//! and count the packed (`ymm`) instructions of each function against its
-//! `expect:` line below (`vector>=N`: the count on x86_64_v3, ReleaseFast; the
-//! per-element loop each one replaced has none). No LRM clause: these check
-//! VerA's own code.
+//! No LRM clause: these check VerA's own code.
 const std = @import("std");
 
 // ---------------------------------------------------------------------------
@@ -182,4 +184,35 @@ export fn orx_vector(ov: [*]u64, ox: [*]u64, r: [*]const u64, unk: bool, len: us
     x[N - 1] &= top;
     ov[0..N].* = v;
     ox[0..N].* = x;
+}
+
+// ---------------------------------------------------------------------------
+// lib/kernels/
+// ---------------------------------------------------------------------------
+
+// `limit_kernels.zig`'s §4.5.15 ladders. Each public name is a branchy
+// transparent test and a never-inline call to its `*Clamp` ladder, which
+// `sel`'s asm barrier keeps free of conditional jumps (a dead arm's `@log`
+// is evaluated, not jumped over). An `if` or a bare `select` in a ladder
+// comes back as `ja`/`jbe` here. The values are held to ngspice's
+// `devsup.c` control flow, bit for bit, by the oracles in `tests/unit.zig`.
+//
+// expect: limit_kernels.zPnjlimClamp branches==0
+// expect: limit_kernels.zFetlimClamp branches==0
+// expect: limit_kernels.zLimvdsClamp branches==0
+const limit = @import("kernels").limit_kernels;
+
+/// `DEVpnjlim`: emits `zPnjlimClamp` out of line.
+export fn pnjlim(vnew: f64, vold: f64, vt: f64, vcrit: f64) f64 {
+    return limit.zPnjlim(vnew, vold, vt, vcrit);
+}
+
+/// `DEVfetlim`: emits `zFetlimClamp` out of line.
+export fn fetlim(vnew: f64, vold: f64, vto: f64) f64 {
+    return limit.zFetlim(vnew, vold, vto);
+}
+
+/// `DEVlimvds`: emits `zLimvdsClamp` out of line.
+export fn limvds(vnew: f64, vold: f64) f64 {
+    return limit.zLimvds(vnew, vold);
 }

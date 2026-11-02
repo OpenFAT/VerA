@@ -1,29 +1,5 @@
 $ vera --run inductor.va
-=== inductor ===
---- point 0 ---
-  x[in] = 0.000000e0
-  x[n] = 0.000000e0
-  x[mid] = 0.000000e0
-  x[flowZ28nZ2cmidZ29] = 0.000000e0
 t = 0 s: I = -0 A, V(mid) = 0 V
---- point 1 ---
-  x[in] = 1.000000e0
-  x[n] = 0.000000e0
-  x[mid] = 5.000000e-1
-  x[flowZ28nZ2cmidZ29] = -5.000000e-4
-  t = 1.000000e-4  dt = 1.000000e-4
 t = 0.0001 s: I = 0.0005 A, V(mid) = 0.5 V
---- point 2 ---
-  x[in] = 1.000000e0
-  x[n] = 0.000000e0
-  x[mid] = 2.500000e-1
-  x[flowZ28nZ2cmidZ29] = -7.500000e-4
-  t = 2.000000e-4  dt = 1.000000e-4
 t = 0.0002 s: I = 0.00075 A, V(mid) = 0.25 V
---- point 3 ---
-  x[in] = 1.000000e0
-  x[n] = 0.000000e0
-  x[mid] = 1.250000e-1
-  x[flowZ28nZ2cmidZ29] = -8.750000e-4
-  t = 3.000000e-4  dt = 1.000000e-4
 t = 0.0003 s: I = 0.000875 A, V(mid) = 0.125 V

@@ -1,12 +1,5 @@
 $ vera --run limexp.va
-=== limexp ===
---- point 0 ---
-  x[a] = 7.000000e-1
-  x[k] = 0.000000e0
 V = 0.7 V: x = 27.0637  exp(x) = 5.670295e+11  limexp(x) = 5.670295e+11
---- point 1 ---
-  x[a] = 3.000000e0
-  x[k] = 0.000000e0
 V = 3 V: x = 115.9872  exp(x) = 2.358281e+50  limexp(x) = 2.358281e+50
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(a,k) — compiles with @setFloatMode(.strict)
   --> limexp.va:17:5

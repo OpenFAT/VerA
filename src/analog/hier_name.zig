@@ -3,20 +3,34 @@
 //! In: string-named instance/node references. Out: the flat unknown each one names,
 //! resolved at compile time (the device has no runtime hierarchy).
 //!
-//! LRM clauses this file's code cites: §1.3.1.1, §3.6.3.2, §3.11.1, §5.2.1,
-//! §5.4.3, §5.8.3, §6.2.1, §6.4.3, §6.7, §9.16, §9.20.
+//! Cites: §1.3.1.1, §3.3, §3.6.3.2, §3.11.1, §5.2.1, §5.4.3, §5.8.3, §6.2.1,
+//! §6.4.3, §6.7, A.8.3, §9.16, §9.20.
+//!
+//! Contents:
+//! - `pub const State = struct`
+//! - `pub const Cond = struct`
+//! - `pub const Runtime = struct`
+//! - `pub fn pushCond(self: *Lower, c: Cond) Oom!void`
+//! - `pub fn popCond(self: *Lower) void`
+//! - `pub fn aliasProbe(self: *Lower, idx: u32) Oom!Mir.Value`
+//! - `pub fn refuseRuntime(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void`
+//! - `pub fn checkAliasCall(self: *Lower, e: Ast.ExprId, name: []const u8, args: []const Ast.ExprId) Oom!lower_limit.AliasResult`
+//! - `pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
 
 const std = @import("std");
-const Lower = @import("lower.zig");
+const assert = std.debug.assert;
+const Ast = @import("frontend").Ast;
+const elab = @import("elab");
+const Mir = @import("ir").Mir;
+const Lower = @import("Lower.zig");
 const lower_constfold = @import("constfold.zig");
 const lower_discipline = @import("discipline.zig");
 const lower_expr = @import("expr.zig");
 const lower_limit = @import("limit.zig");
 const lower_node = @import("node.zig");
 const lower_sysfunc = @import("sysfunc.zig");
-const Ast = @import("frontend").Ast;
-const Elaborate = @import("elab").Elaborate;
-const Mir = @import("ir").Mir;
+const lower_expr_op = @import("expr_op.zig");
+const lower_sysfunc_args = @import("sysfunc_args.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
 const TypedValue = Lower.TypedValue;
@@ -60,6 +74,11 @@ pub const Runtime = struct {
     entries: std.ArrayList(struct { target: u32, conds: []const Cond }) = .empty,
 };
 
+/// §9.20 one resolved `hierarchical_reference_string`: the unknown it names,
+/// and whether the name was a node of the flat design itself (`direct`) rather
+/// than a child port flattening bound to one.
+const AliasHit = struct { idx: u32, direct: bool };
+
 /// Enters an arm of a conditional inside `analog initial`; a no-op elsewhere,
 /// where no alias call can be.
 pub fn pushCond(self: *Lower, c: Cond) Oom!void {
@@ -70,7 +89,7 @@ pub fn pushCond(self: *Lower, c: Cond) Oom!void {
 pub fn popCond(self: *Lower) void {
     if (!self.in_analog_initial) return;
     const left = self.hier_name_state.conds.pop();
-    std.debug.assert(left != null);
+    assert(left != null);
 }
 
 /// Returns the potential probe of node `idx`, following §9.20 aliases. For a net
@@ -78,6 +97,7 @@ pub fn popCond(self: *Lower) void {
 /// re-executes `analog initial` on a parameter change), emits a select over the
 /// candidates, re-lowering their conditions (`Cond.pure` makes that the same value).
 pub fn aliasProbe(self: *Lower, idx: u32) Oom!Mir.Value {
+    assert(self.blockValid(self.cur));
     const set = self.hier_name_state.runtime.get(idx) orelse return lower_node.probe(self, idx);
     var v = try lower_node.probe(self, set.base);
     for (set.entries.items) |en| {
@@ -91,36 +111,18 @@ pub fn aliasProbe(self: *Lower, idx: u32) Oom!Mir.Value {
     return v;
 }
 
-fn condValue(self: *Lower, t: Cond) Oom!Mir.Value {
-    var b: ?Mir.Value = null;
-    if (t.labels.len == 0) {
-        b = try self.toBool(try lower_expr.lowerExpr(self, t.e));
-    } else {
-        // §5.8.3 an arm matches any one of its labels.
-        const sv = try lower_expr.lowerExpr(self, t.e);
-        for (t.labels) |l| {
-            const eq = try lower_expr.cmp(self, .eq, sv, try lower_expr.lowerExpr(self, l));
-            b = if (b) |p| try self.emit(.logor, &.{ p, eq }) else eq;
-        }
-    }
-    return if (t.pol) b.? else self.emit(.lognot, &.{b.?});
-}
-
 /// Reports an error when nodes `hi` or `lo` have a parameter-chosen alias. Only a
 /// potential probe can follow one; a contribution, flow or `ddx` would need its
 /// row or column chosen by the card as well.
 /// ponytail: refused rather than routed; route them through the same select
 /// the day a model needs one.
 pub fn refuseRuntime(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void {
+    assert(self.nodeValid(hi));
+    assert(self.nodeValid(lo));
     const rt = &self.hier_name_state.runtime;
     const idx = if (rt.contains(hi)) hi else if (rt.contains(lo)) lo else return;
     try self.err(tok, .E0812, "`{s}` is aliased under a parameter condition; VerA answers only a potential probe of it, not a contribution, a flow or a ddx", .{lower_node.nodeName(self, idx)});
 }
-
-/// §9.20 one resolved `hierarchical_reference_string`: the unknown it names,
-/// and whether the name was a node of the flat design itself (`direct`) rather
-/// than a child port flattening bound to one.
-const AliasHit = struct { idx: u32, direct: bool };
 
 /// §9.20's validity list for `$analog_node_alias()` / `$analog_port_alias()`,
 /// then the alias itself.
@@ -131,6 +133,7 @@ const AliasHit = struct { idx: u32, direct: bool };
 /// message quoting its sentence. The alias is a `node_voltages` write made in source
 /// order, which gives §9.20's "the last evaluated call shall take precedence".
 pub fn checkAliasCall(self: *Lower, e: Ast.ExprId, name: []const u8, args: []const Ast.ExprId) Oom!lower_limit.AliasResult {
+    assert(e == .none or self.exprValid(e));
     const ex = &self.file.exprs;
     // 1. "It shall be an error for the $analog_node_alias() and
     // $analog_port_alias() system functions to be used outside the analog
@@ -253,6 +256,51 @@ pub fn checkAliasCall(self: *Lower, e: Ast.ExprId, name: []const u8, args: []con
     return bindAlias(self, name, ref_name, local, target);
 }
 
+/// Lowers `$simprobe(inst_name, param_name [, expression])` (LRM §9.16) to the
+/// sibling instance's parameter or variable, resolved at compile time by flat name.
+/// When the name does not resolve, returns `expression`, or reports an error when
+/// there is none. A name known only at run time (§9.16 "or a string variable")
+/// goes to `lowerSimprobeRuntime`.
+pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    const ex = &self.file.exprs;
+    const args = ex.args(e);
+    if (args.len < 2) {
+        try self.err(self.file.exprs.mainTok(e), .E0809, "`$simprobe` takes an instance name and a parameter name", .{});
+        return poison;
+    }
+    const inst = lower_sysfunc_args.constStrArg(self, args[0]);
+    const param = lower_sysfunc_args.constStrArg(self, args[1]);
+    if (inst == null or param == null) return lowerSimprobeRuntime(self, e, inst, param);
+    // §9.16: "the simulator will look for an instance called inst_name in
+    // the parent of the current instance i.e. a sibling of the instance
+    // containing the $simprobe() expression." The name is relative, so the
+    // flat key is the caller's parent path joined to it.
+    const path = try std.mem.concat(self.arena, u8, &.{
+        callerParentPath(self), inst.?, &[_]u8{elab.sep}, param.?,
+    });
+    if (try resolveProbe(self, path)) |tv| return tv;
+    return unresolvedProbe(self, e, inst, param);
+}
+
+// ---- private ----
+
+fn condValue(self: *Lower, t: Cond) Oom!Mir.Value {
+    assert(self.blockValid(self.cur));
+    var b: ?Mir.Value = null;
+    if (t.labels.len == 0) {
+        b = try self.toBool(try lower_expr.lowerExpr(self, t.e));
+    } else {
+        // §5.8.3 an arm matches any one of its labels.
+        const sv = try lower_expr.lowerExpr(self, t.e);
+        for (t.labels) |l| {
+            const eq = try lower_expr_op.cmp(self, .eq, sv, try lower_expr.lowerExpr(self, l));
+            b = if (b) |p| try self.emit(.logor, &.{ p, eq }) else eq;
+        }
+    }
+    return if (t.pol) b.? else self.emit(.lognot, &.{b.?});
+}
+
 /// §9.20 a whole-vector analog_net_reference. The validity rules make the
 /// target "a scalar continuous node or a scalar element of a continuous
 /// vector node", and an aliased reference "shall refer to the same circuit
@@ -341,7 +389,7 @@ fn bindAlias(self: *Lower, fname: []const u8, ref_name: []const u8, local: u32, 
 /// `direct` says the name was a node of the flat design itself rather than a
 /// child port that flattening bound to one (see `bindAlias`'s port rule).
 ///
-/// Flattened names join path parts with `Elaborate.sep`, a period, so this is a map
+/// Flattened names join path parts with `elab.sep`, a period, so this is a map
 /// lookup. A leading `$root.` is stripped (§6.2.1); the unstripped name is tried
 /// first and the device's own module name stripped only after it fails, since §6.7
 /// resolves the ambiguity "by giving priority to the local scope".
@@ -351,7 +399,7 @@ fn resolveAliasNode(self: *Lower, path: []const u8) ?AliasHit {
     if (std.mem.startsWith(u8, p, "$root.")) p = p["$root.".len..];
     if (self.module) |m| {
         const mn = self.file.str(m.name);
-        if (p.len > mn.len + 1 and p[mn.len] == Elaborate.sep and std.mem.startsWith(u8, p, mn))
+        if (p.len > mn.len + 1 and p[mn.len] == elab.sep and std.mem.startsWith(u8, p, mn))
             p = p[mn.len + 1 ..];
     }
     if (p.len == path.len) return null; // nothing stripped; already looked up
@@ -362,8 +410,8 @@ fn lookupFlatNode(self: *Lower, p: []const u8) ?AliasHit {
     if (self.node_voltages.get(p)) |i| return .{ .idx = i, .direct = true };
     // A child port bound to a parent net is the same signal as that net, and
     // `Design.names` holds exactly those aliases (`flatName`'s one exception).
-    if (self.out.hier_names.get(p)) |flat| {
-        if (self.node_voltages.get(flat)) |i| return .{ .idx = i, .direct = false };
+    if (self.design.names.get(p)) |flat| {
+        if (self.node_voltages.get(self.file.str(flat))) |i| return .{ .idx = i, .direct = false };
     }
     return null;
 }
@@ -372,71 +420,49 @@ fn lookupFlatNode(self: *Lower, p: []const u8) ?AliasHit {
 /// with its last segment dropped, separator included, "" at the top. Joined to
 /// an `inst_name` it gives the flat name of a sibling.
 fn callerParentPath(self: *const Lower) []const u8 {
-    if (self.cur_unit >= self.unit_paths.len) return "";
-    const p = self.unit_paths[self.cur_unit].path;
+    if (self.cur_unit >= self.design.units.len) return "";
+    const p = self.design.units.items(.path)[self.cur_unit];
     if (p.len == 0) return p;
     // `path` ends with the separator, so the caller's own segment is the text
     // between the previous separator and the last one.
-    const cut = std.mem.findScalarLast(u8, p[0 .. p.len - 1], Elaborate.sep) orelse return "";
+    const cut = std.mem.findScalarLast(u8, p[0 .. p.len - 1], elab.sep) orelse return "";
     return p[0 .. cut + 1];
 }
 
-/// Lowers `$simprobe(inst_name, param_name [, expression])` (LRM §9.16) to the
-/// sibling instance's parameter or variable, resolved at compile time by flat name.
-/// When the name does not resolve, returns `expression`, or reports an error when
-/// there is none. A name that does not fold is refused (E0823): §9.16 resolves a
-/// string variable at run time, and VerA has no run-time instance table.
-pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
-    const ex = &self.file.exprs;
-    const args = ex.args(e);
-    if (args.len < 2) {
-        try self.err(self.file.exprs.mainTok(e), .E0809, "`$simprobe` takes an instance name and a parameter name", .{});
-        return poison;
+/// §9.16 the value the sibling's parameter or output variable `path` (its
+/// flat name) has in this evaluation, or null when no such name exists.
+fn resolveProbe(self: *Lower, path: []const u8) Oom!?TypedValue {
+    assert(self.blockValid(self.cur));
+    // §6.4.3 "If a paramset output variable has the same name as a module
+    // output variable, the paramset's value is reported for instances
+    // using the paramset": first, and the nearest link's (last) wins.
+    var k = self.design.ps_outputs.len;
+    while (k > 0) {
+        k -= 1;
+        if (!std.mem.eql(u8, self.design.ps_outputs[k].report, path)) continue;
+        const slot = self.vars.get(self.file.str(self.design.ps_outputs[k].flat)) orelse break;
+        return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
     }
-    const inst = lower_sysfunc.constStrArg(self, args[0]);
-    const param = lower_sysfunc.constStrArg(self, args[1]);
-    for ([2]?[]const u8{ inst, param }, args[0..2]) |name, arg| if (name == null) {
-        var b = self.errWith(ex.mainTok(arg), .E0823);
-        b.msg("this name has no value until the analog block runs", .{});
-        b.note("§9.16 resolves a string variable when the probe runs; VerA resolves names at compile time", .{});
-        b.help("spell the name as a string literal or a string parameter", .{});
-        try b.emit();
-        return poison;
-    };
-    {
-        // §9.16: "the simulator will look for an instance called inst_name in
-        // the parent of the current instance i.e. a sibling of the instance
-        // containing the $simprobe() expression." The name is relative, so the
-        // flat key is the caller's parent path joined to it.
-        const path = try std.mem.concat(self.arena, u8, &.{
-            callerParentPath(self), inst.?, &[_]u8{Elaborate.sep}, param.?,
-        });
-        // §6.4.3 "If a paramset output variable has the same name as a module
-        // output variable, the paramset's value is reported for instances
-        // using the paramset": first, and the nearest link's (last) wins.
-        var k = self.ps_outputs.len;
-        while (k > 0) {
-            k -= 1;
-            if (!std.mem.eql(u8, self.ps_outputs[k].report, path)) continue;
-            const slot = self.vars.get(self.ps_outputs[k].flat) orelse break;
-            return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
-        }
-        if (self.param_index.get(path)) |pi|
-            return .{ .v = self.param_values.items[pi], .ty = astTy(self.out.params.items[pi].ty) };
-        // §9.16: "$simprobe() queries the simulator for an output variable named
-        // param_name in a sibling instance". A flattened child's variable is an
-        // ordinary variable under its path name. The sibling's block was lowered
-        // first (elaboration appends instances in tree order), so this reads the
-        // value it computed for this evaluation.
-        // §6.4.3 unless the instance's paramset hides it: "the module output
-        // variable shall not be available for instances using the paramset".
-        const hidden = for (self.ps_hidden) |h| {
-            if (std.mem.eql(u8, h, path)) break true;
-        } else false;
-        if (!hidden) if (self.vars.get(path)) |slot|
-            return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
-    }
-    // Unresolved. §9.16's own two outcomes, in the clause's order.
+    if (self.param_index.get(path)) |pi|
+        return .{ .v = self.param_values.items[pi], .ty = astTy(self.out.params.items[pi].ty) };
+    // §9.16: "$simprobe() queries the simulator for an output variable named
+    // param_name in a sibling instance". A flattened child's variable is an
+    // ordinary variable under its path name. The sibling's block was lowered
+    // first (elaboration appends instances in tree order), so this reads the
+    // value it computed for this evaluation.
+    // §6.4.3 unless the instance's paramset hides it: "the module output
+    // variable shall not be available for instances using the paramset".
+    for (self.design.ps_hidden) |h| if (std.mem.eql(u8, h, path)) return null;
+    if (self.vars.get(path)) |slot|
+        return .{ .v = try self.builder.readVariable(slot.place, self.cur), .ty = slot.ty };
+    return null;
+}
+
+/// §9.16's two outcomes for a name that does not resolve, in the clause's
+/// order: the optional expression, else an error.
+fn unresolvedProbe(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?[]const u8) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    const args = self.file.exprs.args(e);
     if (args.len >= 3 and args[2] != .none) return lower_expr.lowerExpr(self, args[2]);
     var b = self.errWith(self.file.exprs.mainTok(e), .E0817);
     b.msg("`$simprobe(\"{s}\", \"{s}\")` names no parameter of the elaborated design", .{
@@ -448,6 +474,84 @@ pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     return poison;
 }
 
+/// §9.16 "either a string literal, string parameter, or a string variable":
+/// a name known only when the probe runs. The design is flat, so the names
+/// it can resolve to are finite: every sibling `inst.param` `resolveProbe`
+/// answers that matches the part that did fold. The probe is a `select`
+/// chain comparing the run-time string with each name, the fallback last.
+/// ponytail: E0823 for a name that may miss with no fallback, whose error
+/// §9.16 raises at run time; a guarded run-time error path is the upgrade.
+fn lowerSimprobeRuntime(self: *Lower, e: Ast.ExprId, inst: ?[]const u8, param: ?[]const u8) Oom!TypedValue {
+    assert(e == .none or self.exprValid(e));
+    const ex = &self.file.exprs;
+    const args = ex.args(e);
+    assert(inst == null or param == null);
+    var rt: [2]?TypedValue = .{ null, null };
+    for ([2]?[]const u8{ inst, param }, args[0..2], &rt) |name, arg, *v| if (name == null) {
+        const tv = try lower_expr.lowerExpr(self, arg);
+        if (tv.ty != .string) return runtimeName(self, arg, "§9.16 takes a string literal, string parameter or string variable");
+        v.* = tv;
+    };
+    const parent = callerParentPath(self);
+    var keys: std.ArrayList([]const u8) = .empty;
+    for (self.design.ps_outputs) |o| try keys.append(self.arena, o.report);
+    var pk = self.param_index.keyIterator();
+    while (pk.next()) |key| try keys.append(self.arena, key.*);
+    var vk = self.vars.keyIterator();
+    while (vk.next()) |key| try keys.append(self.arena, key.*);
+    // Sorted, so the chain (and the code it becomes) is the same every run.
+    std.mem.sort([]const u8, keys.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.less);
+    const Cand = struct { inst: []const u8, param: []const u8, tv: TypedValue };
+    var cands: std.ArrayList(Cand) = .empty;
+    for (keys.items, 0..) |key, i| {
+        if (i > 0 and std.mem.eql(u8, key, keys.items[i - 1])) continue;
+        const rest = std.mem.cutPrefix(u8, key, parent) orelse continue;
+        const dot = std.mem.findScalar(u8, rest, elab.sep) orelse continue;
+        const ci = rest[0..dot];
+        const cp = rest[dot + 1 ..];
+        if (ci.len == 0 or cp.len == 0 or std.mem.findScalar(u8, cp, elab.sep) != null) continue;
+        if (inst) |n| if (!std.mem.eql(u8, n, ci)) continue;
+        if (param) |n| if (!std.mem.eql(u8, n, cp)) continue;
+        const tv = try resolveProbe(self, key) orelse continue;
+        try cands.append(self.arena, .{ .inst = ci, .param = cp, .tv = tv });
+    }
+    if (cands.items.len == 0) return unresolvedProbe(self, e, inst, param);
+    const fallback = if (args.len >= 3 and args[2] != .none) try lower_expr.lowerExpr(self, args[2]) else return runtimeName(self, args[0], "with no fallback expression, a name that matches no sibling is an error §9.16 raises when the probe runs, which VerA cannot yet");
+    var out = try self.toReal(fallback);
+    for (cands.items) |c| {
+        var hit = try self.toReal(c.tv);
+        if (rt[1]) |p| hit = try matchArm(self, p, c.param, hit, out);
+        if (rt[0]) |n| hit = try matchArm(self, n, c.inst, hit, out);
+        out = hit;
+    }
+    return .{ .v = out, .ty = .real };
+}
+
+/// `name == text ? hit : miss`, `name` a run-time string: a string
+/// comparison, as `==` between two strings is (§3.3 Table 3-3).
+fn matchArm(self: *Lower, name: TypedValue, text: []const u8, hit: Mir.Value, miss: Mir.Value) Oom!Mir.Value {
+    assert(self.valueValid(name.v));
+    assert(self.valueValid(hit));
+    assert(self.valueValid(miss));
+    const want = try self.mir.addStrConst(self.arena, text);
+    const eq = try self.emit(.ieq, &.{ name.v, want });
+    return self.emit(.select, &.{ try self.toBool(.{ .v = eq, .ty = .integer }), hit, miss });
+}
+
+/// E0823 at `arg`: a run-time `$simprobe` name VerA cannot resolve exactly.
+fn runtimeName(self: *Lower, arg: Ast.ExprId, why: []const u8) Oom!TypedValue {
+    assert(arg == .none or self.exprValid(arg));
+    var b = self.errWith(self.file.exprs.mainTok(arg), .E0823);
+    b.msg("this name has no value until the analog block runs, and {s}", .{why});
+    b.help("spell the name as a string literal or a string parameter, or give the fallback expression", .{});
+    try b.emit();
+    return poison;
+}
+
 test callerParentPath {
     // §9.16 "the parent of the current instance": the instance path with its
     // own last segment dropped, separator kept, "" at the top and for a unit
@@ -455,12 +559,11 @@ test callerParentPath {
     var h: Lower.Harness = undefined;
     try h.init(std.testing.allocator, "module m; endmodule");
     defer h.deinit();
-    const units = [_]Elaborate.UnitPath{
-        .{ .module = "top", .path = "", .decl = undefined },
-        .{ .module = "a", .path = "u1.", .decl = undefined },
-        .{ .module = "b", .path = "u1.u2.", .decl = undefined },
-    };
-    h.low.unit_paths = &units;
+    var units: std.MultiArrayList(elab.design.Unit) = .empty;
+    defer units.deinit(std.testing.allocator);
+    for ([_][]const u8{ "", "u1.", "u1.u2." }) |path|
+        try units.append(std.testing.allocator, .{ .module = .none, .path = path, .decl = .none });
+    h.low.design.units = units.slice();
     const want = [_][]const u8{ "", "", "u1.", "" };
     for (want, 0..) |w, unit| {
         h.low.cur_unit = @intCast(unit);
@@ -518,6 +621,9 @@ test "lowerSimprobe: §9.16's two outcomes for a name that does not resolve" {
     try Lower.expectBodyVerdict(decls, "    y = $simprobe(\"nosuch\", \"gain\");", .E0817);
     // With it, the expression is the value.
     try Lower.expectBodyVerdict(decls, "    y = $simprobe(\"nosuch\", \"gain\", 2.0);", null);
-    // A string variable has no value until the block runs (E0823).
-    try Lower.expectBodyVerdict(decls, "    s = \"u\";\n    y = $simprobe(s, \"gain\", 1.0);", .E0823);
+    // §9.16 "or a string variable": resolved when the probe runs. Nothing in
+    // this design can match it, so the fallback is the value, and with no
+    // fallback it is the same error as a literal that does not resolve.
+    try Lower.expectBodyVerdict(decls, "    s = \"u\";\n    y = $simprobe(s, \"gain\", 1.0);", null);
+    try Lower.expectBodyVerdict(decls, "    s = \"u\";\n    y = $simprobe(s, \"gain\");", .E0817);
 }

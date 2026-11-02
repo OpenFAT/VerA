@@ -1,0 +1,18 @@
+// CANARY: a §4.6.4.6 coefficient with the wrong sign. One white_noise source
+// enters (a,b) with +2 and (c,d) with -3, so the rows are anti-correlated,
+// rho = -1; the directive states +1 and the check must print ok=0.
+//! noise thermal(a,b)#0 corr=1:1
+//! noise thermal(c,d)#0
+//! analysis noise
+//! bias V(a) = 0.0, V(b) = 0.0, V(c) = 0.0, V(d) = 0.0
+`include "check.vh"
+module canary_noise_corr_wrong_sign(a, b, c, d);
+  inout a, b, c, d; electrical a, b, c, d;
+  real n;
+  analog begin
+    n = white_noise(1e-18, "shared");
+    `CHECKI("a noise analysis", analysis("noise"), 1);
+    I(a, b) <+ 2.0 * n;
+    I(c, d) <+ -3.0 * n;
+  end
+endmodule

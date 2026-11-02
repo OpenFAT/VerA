@@ -4,11 +4,17 @@
 //! place a literal's value is computed.
 //!
 //! LRM clauses cited: §2.6.1, §2.6.2, §2.7, §3.3, §9.4.2.
+//!
+//! Contents:
+//! - `pub fn parseNumber(self: *Parser) Error!Ast.ExprId`
+//! - `pub fn internString(self: *Parser, tok: u32) Error!Ast.StrId`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const lexer = @import("../lexer.zig");
+const token_value = @import("../token_value.zig");
 const Ast = @import("../ast.zig");
 const Error = parser.Error;
 
@@ -16,6 +22,9 @@ const Error = parser.Error;
 /// factor) literals. Values are computed here because the token stream
 /// stores only {tag,start}.
 pub fn parseNumber(self: *Parser) Error!Ast.ExprId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     self.pos += 1;
 
@@ -53,17 +62,49 @@ pub fn parseNumber(self: *Parser) Error!Ast.ExprId {
     }
 
     const text = self.tokenText(tok);
-    if (self.in_digital_delay and self.attr_depth == 0 and lexer.scaleExp(text[text.len - 1]) != null)
+    if (self.in_digital_delay and self.attr_depth == 0 and token_value.scaleExp(text[text.len - 1]) != null)
         try self.report(tok, .E0247, "`{s}` in a digital delay; use decimal or scientific notation in the module's time units", .{text});
     // §2.6.2 decoding (`_` removal, the Table 2-1 scale factor) has one home,
     // `lexer.parseReal`. It applies the scale to the text and rounds once;
     // `mantissa * scale` would round twice and can be off by 1 ulp.
-    const v = lexer.parseReal(self.arena, text) catch |e| return switch (e) {
+    const v = token_value.parseReal(self.arena, text) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.Overflow => self.failAt(tok, .E0133, "`{s}`", .{text}),
     };
     return self.file.exprs.addReal(self.arena, tok, v);
 }
+
+/// Interns token `tok`'s §2.7 string contents, escapes decoded by
+/// `lexer.stringContents`, then (outside digital mode) §3.3's literal to
+/// string conversion applied. Allocates only when the literal contains a
+/// backslash.
+pub fn internString(self: *Parser, tok: u32) Error!Ast.StrId {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
+    const raw = self.tokenText(tok);
+    const body = if (raw.len >= 2) raw[1 .. raw.len - 1] else "";
+    if (std.mem.findScalar(u8, body, '\\') == null) {
+        return self.file.intern(self.arena, body);
+    }
+    const decoded = try token_value.stringContents(self.arena, raw);
+    // Direct display formats retain octal NUL bytes (§9.4.2). Digital
+    // string-variable conversion is not part of this executor yet.
+    if (self.digital) return self.file.intern(self.arena, decoded);
+    // §3.3 spells the conversion out in three steps: "all the \0 characters
+    // are ignored", an empty remainder becomes the empty string, otherwise
+    // the rest is kept, so `"hello\0world"` is `helloworld`, not a C-style
+    // truncation at the NUL.
+    var n: usize = 0;
+    for (decoded) |c| {
+        if (c == 0) continue;
+        decoded[n] = c;
+        n += 1;
+    }
+    return self.file.intern(self.arena, decoded[0..n]);
+}
+
+// ---- private ----
 
 /// An unsized based §2.6.1 constant's digits times the bits per digit
 /// (VD-131); 0 for a sized or a decimal one.
@@ -113,31 +154,4 @@ fn gluedNumberText(self: *const Parser, tok: u32) []const u8 {
         else => return text, // else: nothing else can be the glued remainder of a based number
     }
     return self.src[start .. next + self.tokenText(tok + 1).len];
-}
-
-/// Interns token `tok`'s §2.7 string contents, escapes decoded by
-/// `lexer.stringContents`, then (outside digital mode) §3.3's literal to
-/// string conversion applied. Allocates only when the literal contains a
-/// backslash.
-pub fn internString(self: *Parser, tok: u32) Error!Ast.StrId {
-    const raw = self.tokenText(tok);
-    const body = if (raw.len >= 2) raw[1 .. raw.len - 1] else "";
-    if (std.mem.findScalar(u8, body, '\\') == null) {
-        return self.file.intern(self.arena, body);
-    }
-    const decoded = try lexer.stringContents(self.arena, raw);
-    // Direct display formats retain octal NUL bytes (§9.4.2). Digital
-    // string-variable conversion is not part of this executor yet.
-    if (self.digital) return self.file.intern(self.arena, decoded);
-    // §3.3 spells the conversion out in three steps: "all the \0 characters
-    // are ignored", an empty remainder becomes the empty string, otherwise
-    // the rest is kept, so `"hello\0world"` is `helloworld`, not a C-style
-    // truncation at the NUL.
-    var n: usize = 0;
-    for (decoded) |c| {
-        if (c == 0) continue;
-        decoded[n] = c;
-        n += 1;
-    }
-    return self.file.intern(self.arena, decoded[0..n]);
 }

@@ -6,7 +6,7 @@
 //! timer-based, when its limit elapses: `expired`), §15.3.4's pulse width,
 //! §15.3.5's period or §15.3.6's level window. A violation is reported
 //! (W1199), toggles the notifier (§15.5, Table 15-13) and calls
-//! `Run.tchk_hook` (VAMS 12.31.4 cbTchkViolation). A form this file does
+//! `Run.checks.hook` (VAMS 12.31.4 cbTchkViolation). A form this file does
 //! not evaluate (a negative $nochange end offset) is refused by name
 //! (E1149), never accepted and ignored.
 //!
@@ -17,10 +17,35 @@
 //! it already reported, and a stamp of the window before the reference is
 //! the latest data event strictly before it.
 //!
-//! Clauses: IEEE 1364-2005 §15.1-§15.7, Tables 15-1 to 15-13, §27.31
+//! Cites: IEEE 1364-2005 §15.1-§15.7, Tables 15-1 to 15-13, §27.31
 //! (`putLimits`); VAMS 12.29, 12.31.4.
+//!
+//! The rows are built in tchk_build.zig (the AST checks of each instance, their
+//! limits and the §15.5 negative-limit solve); this file judges them and
+//! re-exports what the rest of the interpreter calls.
+//!
+//! Contents:
+//! - `pub const compileChecks`
+//! - `pub const delayedDrivers`
+//! - `pub const solveNegative`
+//! - `pub const Kind = enum`
+//! - `pub const kinds`
+//! - `pub const Event = struct`
+//! - `pub const Stamp = struct`
+//! - `pub const Flags = packed struct(u8)`
+//! - `pub const Checks = struct`
+//! - `pub const Tchk = struct`
+//! - `pub fn flag(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!bool`
+//! - `pub fn notifier(r: *Run, e: Ast.ExprId) Error!?u32`
+//! - `pub fn arm(r: *Run) Error!void`
+//! - `pub fn putLimits(r: *Run, scope: u32, tok: u32, ticks: []const u64) bool`
+//! - `pub fn changed(r: *Run, slot: u32, before: Int.Bit, after: Int.Bit) Error!void`
+//! - `pub fn delivered(r: *Run, code: u32, bit: u8) Error!void`
+//! - `pub fn expired(r: *Run, i: u32, gen: u32) Error!void`
+//! - `pub fn reference(r: *Run, i: u32, now: u64) Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Front = @import("frontend");
 const Ast = Front.Ast;
 const Int = @import("kernels").Integer;
@@ -35,11 +60,22 @@ const waiters = @import("waiters.zig");
 const wordMask = @import("net.zig").wordMask;
 const planeBit = @import("net.zig").planeBit;
 const bitChar = @import("net.zig").bitChar;
+const tchk_build = @import("tchk_build.zig");
+const event = tchk_build.event;
+
+/// `tchk_build.compileChecks`.
+pub const compileChecks = tchk_build.compileChecks;
+
+/// `tchk_build.delayedDrivers`.
+pub const delayedDrivers = tchk_build.delayedDrivers;
+
+/// `tchk_build.solveNegative`.
+pub const solveNegative = tchk_build.solveNegative;
 
 /// A.7.5.1's twelve commands. The tag is the command without its `$`.
 pub const Kind = enum { setup, hold, setuphold, removal, recovery, recrem, skew, timeskew, fullskew, width, period, nochange };
 
-const kinds = std.StaticStringMap(Kind).initComptime(.{
+pub const kinds = std.StaticStringMap(Kind).initComptime(.{
     .{ "$setup", .setup },
     .{ "$hold", .hold },
     .{ "$setuphold", .setuphold },
@@ -84,21 +120,28 @@ pub const Stamp = struct {
 
     /// An occurrence at `now`.
     fn note(s: *Stamp, now: u64) void {
+        if (s.last) |l| assert(l <= now); // Time never runs back.
         if (!s.at(now)) {
             s.before = s.last;
             s.reported = false;
         }
         s.last = now;
+        assert(s.at(now));
     }
 
     /// Whether the latest occurrence is at `now`.
     fn at(s: Stamp, now: u64) bool {
+        if (s.last) |l| assert(l <= now); // A stamp is never in the future.
+        if (s.before) |b| assert(b <= s.last.?); // `before` is the occurrence preceding `last`.
         return if (s.last) |l| l == now else false;
     }
 
     /// The latest occurrence strictly before `now`.
     fn earlier(s: Stamp, now: u64) ?u64 {
-        return if (s.at(now)) s.before else s.last;
+        if (s.before) |b| assert(b <= now);
+        const t = if (s.at(now)) s.before else s.last;
+        if (t) |v| assert(v <= now);
+        return t;
     }
 };
 
@@ -112,6 +155,20 @@ pub const Flags = packed struct(u8) {
     /// 0 the reference event, 1 the data event (`$fullskew` only).
     first: u1 = 0,
     _: u4 = 0,
+};
+
+/// IEEE 1364-2005 §15 a run's timing checks: one row per check, in
+/// elaboration order; the rows each watched slot's change reaches; the
+/// §15.5.1 delays of each row's reference [0] and data [1] signal (parallel
+/// to `rows`, empty when no negative limit made one, `solveNegative`); and
+/// the host's violation callback (VAMS 12.31.4 cbTchkViolation, installed by
+/// the VPI; nothing in the engine reads it).
+pub const Checks = struct {
+    rows: std.ArrayList(Tchk) = .empty,
+    /// The checks a watched slot wakes, each as `check * 2 + event`.
+    by_slot: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty,
+    delay: std.ArrayList([2]u64) = .empty,
+    hook: ?*const fn (r: *Run, check: u32) void = null,
 };
 
 /// One timing check of one instance.
@@ -161,238 +218,12 @@ pub const Tchk = struct {
     }
 };
 
-// ---- elaboration -----------------------------------------------------------
-
-/// Binds the A.7.5 checks of the instance being elaborated (`r.scope`) into
-/// `r.tchks`. Refuses (E1149) an argument `judge` does not evaluate.
-pub fn compileChecks(r: *Run, checks: []const Ast.TimingCheck) Error!void {
-    for (checks) |*t| try compileOne(r, t);
-}
-
-fn arg(t: *const Ast.TimingCheck, k: usize) Ast.ExprId {
-    return if (k < t.args.len) t.args[k] else .none;
-}
-
-fn compileOne(r: *Run, t: *const Ast.TimingCheck) Error!void {
-    const name = r.file.str(t.name);
-    const kind = kinds.get(name).?; // the parser admits A.7.5.1's twelve commands only
-    var c: Tchk = .{ .kind = kind, .scope = r.scope, .tok = t.main_tok };
-    switch (kind) {
-        .width, .period => {
-            c.ev[0] = try event(r, t, 0);
-            c.ev[1] = c.ev[0];
-            // §15.3.4: "data event = reference event signal with opposite
-            // edge"; §15.3.5: "... with the same edge".
-            if (kind == .width) c.ev[1].mask = Ast.TimingCheck.opposite(c.ev[0].mask);
-            c.lim[0] = try nonNegative(r, t, arg(t, 1), "limit");
-            if (kind == .width) {
-                // Syntax 15-12: "the default value for the threshold zero".
-                if (arg(t, 2) != .none) c.lim[1] = try nonNegative(r, t, arg(t, 2), "threshold");
-                c.notifier = try notifier(r, arg(t, 3));
-            } else c.notifier = try notifier(r, arg(t, 2));
-        },
-        // A.7.5.1: `$setup ( data_event , reference_event , ...)` is the one
-        // command that writes its data event first.
-        .setup => {
-            c.ev[0] = try event(r, t, 1);
-            c.ev[1] = try event(r, t, 0);
-            c.lim[0] = try nonNegative(r, t, arg(t, 2), "limit");
-            c.notifier = try notifier(r, arg(t, 3));
-        },
-        // Table 15-4: the reference event is the timecheck, the data event
-        // the timestamp: the window is before the reference.
-        .removal => {
-            c.ev[0] = try event(r, t, 0);
-            c.ev[1] = try event(r, t, 1);
-            c.lim[0] = try nonNegative(r, t, arg(t, 2), "limit");
-            c.notifier = try notifier(r, arg(t, 3));
-        },
-        // Tables 15-2 and 15-5: the reference event is the timestamp, the
-        // data event the timecheck: the window is after the reference.
-        .hold, .recovery => {
-            c.ev[0] = try event(r, t, 0);
-            c.ev[1] = try event(r, t, 1);
-            c.lim[1] = try nonNegative(r, t, arg(t, 2), "limit");
-            c.notifier = try notifier(r, arg(t, 3));
-        },
-        .setuphold, .recrem => {
-            c.ev[0] = try event(r, t, 0);
-            c.ev[1] = try event(r, t, 1);
-            // Table 15-3's timestamp and timecheck conditions (§15.8's
-            // negative checks); the delayed signals are driven
-            // (`delayedDrivers`).
-            c.stamp_cond = arg(t, 5);
-            c.check_cond = arg(t, 6);
-            for ([_]Ast.ExprId{ c.stamp_cond, c.check_cond }) |x| if (x != .none) try compile.checkExpr(r, x);
-            const a = try signedLimit(r, t, arg(t, 2));
-            const b = try signedLimit(r, t, arg(t, 3));
-            // §15.2.3/§15.2.6: the first limit is $setuphold's setup (the
-            // window before the reference) and $recrem's recovery (after).
-            c.lim = if (kind == .setuphold) .{ a, b } else .{ b, a };
-            c.notifier = try notifier(r, arg(t, 4));
-        },
-        // Tables 15-7 to 15-9: the reference event, the data event, one
-        // limit (`$fullskew`: one per order), the notifier and the two
-        // flags. $skew is $timeskew with both flags set (§15.3.2: "It
-        // behaves like the $skew check when both the event_based_flag and
-        // the remain_active_flag are set").
-        .skew, .timeskew, .fullskew => {
-            c.ev[0] = try event(r, t, 0);
-            c.ev[1] = try event(r, t, 1);
-            c.lim[0] = try nonNegative(r, t, arg(t, 2), "limit");
-            var k: usize = 3;
-            if (kind == .fullskew) {
-                c.lim[1] = try nonNegative(r, t, arg(t, 3), "limit");
-                k = 4;
-            }
-            c.notifier = try notifier(r, arg(t, k));
-            c.flags = .{
-                .event_based = kind == .skew or try flag(r, t, arg(t, k + 1)),
-                .remain_active = kind == .skew or try flag(r, t, arg(t, k + 2)),
-            };
-        },
-        // Table 15-12. §15.3.6: "The reference event can be specified with
-        // the posedge or the negedge keyword": its level is the window.
-        .nochange => {
-            c.ev[0] = try event(r, t, 0);
-            c.ev[1] = try event(r, t, 1);
-            if (c.ev[0].mask == 0) return r.failWith(.E1147, r.file.exprs.mainTok(t.args[0]), "the reference event of `$nochange` is an edge, posedge or negedge, whose level is the window (IEEE 1364-2005 §15.3.6)", .{});
-            c.lim[0] = @bitCast(try limitTicks(r, t, arg(t, 2)));
-            // The window's end is judged at the data event, before the
-            // trailing edge is known, so it cannot move earlier than it.
-            const end = try limitTicks(r, t, arg(t, 3));
-            if (end < 0) return r.failWith(.E1149, r.file.exprs.mainTok(arg(t, 3)), "a negative end edge offset of `$nochange` (IEEE 1364-2005 §15.3.6, a window ending before its trailing reference edge) is not evaluated by VerA's digital engine", .{});
-            c.lim[1] = @intCast(end);
-            c.notifier = try notifier(r, arg(t, 4));
-        },
-    }
-    try r.tchks.append(r.arena, c);
-}
-
-/// §15.5.1 the explicit delayed signals of every `$setuphold` and `$recrem`
-/// (arguments 8 and 9, Syntax 15-3/15-6) of the instances `e` elaborated:
-/// each is a net the check drives with its reference or data signal. "The
-/// delayed timing check signals are only actually delayed when negative
-/// limit values are present", which VerA has no option to enable
-/// (§15.5.4: without it "the delayed reference and data signals become
-/// copies of the original reference and data signals"), so each is a
-/// zero-delay copy, one more driver of its net (a port window, `Bridge`).
-pub fn delayedDrivers(r: *Run, e: *elab.Elab) Error!void {
-    for (e.insts.items) |inst| for (inst.module.timing_checks) |*t| {
-        const name = r.file.str(t.name);
-        if (!std.mem.eql(u8, name, "$setuphold") and !std.mem.eql(u8, name, "$recrem")) continue;
-        r.scope = inst.scope;
-        for ([_][2]usize{ .{ 7, 0 }, .{ 8, 1 } }) |pair| {
-            const dst_e = arg(t, pair[0]);
-            if (dst_e == .none) continue;
-            const src = try terminal(r, t.args[pair[1]]);
-            const dst = try terminal(r, dst_e);
-            const net = r.net_of.get(dst.slot) orelse
-                return r.failWith(.E1147, r.file.exprs.mainTok(dst_e), "a delayed signal of `{s}` is a net (IEEE 1364-2005 §15.5.1)", .{name});
-            if (src.width != dst.width)
-                return r.failWith(.E1147, r.file.exprs.mainTok(dst_e), "a delayed signal of `{s}` is as wide as the signal it delays (IEEE 1364-2005 §15.5.1)", .{name});
-            try e.wires.append(r.arena, .{
-                .net = net,
-                .scope = inst.scope,
-                .source = .{ .bridge = .{ .src = src.slot, .src_lo = src.lo, .dst_lo = dst.lo, .width = src.width } },
-                .tok = t.main_tok,
-            });
-        }
-    };
-}
-
-/// A.7.3 a `specify_terminal_descriptor`: a name, or a constant select of one.
-fn terminal(r: *Run, e: Ast.ExprId) Error!struct { slot: u32, lo: u32, width: u32 } {
-    const ex = &r.file.exprs;
-    switch (ex.tag(e)) {
-        .ident, .hier_ident => {
-            const at = try r.slot(e);
-            return .{ .slot = at, .lo = 0, .width = r.values[at].width };
-        },
-        else => { // else: a select, which `selectTerm` admits; every other form is refused there
-            const sel = (try compile.selectTerm(r, e)) orelse
-                return r.failWith(.E1147, ex.mainTok(e), "a timing check terminal names a port or a constant select of one (A.7.3)", .{});
-            return .{ .slot = sel.slot, .lo = @intCast(sel.first), .width = sel.count };
-        },
-    }
-}
-
-/// Event argument `k`: A.7.3's `specify_terminal_descriptor`, a name or a
-/// constant bit- or part-select of one, with its control and condition.
-fn event(r: *Run, t: *const Ast.TimingCheck, k: usize) Error!Event {
-    const e = t.args[k]; // the parser refuses an empty mandatory argument
-    const ex = &r.file.exprs;
-    var ev: Event = .{
-        .mask = if (k < t.masks.len) t.masks[k] else 0,
-        .cond = if (k < t.conds.len) t.conds[k] else .none,
-    };
-    switch (ex.tag(e)) {
-        .ident, .hier_ident => ev.slot = try r.slot(e),
-        .index => {
-            const sel = (try compile.selectTerm(r, e)) orelse return r.failWith(.E1147, ex.mainTok(e), "a timing check event names a port or a constant select of at most 64 bits of one (A.7.3)", .{});
-            ev.slot = sel.slot;
-            ev.lo = sel.first;
-            ev.width = sel.count;
-            const bits = waiters.termBits(r.values[ev.slot], ev.lo, ev.width);
-            ev.v = bits[0];
-            ev.x = bits[1];
-        },
-        else => return r.failWith(.E1147, ex.mainTok(e), "a timing check event names a port or a constant select of one (A.7.3), not an expression", .{}), // else: A.7.3 admits a name and a select only
-    }
-    if (r.reals.contains(ev.slot) or r.arrays.contains(ev.slot) or r.events.contains(ev.slot) or r.params.contains(ev.slot))
-        return r.failWith(.E1147, ex.mainTok(e), "a timing check event names a net or a variable with a logic value (A.7.3)", .{});
-    if (ev.cond != .none) try compile.checkExpr(r, ev.cond);
-    return ev;
-}
-
-/// A limit's value in the instance's time unit, converted to ticks, with
-/// its sign. Tables 15-1..15-12: "constant expression".
-fn limitTicks(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!i64 {
-    const tok = r.file.exprs.mainTok(e);
-    const name = r.file.str(t.name);
-    try compile.checkExpr(r, e);
-    if (!compile.constantExpression(r, e))
-        return r.failWith(.E1148, tok, "a limit of `{s}` is a constant expression (IEEE 1364-2005 §15.1); this one reads a signal", .{name});
-    const scale = r.timeOf(r.scope).scale;
-    var negative = false;
-    const mag = (if (compile.typeOf(r, e).real) blk: {
-        const v = try evaluate.evalReal(r, r.arena, e);
-        negative = v < 0;
-        break :blk scale.realDelay(@abs(v));
-    } else blk: {
-        const v = (try r.constant(e, tok)).asInt() orelse return r.failWith(.E1148, tok, "a limit of `{s}` has an x or z bit", .{name});
-        negative = v < 0;
-        break :blk scale.unsignedDelay(@abs(v));
-    }) catch return r.failWith(.E1148, tok, "a limit of `{s}` is no tick count", .{name});
-    const ticks = std.math.cast(i64, mag) orelse return r.failWith(.E1148, tok, "a limit of `{s}` is no tick count", .{name});
-    return if (negative) -ticks else ticks;
-}
-
-/// Tables 15-1, 15-2, 15-4, 15-5, 15-7 to 15-11: a "Non-negative constant
-/// expression".
-fn nonNegative(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId, what: []const u8) Error!u64 {
-    const v = try limitTicks(r, t, e);
-    if (v < 0) return r.failWith(
-        .E1148,
-        r.file.exprs.mainTok(e),
-        "the {s} of `{s}` is a non-negative constant expression (IEEE 1364-2005 §15), and this one is negative",
-        .{ what, r.file.str(t.name) },
-    );
-    return @intCast(v);
-}
-
-/// Tables 15-3 and 15-6: a "Constant expression", which §15.8 lets be
-/// negative when "the negative timing check option is enabled". VerA has
-/// no such option, so §15.5.4's behaviour without it: the limit is 0, and
-/// the delayed signals are copies (`delayedDrivers`).
-fn signedLimit(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!u64 {
-    return @intCast(@max(try limitTicks(r, t, e), 0));
-}
-
 /// Tables 15-8 and 15-9: an event_based_flag or remain_active_flag, a
 /// "Constant expression", set when nonzero.
-fn flag(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!bool {
+pub fn flag(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!bool {
+    assert(t.name != .none);
     if (e == .none) return false;
+    assert(@backingInt(e) < r.file.exprs.len());
     const tok = r.file.exprs.mainTok(e);
     try compile.checkExpr(r, e);
     if (!compile.constantExpression(r, e))
@@ -403,26 +234,29 @@ fn flag(r: *Run, t: *const Ast.TimingCheck, e: Ast.ExprId) Error!bool {
 
 /// §15.5: "The notifier is a reg, declared in the module where timing check
 /// tasks are invoked". A.7.5.2 `notifier ::= variable_identifier`.
-fn notifier(r: *Run, e: Ast.ExprId) Error!?u32 {
+pub fn notifier(r: *Run, e: Ast.ExprId) Error!?u32 {
     if (e == .none) return null;
     const ex = &r.file.exprs;
     if (ex.tag(e) != .ident and ex.tag(e) != .hier_ident) return r.failWith(.E1147, ex.mainTok(e), "a notifier is a variable identifier (A.7.5.2)", .{});
     const at = try r.slot(e);
-    if (r.net_of.contains(at) or r.reals.contains(at) or r.arrays.contains(at) or r.events.contains(at) or r.params.contains(at))
+    assert(at < r.values.len);
+    if (r.netlist.slot_nets.contains(at) or r.decls.reals.contains(at) or r.decls.arrays.contains(at) or r.decls.events.contains(at) or r.decls.params.contains(at))
         return r.failWith(.E1147, ex.mainTok(e), "this notifier is not a reg (IEEE 1364-2005 §15.5: \"The notifier is a reg\")", .{});
     return at;
 }
 
-/// Files every check under the slots its events watch. After `Run.watch`
+/// Files every check under the slots its events watch. After `Run.waits.watch`
 /// exists, so once per run.
 pub fn arm(r: *Run) Error!void {
-    for (r.tchks.items, 0..) |c, i| {
+    assert(r.checks.rows.items.len < std.math.maxInt(u32) / 2); // `i * 2 + k` codes fit.
+    for (r.checks.rows.items, 0..) |c, i| {
         const n: usize = if (c.kind == .width or c.kind == .period) 1 else 2;
         for (c.ev[0..n], 0..) |ev, k| {
-            r.watch[ev.slot].insert(.tchk);
-            const gop = try r.tchk_by_slot.getOrPut(r.arena, ev.slot);
+            r.waits.watch[ev.slot].insert(.tchk);
+            const gop = try r.checks.by_slot.getOrPut(r.arena, ev.slot);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
             try gop.value_ptr.append(r.arena, @intCast(i * 2 + k));
+            assert(r.waits.watch[ev.slot].contains(.tchk));
         }
     }
 }
@@ -431,8 +265,10 @@ pub fn arm(r: *Run) Error!void {
 /// `tok`): `ticks` are its limits in A.7.5.1's written order. False when no
 /// check is there.
 pub fn putLimits(r: *Run, scope: u32, tok: u32, ticks: []const u64) bool {
+    assert(ticks.len <= 2);
+    assert(scope < r.hier.scopes.items.len);
     var hit = false;
-    for (r.tchks.items) |*c| {
+    for (r.checks.rows.items) |*c| {
         if (c.scope != scope or c.tok != tok or ticks.len == 0) continue;
         switch (c.kind) {
             .setup, .removal, .width, .period => c.lim[0] = ticks[0],
@@ -453,19 +289,68 @@ pub fn putLimits(r: *Run, scope: u32, tok: u32, ticks: []const u64) bool {
     return hit;
 }
 
-// ---- the run ---------------------------------------------------------------
-
 /// `waiters.store` changed `slot`, whose least significant bit went from
 /// `before` to `after`: every check watching it judges the change.
 pub fn changed(r: *Run, slot: u32, before: Int.Bit, after: Int.Bit) Error!void {
-    const list = r.tchk_by_slot.get(slot) orelse return;
+    assert(slot < r.values.len);
+    const list = r.checks.by_slot.get(slot) orelse return;
     for (list.items) |code| {
         const i = code / 2;
+        assert(i < r.checks.rows.items.len);
         const k: usize = code % 2;
-        const bit = transitionOf(r, &r.tchks.items[i].ev[k], before, after) orelse continue;
+        const bit = transitionOf(r, &r.checks.rows.items[i].ev[k], before, after) orelse continue;
+        // §15.5.1 a delayed signal: the check sees the change later.
+        const delay = if (r.checks.delay.items.len != 0) r.checks.delay.items[i][k] else 0;
+        if (delay != 0) {
+            _ = try exec.enqueue(r, .{ .tchk_event = .{ .code = code, .bit = bit } }, delay, false);
+            continue;
+        }
         try judge(r, i, k, bit);
     }
 }
+
+/// §15.5.3: a change `changed` delayed reaches its check now, "when the
+/// delayed signals as measured by the adjusted timing check values are in
+/// violation".
+pub fn delivered(r: *Run, code: u32, bit: u8) Error!void {
+    assert(code / 2 < r.checks.rows.items.len);
+    try judge(r, code / 2, code % 2, bit);
+}
+
+/// §15.3.2: "A violation shall be reported immediately upon an elapse of
+/// time after the reference event equal to the limit, and the check shall
+/// become dormant": the timer of skew check `i` started at generation `gen`
+/// ran out, unless a later window or a data event retired it.
+/// $nochange's data event deferred to the inactive events is judged here.
+pub fn expired(r: *Run, i: u32, gen: u32) Error!void {
+    assert(i < r.checks.rows.items.len);
+    const c = &r.checks.rows.items[i];
+    if (c.kind == .nochange) return noChange(r, i, r.scheduler.now);
+    if (!c.flags.active or c.gen != gen) return;
+    sleep(c);
+    assert(!c.flags.active);
+    try violation(r, i, c.at[0].last.?, r.scheduler.now);
+}
+
+/// A reference event at `now`: the timecheck of the window before it,
+/// "(timecheck time) - limit < (timestamp time) < (timecheck time)" with
+/// the latest data event before `now` as the timestamp (§15.2.1, §15.2.4,
+/// and the data-first half of §15.2.3/§15.2.6), and the second of a
+/// simultaneous pair whose data event came first.
+pub fn reference(r: *Run, i: u32, now: u64) Error!void {
+    assert(i < r.checks.rows.items.len);
+    assert(now == r.scheduler.now);
+    const c = &r.checks.rows.items[i];
+    if (try enabled(r, c.scope, c.stamp_cond)) c.at[0].note(now);
+    if (!try enabled(r, c.scope, c.check_cond)) return;
+    if (c.lim[0] > 0) if (c.at[1].earlier(now)) |d| if (d +| c.lim[0] > now) try violation(r, i, d, now);
+    if (simultaneous(c) and c.at[1].at(now) and !c.at[1].reported) {
+        c.at[1].reported = true;
+        try violation(r, i, now, now);
+    }
+}
+
+// ---- private ----
 
 /// The §15.4 transition (`Ast.TimingCheck.transition`, 0 for none) that a
 /// change of the slot made of `ev`'s bits, read on their least significant
@@ -473,6 +358,8 @@ pub fn changed(r: *Run, slot: u32, before: Int.Bit, after: Int.Bit) Error!void {
 /// one or more bits of a vector is considered a single transition".
 fn transitionOf(r: *Run, ev: *Event, before: Int.Bit, after: Int.Bit) ?u8 {
     if (ev.width == 0) return Ast.TimingCheck.transition(bitChar(before), bitChar(after));
+    assert(ev.width <= 64);
+    assert(ev.slot < r.values.len);
     const now = waiters.termBits(r.values[ev.slot], ev.lo, ev.width);
     if (now[0] == ev.v and now[1] == ev.x) return null;
     const b = planeBit(ev.v, ev.x);
@@ -484,6 +371,8 @@ fn transitionOf(r: *Run, ev: *Event, before: Int.Bit, after: Int.Bit) ?u8 {
 /// Whether a change making transition `bit` is an occurrence of an event
 /// with edges `mask` (0: any change of the value, §15.1's plain event).
 fn matches(mask: u8, bit: u8) bool {
+    assert(bit < 1 << 6); // `TimingCheck.transition`: one of bits 0..5, or 0.
+    assert(bit & (bit -% 1) == 0); // At most one transition.
     return mask == 0 or (mask & bit) != 0;
 }
 
@@ -496,6 +385,7 @@ fn matches(mask: u8, bit: u8) bool {
 /// `==` and `!=` against a scalar constant are not.
 fn enabled(r: *Run, scope: u32, cond: Ast.ExprId) Error!bool {
     if (cond == .none) return true;
+    assert(scope < r.hier.scopes.items.len);
     const ex = &r.file.exprs;
     const saved = r.scope;
     defer r.scope = saved;
@@ -529,6 +419,7 @@ fn enabled(r: *Run, scope: u32, cond: Ast.ExprId) Error!bool {
     }
     const s = (try evaluate.eval(r, a, signal, 0)).bit(0);
     const known = s == .zero or s == .one;
+    assert(scope == r.scope);
     return switch (op) {
         .plain => s == .one,
         .invert => s == .zero,
@@ -545,7 +436,9 @@ fn enabled(r: *Run, scope: u32, cond: Ast.ExprId) Error!bool {
 /// Check `i`'s event `k` occurred if its edges name transition `bit` and
 /// its condition holds; judge the check.
 fn judge(r: *Run, i: u32, k: usize, bit: u8) Error!void {
-    const c = &r.tchks.items[i];
+    assert(i < r.checks.rows.items.len);
+    assert(k < 2);
+    const c = &r.checks.rows.items[i];
     const now = r.scheduler.now;
     switch (c.kind) {
         // §15.3.4: "threshold < (timecheck time) - (timestamp time) < limit",
@@ -618,7 +511,9 @@ fn judge(r: *Run, i: u32, k: usize, bit: u8) Error!void {
 /// event-based one sleeps after its first violation unless
 /// remain_active_flag is set (§15.3.2).
 fn skew(r: *Run, i: u32, k: usize, now: u64) Error!void {
-    const c = &r.tchks.items[i];
+    assert(k < 2);
+    const c = &r.checks.rows.items[i];
+    assert(c.kind == .skew or c.kind == .timeskew or c.kind == .fullskew);
     if (c.flags.active and k != c.flags.first) {
         const ts = c.at[0].last.?; // an open window has its timestamp
         if (now - ts > c.lim[c.flags.first]) {
@@ -632,26 +527,17 @@ fn skew(r: *Run, i: u32, k: usize, now: u64) Error!void {
     c.flags.active = true;
     c.flags.first = @intCast(k);
     c.at[0].last = now;
+    assert(c.flags.active);
     if (!c.flags.event_based) _ = try exec.enqueue(r, .{ .tchk_expiry = .{ .check = i, .gen = c.gen } }, c.lim[k], false);
-}
-
-/// §15.3.2: "A violation shall be reported immediately upon an elapse of
-/// time after the reference event equal to the limit, and the check shall
-/// become dormant": the timer of skew check `i` started at generation `gen`
-/// ran out, unless a later window or a data event retired it.
-/// $nochange's data event deferred to the inactive events is judged here.
-pub fn expired(r: *Run, i: u32, gen: u32) Error!void {
-    const c = &r.tchks.items[i];
-    if (c.kind == .nochange) return noChange(r, i, r.scheduler.now);
-    if (!c.flags.active or c.gen != gen) return;
-    sleep(c);
-    try violation(r, i, c.at[0].last.?, r.scheduler.now);
 }
 
 /// A skew check goes dormant; its pending timer is stale.
 fn sleep(c: *Tchk) void {
+    const gen = c.gen;
     c.flags.active = false;
     c.gen +%= 1;
+    assert(c.gen != gen); // A stale expiry never matches again.
+    assert(!c.flags.active);
 }
 
 /// §15.3.6: data event at `d` against $nochange `i`'s latest level,
@@ -662,7 +548,8 @@ fn sleep(c: *Tchk) void {
 // (`judge`), so that pair still violates; judge in the monitor region if it
 // matters.
 fn noChange(r: *Run, i: u32, d: u64) Error!void {
-    const c = &r.tchks.items[i];
+    const c = &r.checks.rows.items[i];
+    assert(c.kind == .nochange);
     const lead = c.at[0].last orelse return;
     const start: i64 = @bitCast(c.lim[0]);
     const after = @as(i64, @intCast(lead)) - start < @as(i64, @intCast(d));
@@ -681,6 +568,8 @@ fn noChange(r: *Run, i: u32, d: u64) Error!void {
 /// a timing violation when the reference and data events occur
 /// simultaneously").
 fn simultaneous(c: *const Tchk) bool {
+    assert(c.lim.len == 2);
+    assert(c.kind != .width);
     return switch (c.kind) {
         .setup, .removal => false,
         .hold, .recovery, .setuphold, .recrem => c.lim[0] > 0 or c.lim[1] > 0,
@@ -688,28 +577,14 @@ fn simultaneous(c: *const Tchk) bool {
     };
 }
 
-/// A reference event at `now`: the timecheck of the window before it,
-/// "(timecheck time) - limit < (timestamp time) < (timecheck time)" with
-/// the latest data event before `now` as the timestamp (§15.2.1, §15.2.4,
-/// and the data-first half of §15.2.3/§15.2.6), and the second of a
-/// simultaneous pair whose data event came first.
-fn reference(r: *Run, i: u32, now: u64) Error!void {
-    const c = &r.tchks.items[i];
-    if (try enabled(r, c.scope, c.stamp_cond)) c.at[0].note(now);
-    if (!try enabled(r, c.scope, c.check_cond)) return;
-    if (c.lim[0] > 0) if (c.at[1].earlier(now)) |d| if (d +| c.lim[0] > now) try violation(r, i, d, now);
-    if (simultaneous(c) and c.at[1].at(now) and !c.at[1].reported) {
-        c.at[1].reported = true;
-        try violation(r, i, now, now);
-    }
-}
-
 /// A data event at `now`: the timecheck of the window after the latest
 /// reference event, "(timestamp time) <= (timecheck time) < (timestamp
 /// time) + limit" (§15.2.2, §15.2.5, and the reference-first half of
 /// §15.2.3/§15.2.6); one report per data event's time.
 fn data(r: *Run, i: u32, now: u64) Error!void {
-    const c = &r.tchks.items[i];
+    assert(i < r.checks.rows.items.len);
+    assert(now == r.scheduler.now);
+    const c = &r.checks.rows.items[i];
     if (try enabled(r, c.scope, c.stamp_cond)) c.at[1].note(now);
     if (!try enabled(r, c.scope, c.check_cond)) return;
     const ts = c.at[0].last orelse return;
@@ -725,7 +600,9 @@ fn data(r: *Run, i: u32, now: u64) Error!void {
 /// keeps one diagnostic per site, so a check's later violations add no
 /// warning), toggle its notifier (Table 15-13, VD-103), and tell the host.
 fn violation(r: *Run, i: u32, stamp: u64, check: u64) Error!void {
-    const c = r.tchks.items[i];
+    assert(i < r.checks.rows.items.len);
+    assert(stamp <= check or r.checks.rows.items[i].kind == .nochange);
+    const c = r.checks.rows.items[i];
     if (r.bag.enabled(.W1199)) {
         var path: std.Io.Writer.Allocating = .init(r.arena);
         defer path.deinit();
@@ -740,13 +617,15 @@ fn violation(r: *Run, i: u32, stamp: u64, check: u64) Error!void {
         });
     }
     if (c.notifier) |at| try toggle(r, at);
-    if (r.tchk_hook) |hook| hook(r, i);
+    if (r.checks.hook) |hook| hook(r, i);
 }
 
 /// Table 15-13 on each bit of notifier `at`: 0 -> 1, 1 -> 0, z -> z, and
 /// x -> "Either 0 or 1", which is 1 here (VD-103).
 fn toggle(r: *Run, at: u32) Error!void {
+    assert(at < r.values.len);
     const cur = r.values[at];
+    assert(cur.planes.len % 2 == 0);
     var small: [2]u64 = undefined;
     const planes = if (cur.planes.len <= small.len) small[0..cur.planes.len] else try r.arena.alloc(u64, cur.planes.len);
     const words = cur.planes.len / 2;
@@ -818,6 +697,47 @@ test "§15.5.1: with non-negative limits a delayed signal is its signal undelaye
         \\  end
         \\endmodule
     , "1 0 1\n2 1 1\n");
+}
+
+test "§15.5.3: with negative timing on, a shared delayed reference detects a violation late" {
+    // The suite's negative_timing_notifier_toggles_at_delayed_detection.v,
+    // derived by hand: `$setuphold(posedge clk, d, -2, 5, na)` needs clk's
+    // one delayed signal at least 2 ticks (1 more for the margin) after d's,
+    // so the second check, `$setuphold(posedge clk, e, 3, 3, nb)`, sees e's
+    // change at 99 against clk's edge at 100 only at the delayed edge, after
+    // 101. With the option off the limit is 0 and the violation is at 100.
+    const src =
+        \\`timescale 1ns/1ns
+        \\module c(input clk, input d, input e);
+        \\  reg na, nb;
+        \\  initial #1 begin na = 0; nb = 0; end
+        \\  specify
+        \\    $setuphold(posedge clk, d, -2, 5, na);
+        \\    $setuphold(posedge clk, e, 3, 3, nb);
+        \\  endspecify
+        \\endmodule
+        \\module t;
+        \\  reg clk = 0, d = 0, e = 0;
+        \\  c u(clk, d, e);
+        \\  initial begin
+        \\    #99 e = 1;
+        \\    #1 clk = 1;
+        \\    #1 $display("%0d %b %b", $time, u.na, u.nb);
+        \\    #39 $display("%0d %b %b", $time, u.na, u.nb);
+        \\  end
+        \\endmodule
+    ;
+    for ([_]struct { on: bool, want: []const u8 }{
+        .{ .on = true, .want = "101 0 0\n140 0 1\n" },
+        .{ .on = false, .want = "101 0 1\n140 0 1\n" },
+    }) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var bag = @import("diag").Bag.init(arena.allocator());
+        var out = std.Io.Writer.Allocating.init(arena.allocator());
+        try root.run(arena.allocator(), src, .{ .negative_timing = case.on }, &bag, &out.writer);
+        try std.testing.expectEqualStrings(case.want, out.written());
+    }
 }
 
 test "VD-103: a notifier a violation finds at x takes 1" {

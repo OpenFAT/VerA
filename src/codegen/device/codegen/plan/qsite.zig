@@ -4,6 +4,12 @@
 //! each charge alone) and the signed rows each stamps. `dispatch.emitQ`
 //! formats it. Clauses: §1.3.1.2, §4.5.15, §5.4.2, §5.4.3, §5.6, §5.6.1.2,
 //! §5.6.1.3, §5.6.5.
+//!
+//! Contents:
+//! - `pub const Error = std.mem.Allocator.Error`
+//! - `pub const Stamp = struct`
+//! - `pub const QSites = struct`
+//! - `pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []const bool) Error!QSites`
 
 const std = @import("std");
 const Mir = @import("ir").Mir;
@@ -11,10 +17,10 @@ const Lower = @import("ir").Lowered;
 const Input = @import("prove").Input;
 const plan_topo = @import("topology.zig");
 const assert = std.debug.assert;
+const Fixture = @import("prove").Fixture;
 
 /// Every fallible call here fails only on allocation.
 pub const Error = std.mem.Allocator.Error;
-const none_u32 = std.math.maxInt(u32);
 
 /// One row entry: row `row` gains `sign · q[slot]`.
 pub const Stamp = struct { slot: u32, row: u32, sign: f64 };
@@ -26,6 +32,8 @@ pub const QSites = struct {
     /// Sorted by (row, slot), no duplicate pair, no zero sign.
     stamps: []Stamp = &.{},
 };
+
+const none_u32 = std.math.maxInt(u32);
 
 /// One signed contribution term of a row, before sites are expanded.
 const Term = struct { sign: f64, contrib: u32 };
@@ -45,8 +53,9 @@ const Term = struct { sign: f64, contrib: u32 };
 /// A site whose charge is constant or solve-invariant has dq/dt = 0 and gets
 /// no slot; nor does a site that stamps no row (a ground-ground branch).
 /// `branch_u` is `Names.branch_u`, one entry per contribution; `sinv` is
-/// `Sinv.val`. O(rows · terms · sites); a module has tens of each.
+/// `Invariance.invariant`. O(rows · terms · sites); a module has tens of each.
 pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []const bool) Error!QSites {
+    assert(branch_u.len == in.lowered.contributions.items.len);
     const a = in.arena;
     const lw = in.lowered;
 
@@ -55,16 +64,20 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
     var rows: std.AutoArrayHashMapUnmanaged(u32, std.ArrayList(Term)) = .empty;
     const Rows = struct {
         fn add(al: std.mem.Allocator, m: *std.AutoArrayHashMapUnmanaged(u32, std.ArrayList(Term)), row: u32, t: Term) Error!void {
+            assert(t.sign == 1 or t.sign == -1); // a unit term, before site signs
             if (row == Lower.ground) return; // §1.3.1.1 ground has no row
             const g = try m.getOrPut(al, row);
             if (!g.found_existing) g.value_ptr.* = .empty;
             try g.value_ptr.append(al, t);
+            assert(g.value_ptr.items.len != 0);
         }
         fn assign(al: std.mem.Allocator, m: *std.AutoArrayHashMapUnmanaged(u32, std.ArrayList(Term)), row: u32, t: Term) Error!void {
+            assert(t.sign == 1 or t.sign == -1);
             if (row == Lower.ground) return;
             const g = try m.getOrPut(al, row);
             g.value_ptr.* = .empty;
             try g.value_ptr.append(al, t);
+            assert(g.value_ptr.items.len == 1); // an assignment clears the row
         }
     };
 
@@ -121,6 +134,8 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
     for (lw.charge_sites.items, 0..) |s, k| {
         slot_of[k] = none_u32;
         if (!stamps_of[k] or !live(in, sinv, s.final)) continue;
+        // Slots are handed out in site order.
+        if (sites.items.len != 0) assert(sites.items[sites.items.len - 1] < k);
         slot_of[k] = @intCast(sites.items.len);
         try sites.append(a, @intCast(k));
     }
@@ -155,25 +170,30 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
     }.lt);
     // Exit invariant `QSites.stamps` states: strictly ascending (row, slot),
     // so no pair twice, and no zero sign.
+    assert(sites.items.len <= ns);
     for (out.items, 0..) |o, k| {
         assert(o.sign != 0);
+        assert(o.slot < sites.items.len);
         if (k != 0) {
             const p = out.items[k - 1];
-            assert(p.row < o.row or (p.row == o.row and p.slot < o.slot));
+            assert(p.row <= o.row);
+            if (p.row == o.row) assert(p.slot < o.slot);
         }
     }
     return .{ .sites = sites.items, .stamps = out.items };
 }
 
+// ---- private ----
+
 /// Does a charge with this end-of-block value move in time?
 fn live(in: Input, sinv: []const bool, v0: Mir.Value) bool {
+    assert(sinv.len == 0 or sinv.len == in.an.nv);
     const v = in.an.rv(v0);
+    assert(@backingInt(v) < in.an.nv);
     if (in.an.foldConst(v, false) != null) return false;
     const i = @backingInt(v);
     return !(i < sinv.len and sinv[i] and in.mir.valueDef(v) == .inst_result);
 }
-
-const Fixture = @import("prove").Fixture;
 
 test "two charges on one pin are two slots; a flow contribution stamps +hi and −lo" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };

@@ -1,9 +1,4 @@
 $ vera --run lte.va
-=== lte ===
 qsite count got=2 want=2 ok=1
 qsite[0] got=g+ s- lte want=g+ s- lte ok=1
 qsite[1] got=s- b+ nolte want=s- b+ nolte ok=1
---- point 0 ---
-  x[g] = 0.000000e0
-  x[s] = 0.000000e0
-  x[b] = 0.000000e0

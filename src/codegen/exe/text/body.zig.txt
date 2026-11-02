@@ -1,0 +1,1297 @@
+/// §2.8.3/§12.32: this testbench is a HOST, and a host answers for every
+/// `$name` the compiler left to a VPI application. There is no application
+/// in a `vera --run` build, so this one answers zero — and that answer is
+/// the testbench's, written here where a reader can see it, not a value the
+/// compiler substituted behind everyone's back.
+///
+/// ZERO IS NOT A CLAIM ABOUT THE FUNCTION. §12.32.3's own sampnhold listing
+/// never initializes `sampler->value` before its first update callback, so
+/// the language fixes no value for an unregistered systf and there is
+/// nothing here to be wrong about. What a fixture over one of these may
+/// assert is what does NOT depend on the value: that the analog block runs
+/// straight through the call (§5.3.1), that the residual is still built.
+/// Asserting the 0.0 itself would pin this file's choice as if it were the
+/// LRM's, and a host-linked conforming tool would then fail the fixture.
+///
+/// The partials are zero for the same reason and one more: a systf whose
+/// derivative were left undefined would put a number nothing computed into
+/// the Jacobian, and Newton would chase it.
+fn noVpiApp(_: *anyopaque, _: usize, _: []const f64, partials: []f64) f64 {
+    @memset(partials, 0);
+    return 0;
+}
+var no_vpi_app: contract.SystfHost = .{ .ctx = undefined, .call = noVpiApp };
+
+/// §9.12 / IEEE 1364 §17.10: this binary's own command line is the
+/// invocation `Instance.plusargs` carries; the harness passes a
+/// fixture's `//! plusargs` there.
+fn plusargs(init: std.process.Init.Minimal) []const [:0]const u8 {
+    const argv = init.args.toSlice(std.heap.page_allocator) catch return &.{};
+    return argv[@min(1, argv.len)..];
+}
+
+/// §9.15 Table 9-28 "cwd": the directory this testbench was started in,
+/// "" if it cannot be read.
+fn cwdPath() []const u8 {
+    return std.process.currentPathAlloc(std.Io.Threaded.global_single_threaded.io(), std.heap.page_allocator) catch "";
+}
+
+/// What `contract.validateHost` checks this host by, when the checks are on
+/// (`vera_validate_contract`). The fixture suite always turns them on: this
+/// is the host that runs against every device the torture suite compiles.
+pub const iteration_hooks = true;
+pub const mutable_eval = true;
+/// 4.6.4.3 an array-parameter noise table: this host reads the card's own
+/// knots through `contract.noiseTable` (the row's `noise_table_points__`),
+/// not the declared defaults that reach `noise_tables`. See
+/// `emitNoiseComptime`'s `points=` and `psd=` comparisons.
+pub const noise_table_points = true;
+/// §3.4 this host refuses a card that moves a shape parameter: `shapeCheck`
+/// runs after every `derive`.
+pub const shape_check = true;
+/// The testbench calls `setup` after every card it writes (`tb/runner.zig`).
+pub const calls_setup = true;
+/// The testbench builds no small-signal matrix; it reads `acDyn` for
+/// `//! acdyn` (`acDynAt`), its one view of those slots.
+pub const calls_ac_dyn = true;
+/// `acDyn`'s term at slot (r, c) and angular frequency `w`, at `x`; 0 at a
+/// slot `ac_dyn_slots` does not list.
+fn acDynAt(r: usize, c: usize, w: f64, x: *const [n_u]f64, m: *const D.Model, inst: *D.Instance) std.math.Complex(f64) {
+    if (comptime !@hasDecl(D, "ac_dyn_slots")) return .init(0.0, 0.0);
+    var out: [D.ac_dyn_slots.len]std.math.Complex(f64) = undefined;
+    D.acDyn(f64, m, inst, x, sim_state, w, &out);
+    for (D.ac_dyn_slots, out) |s, v| if (s == r * n_u + c) return v;
+    return .init(0.0, 0.0);
+}
+fn shapeCheck(m: *const D.Model) void {
+    if (comptime @hasDecl(D, "checkCard")) if (D.checkCard(m)) |name| {
+        std.debug.print("error[E0890]: LRM 9.18: the model card puts `{s}` outside Table 9-29's allowed values\n", .{name});
+        std.process.exit(1);
+    };
+    if (comptime @hasDecl(D, "checkRange")) if (D.checkRange(m)) |name| {
+        std.debug.print("error[E0377]: LRM 3.4.2: the model card puts parameter `{s}` outside its declared range\n", .{name});
+        std.process.exit(1);
+    };
+    if (comptime !@hasDecl(D, "checkShape")) return;
+    const name = D.checkShape(m) orelse return;
+    std.debug.print("error: LRM 3.4: the model card sets shape parameter `{s}` to a value this device was not compiled for\n", .{name});
+    std.process.exit(1);
+}
+pub fn systf(_: *const D.Model) ?*const contract.SystfHost {
+    return &no_vpi_app;
+}
+comptime {
+    contract.validateHost(@This(), D);
+}
+
+/// §3.4.1: "If the type of the parameter is specified as integer or real,
+/// and the value assigned to the parameter conflicts with the type of the
+/// parameter, the value is converted to the type of the parameter (see
+/// 4.2.1.1)." A `//! param` card is written in reals, like any host's, so
+/// an integer parameter is handed one here.
+///
+/// §4.2.1.1: "Real numbers are converted to integers by rounding the real
+/// number to the nearest integer, rather than by truncating it ... If the
+/// fractional part of the real number is exactly 0.5, it shall be rounded
+/// away from zero." `@round` is exactly that tie rule. §3.4.1's explicit
+/// integer keeps the low 32 bits of a wider value (VD-089), an inferred
+/// integral one its 64-bit saturation; a field the §3.4.2 range sized
+/// narrower refuses a value it cannot hold, as `checkRange` refuses one
+/// inside the width.
+fn cardValue(comptime T: type, name: []const u8, v: f64) T {
+    return switch (@typeInfo(T)) {
+        .int => |info| if (info.bits >= 64) std.math.lossyCast(T, @round(v)) else std.math.cast(T, @as(i32, @truncate(std.math.lossyCast(i64, @round(v))))) orelse {
+            std.debug.print("error[E0377]: LRM 3.4.2: the model card puts parameter `{s}` outside its declared range\n", .{name});
+            std.process.exit(1);
+        },
+        else => v,
+    };
+}
+
+/// Index of the unknown a directive named. A miss is a compile error that
+/// names the directive, not a runtime surprise.
+fn ix(comptime name: []const u8) usize {
+    const u = comptime std.meta.stringToEnum(D.U, name) orelse
+        @compileError(title ++ ": `//!` names unknown `" ++ name ++ "`, which this module does not have");
+    return @backingInt(u);
+}
+
+/// A `//! seed` or `//! limit` want: equal to the 12 significant digits a
+/// hand derivation writes.
+fn near(got: f64, want: f64) bool {
+    return @abs(got - want) <= 1e-12 * @abs(want) + 1e-15;
+}
+
+/// Forward-mode dual: the contract's reference family
+/// (`contract.RefFamily`), each value carrying only the lanes of the
+/// unknowns it may depend on. A row is read through `dense`. `collapsed`
+/// is the contract's `collapse_applied` trait: the testbench evaluates
+/// with `false`, and `narrowCheck` with both.
+const Dual = DualC(false);
+fn DualC(comptime collapsed: bool) type {
+    return contract.RefFamily(f64, &lane_of, .{ .collapse_applied = collapsed });
+}
+/// The local matrix row a host assembles: the value and every column's
+/// partial, indexable at run time.
+const Row = struct { v: f64, d: [n_u]f64 = @splat(0.0) };
+/// `rows` (what `eval`, `q` or `qRows` returned) as `Row`s, each lane at
+/// its unknown's column and every other column +0.
+fn dense(rows: anytype) [rows.len]Row {
+    var out: [rows.len]Row = undefined;
+    inline for (0..rows.len) |r| out[r] = .{ .v = rows[r].v, .d = contract.denseRow(n_u, rows[r]) };
+    return out;
+}
+/// Unknown `u` on lane `u`; `u32`, so past 255 unknowns too.
+const lane_of = blk: {
+    var l: [n_u]u32 = undefined;
+    for (&l, 0..) |*e, u| e.* = u;
+    break :blk l;
+};
+/// The value family of the value-only entry points (`updateState`,
+/// `limit`, `seed`, `collapse`, `derive`, the iteration hooks):
+/// the reference family with no lanes, so every path runs the arithmetic
+/// `eval` does.
+const Val = contract.RefFamily(f64, &@as([n_u]u8, @splat(contract.no_lane)), .{});
+
+/// A batch family: `V` is NL operating points, one per vector element, and
+/// every value is lane-free. Per element it computes what `Val` does:
+/// `contract.RefFamily`'s IEEE division, `gm` transcendentals.
+/// Instantiated only for a device that declares `batch_ok`; a
+/// `batch_lead` device decides per point, and the family runs the lead
+/// protocol (`contract.LeadState`), so `val` answers the leader.
+const NL = 4;
+const VF = @Vector(NL, f64);
+var batch_lead: contract.LeadState(NL, true) = .{};
+/// Each point's own `Instance` (contract.zig `batch_inst`).
+var batch_insts: [NL]*const D.Instance = undefined;
+const Batch = struct {
+    pub const V = VF;
+    pub const Of = BatchCore.Of;
+    pub const con = BatchCore.con;
+    pub const lift = BatchCore.lift;
+    pub const probe = BatchCore.probe;
+    pub const sel = BatchCore.sel;
+    pub const B = BatchCore.B;
+    pub const Inner = BatchCore;
+    pub const Lane = Val;
+    pub const lane_count = NL;
+    pub const fromLanes = BatchCore.fromLanes;
+    pub const instLane = BatchCore.instLane;
+    pub fn leadBegin() void { batch_lead.begin(); }
+    pub fn leadNext() bool { return batch_lead.next(); }
+    pub fn leadMerge(out: anytype, new: @TypeOf(out.*)) void { contract.leadMergeInto(out, new, batch_lead.keep()); }
+};
+const BatchCore = struct {
+    pub const V = VF;
+    pub const Lane = Val;
+    pub const lane_count = NL;
+    pub fn laneOf(a: B, comptime w: usize) Val.Of(0) { return Val.con(a.v[w]); }
+    pub fn fromLanes(comptime _: contract.Mask(D), ls: [NL]Val.Of(0)) B {
+        var r: VF = undefined;
+        inline for (0..NL) |w| r[w] = ls[w].v;
+        return .{ .v = r };
+    }
+    pub fn decide(comptime op: std.math.CompareOperator, a: B, b: B) bool {
+        const c: @Vector(NL, bool) = switch (op) {
+            .lt => a.v < b.v, .lte => a.v <= b.v, .gt => a.v > b.v,
+            .gte => a.v >= b.v, .eq => a.v == b.v, .neq => a.v != b.v,
+        };
+        return batch_lead.mark(c);
+    }
+    pub fn decideI(a: B) i64 {
+        var r: @Vector(NL, i64) = undefined;
+        inline for (0..NL) |w| r[w] = std.math.lossyCast(i64, @round(a.v[w]));
+        return batch_lead.markI(r);
+    }
+    pub fn strip(a: B) B { return a; }
+    pub fn instLane(comptime T: type, comptime w: usize) *const T {
+        comptime std.debug.assert(T == D.Instance);
+        return batch_insts[w];
+    }
+    pub fn Of(comptime _: contract.Mask(D)) type { return B; }
+    pub fn con(c: f64) B { return .{ .v = @splat(c) }; }
+    pub fn lift(v: VF) B { return .{ .v = v }; }
+    pub fn probe(comptime _: usize, v: VF) B { return .{ .v = v }; }
+    pub fn sel(c: B, a: B, b: B) B { return .{ .v = @select(f64, c.v != zeros, a.v, b.v) }; }
+    const zeros: VF = @splat(0.0);
+    const ones: VF = @splat(1.0);
+    pub const B = struct {
+        v: VF,
+        fn map1(a: B, comptime f: anytype) B {
+            var r: VF = undefined;
+            inline for (0..NL) |i| r[i] = f(a.v[i]);
+            return .{ .v = r };
+        }
+        pub fn to(a: B, comptime _: contract.Mask(D)) B { return a; }
+        pub fn val(a: B) f64 { const arr: [NL]f64 = a.v; return arr[batch_lead.leader]; }
+        pub fn leadKeep(a: *B, n: B, keep: @Vector(NL, bool)) void { a.v = @select(f64, keep, n.v, a.v); }
+        pub fn ddxAt(_: B, comptime _: usize) f64 { return 0.0; }
+        pub fn add(a: B, b: B) B { return .{ .v = a.v + b.v }; }
+        pub fn sub(a: B, b: B) B { return .{ .v = a.v - b.v }; }
+        pub fn neg(a: B) B { return .{ .v = -a.v }; }
+        pub fn mul(a: B, b: B) B { return .{ .v = a.v * b.v }; }
+        pub fn div(a: B, b: B) B { return .{ .v = a.v / b.v }; }
+        pub fn scale(a: B, c: f64) B { return .{ .v = a.v * @as(VF, @splat(c)) }; }
+        pub fn addC(a: B, c: f64) B { return .{ .v = a.v + @as(VF, @splat(c)) }; }
+        // exp/log take the whole vector (`contract.gm`: lane for lane the
+        // scalar call's bits, which `batch_ok` promises).
+        pub fn exp(a: B) B { return .{ .v = contract.gm.exp(a.v) }; }
+        pub fn log(a: B) B { return .{ .v = contract.gm.log(a.v) }; }
+        pub fn expm1(a: B) B { return map1(a, contract.gm.expm1); }
+        pub fn log1p(a: B) B { return map1(a, std.math.log1p); }
+        pub fn sqrt(a: B) B { return .{ .v = @sqrt(a.v) }; }
+        pub fn sin(a: B) B { return map1(a, contract.gm.sin); }
+        pub fn cos(a: B) B { return map1(a, contract.gm.cos); }
+        pub fn tanh(a: B) B { return map1(a, contract.gm.tanh); }
+        pub fn sinh(a: B) B { return map1(a, contract.gm.sinh); }
+        pub fn cosh(a: B) B { return map1(a, contract.gm.cosh); }
+        pub fn atan(a: B) B { return map1(a, contract.gm.atan); }
+        pub fn pow(a: B, c: f64) B {
+            var r: VF = undefined;
+            inline for (0..NL) |i| r[i] = contract.gm.pow(a.v[i], c);
+            return .{ .v = r };
+        }
+        pub fn lt(a: B, b: B) B { return .{ .v = @select(f64, a.v < b.v, ones, zeros) }; }
+        pub fn le(a: B, b: B) B { return .{ .v = @select(f64, a.v <= b.v, ones, zeros) }; }
+        pub fn eq(a: B, b: B) B { return .{ .v = @select(f64, a.v == b.v, ones, zeros) }; }
+    };
+};
+
+comptime {
+    // A batch value is its vector and nothing else: passed by value per op.
+    std.debug.assert(@sizeOf(BatchCore.B) == @sizeOf(VF));
+    contract.checkFamily(Dual);
+    contract.checkFamily(Val);
+    contract.checkFamily(Batch);
+}
+
+/// The batch gate (ref/SIMD-Strategies T8): one `eval` over NL perturbed
+/// copies of the operating point, one per element of `Batch.V`, must agree
+/// with NL scalar evals, element by element. Bit equality is the
+/// expectation — the same IEEE ops run in the same order per element —
+/// with a 1e-12 relative escape for a vectorizer that contracts
+/// differently than the scalar pipeline. Silent on success. Run twice:
+/// nearby points, and points spread far enough that a `batch_lead`
+/// device's points take different branches (the lead protocol's runs).
+fn laneCheck(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    laneCheckSpread(x, model, inst, 1.0e-3);
+    if (comptime @hasDecl(D, "batch_lead") and D.batch_lead) laneCheckSpread(x, model, inst, 0.37);
+}
+fn laneCheckSpread(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D), spread: f64) void {
+    if (comptime !(@hasDecl(D, "batch_ok") and D.batch_ok)) return;
+    // Every point its own instance: point k's real and integer fields
+    // moved apart, so a point that read another's latch or held value
+    // would differ from its scalar evaluation.
+    var insts: [NL]D.Instance = @splat(inst.*);
+    const inst_info = @typeInfo(D.Instance).@"struct";
+    // A compact model's Instance has thousands of fields (BSIM4).
+    @setEvalBranchQuota(1000 + 100 * inst_info.field_names.len);
+    for (1..NL) |k| inline for (inst_info.field_names, inst_info.field_types) |name, FT| {
+        const kf: f64 = @floatFromInt(k);
+        if (FT == f64) {
+            const v = @field(insts[k], name);
+            if (std.math.isFinite(v)) @field(insts[k], name) = v * (1.0 + 0.25 * kf) + 0.125 * kf;
+        } else if (FT == i64) {
+            @field(insts[k], name) +%= @intCast(k);
+        }
+    };
+    for (0..NL) |k| batch_insts[k] = &insts[k];
+    var xs: [NL][n_u]f64 = undefined;
+    var xv: [n_u]VF = undefined;
+    for (0..NL) |k| {
+        const s = 1.0 + spread * @as(f64, @floatFromInt(k));
+        for (0..n_u) |i| xs[k][i] = x[i] * s + spread * @as(f64, @floatFromInt(k)) * @as(f64, if (i % 2 == 0) 1.0 else -1.0);
+    }
+    for (0..n_u) |i| {
+        // Through an array: a vector index must be comptime-known.
+        var lanes: [NL]f64 = undefined;
+        for (0..NL) |k| lanes[k] = xs[k][i];
+        xv[i] = lanes;
+    }
+    const rv: [n_u]Batch.B = D.eval(Batch, &xv, model, &insts[0], sim_state);
+    // The signatures the batched call produced are `contract.region`'s.
+    const sigs = if (comptime @hasDecl(D, "batch_lead")) batch_lead.regions() else @as([NL]u16, @splat(0));
+    for (0..NL) |k| {
+        const want = contract.region(D, &xs[k], model, &insts[k], sim_state);
+        if (sigs[k] == want) continue;
+        std.debug.print("lane_check FAIL: region lane {d}: batch {d} vs region {d}\n", .{ k, sigs[k], want });
+        std.process.exit(1);
+    }
+    const qv: [n_u]Batch.B = if (comptime @hasDecl(D, "q")) qRowsOf(Batch, &xv, model, &insts[0]) else undefined;
+    for (0..NL) |k| {
+        const rs: [n_u]Val.Of(0) = D.eval(Val, &xs[k], model, &insts[k], sim_state);
+        for (0..n_u) |i| laneAssert("res", i, k, @as([NL]f64, rv[i].v)[k], rs[i].v);
+        if (comptime @hasDecl(D, "q")) {
+            const qs: [n_u]Val.Of(0) = qRowsOf(Val, &xs[k], model, &insts[k]);
+            for (0..n_u) |i| laneAssert("q", i, k, @as([NL]f64, qv[i].v)[k], qs[i].v);
+        }
+    }
+}
+
+fn laneAssert(what: []const u8, i: usize, k: usize, a: f64, b: f64) void {
+    if (@as(u64, @bitCast(a)) == @as(u64, @bitCast(b))) return;
+    if (a != a and b != b) return; // NaN payloads may differ
+    std.debug.print("lane_check FAIL: {s}[{s}] lane {d}: batch {e} vs scalar {e}\n", .{ what, u_names[i], k, a, b });
+    std.process.exit(1);
+}
+
+/// The analysis in force, as every entry point reads it.
+var sim_state: contract.SimState = .{};
+/// §9.7.1 Table 9-25, §9.7.3: the testbench's part of a device diagnostic
+/// (its `zWhen`), with no newline. In a dc sweep "the current value of
+/// the swept variable in place of the simulation time" (`diag_sweep`),
+/// else `t=` the time; `level` 2 adds the run's memory and CPU use.
+pub fn veraDiag(t: f64, level: u8) void {
+    const swept = diag_sweep.len != 0 and switch (sim_state.kind) {
+        .static, .dc, .nodeset => true,
+        .ic, .tran, .ac, .noise => false,
+    };
+    if (swept) std.debug.print("{s}", .{diag_sweep}) else std.debug.print("t={d}", .{t});
+    if (level < 2) return;
+    // ponytail: `maxrss` is kB on Linux and bytes on macOS; 0 on an OS without rusage.
+    if (comptime std.posix.rusage != void) { // os: comptime-gated on `rusage`, else the zeros below
+        const ru = std.posix.getrusage(std.posix.rusage.SELF); // os: inside the `rusage != void` branch
+        const cpu = @as(f64, @floatFromInt(ru.utime.sec + ru.stime.sec)) + @as(f64, @floatFromInt(ru.utime.usec + ru.stime.usec)) / 1e6;
+        std.debug.print(" memory={d} kB cpu={d:.3} s", .{ ru.maxrss, cpu });
+    } else std.debug.print(" memory=0 kB cpu=0 s", .{});
+}
+/// The `//! sweep`/`//! psweep` point in force, `name=value` per swept
+/// variable (`sweepPoint`); "" when nothing is swept.
+var diag_sweep: []const u8 = "";
+/// True while `point`'s self-checks evaluate the device around the
+/// point: the printing artifact's `zDomain` (§4.3.2) reads it from the
+/// root module and stays quiet, since no analysis asked for those inputs.
+/// This runner is the root of a single testbench; a batch binary's root
+/// declares its own (`zigbuild.exe` `batchRoot`), so `muteDomain` sets
+/// the root's.
+pub var vera_domain_muted: bool = false;
+fn muteDomain(on: bool) void {
+    if (comptime @hasDecl(@import("root"), "vera_domain_muted")) @import("root").vera_domain_muted = on;
+}
+/// The analysis this run is (§4.6.1 Table 4-21): the `//! analysis` kind,
+/// or the one the VPI host opened. `sim_state.kind` is the part of it a
+/// point evaluates as, which `atPoint` decides.
+var run_kind: contract.AnalysisKind = .dc;
+
+/// Points `sim_state` at time `t`, `dt` after the last accepted point, and
+/// at the §4.6.1 analysis that point belongs to. Table 4-22's TRAN OP
+/// column: the dt = 0 solve that opens a transient is its "ic" analysis
+/// (Table 4-21: "the initial-condition analysis which precedes a
+/// transient analysis"), where "static", "ic" and "tran" are 1 and "dc" 0;
+/// every later point is the Tran column. Any other analysis is itself at
+/// every point. Every host here sets t, dt and kind only through this.
+fn atPoint(t: f64, dt: f64) void {
+    sim_state.t = t;
+    sim_state.dt = dt;
+    sim_state.kind = if (run_kind == .tran and dt == 0.0) .ic else run_kind;
+}
+
+/// The fused differential gate: `evalQ` shares ONE core call between the
+/// two halves, so it must return exactly what the separate `eval` and `q`
+/// return. Same ops, same order, same core — bit equality, no epsilon.
+/// A mismatch means the shared-core hoist changed the physics, which is
+/// the only way this refactor can be wrong.
+fn fusedCheck(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    if (comptime !@hasDecl(D, "evalQ")) return;
+    const both = D.evalQ(Dual, x, model, inst, sim_state);
+    const both_res = dense(both.res);
+    const both_q = dense(both.q);
+    const res = dense(D.eval(Dual, x, model, inst, sim_state));
+    const qq = dense(D.q(Dual, x, model, inst, sim_state));
+    for (0..n_u) |i| {
+        fusedAssert("res", i, both_res[i].v, res[i].v);
+        for (0..n_u) |j| fusedAssert("dres", i, both_res[i].d[j], res[i].d[j]);
+    }
+    // §5.6.1.2 one charge per site (`contract.nQ`), compared as sites.
+    for (0..n_q) |k| {
+        fusedAssertSite("q", k, both_q[k].v, qq[k].v);
+        for (0..n_u) |j| fusedAssertSite("dq", k, both_q[k].d[j], qq[k].d[j]);
+    }
+}
+
+/// The structural-Jacobian gate. `jac_pattern`/`q_pattern` tell a host
+/// which local matrix entries this device can fill, and the host DELETES
+/// the stamps for the rest — it does not even reserve the matrix entry.
+/// So a cleared bit with a nonzero partial behind it is a silently missing
+/// Jacobian entry, and that is the one way the declaration can be wrong.
+/// The converse is legal: the pattern over-approximates on purpose, and a
+/// set bit that happens to be zero at this bias costs one stamp.
+fn patternCheck(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    const r = withConst(Dual, D.eval(Dual, x, model, inst, sim_state), model, false);
+    if (comptime @hasDecl(D, "jac_pattern")) patAssert("res", D.jac_pattern, &r);
+    if (comptime @hasDecl(D, "jac_rows")) rowAssert("res", D.jac_rows, &r);
+    if (comptime @hasDecl(D, "q")) {
+        const qr = withConst(Dual, qRowsOf(Dual, x, model, inst), model, true);
+        if (comptime @hasDecl(D, "q_pattern")) patAssert("q", D.q_pattern, &qr);
+        if (comptime @hasDecl(D, "q_rows")) rowAssert("q", D.q_rows, &qr);
+    }
+}
+
+/// The constant-column gate, the one a host relies on when it stamps
+/// `contract.jacConst(D)` for every column outside `contract.derivReads(D)`
+/// (the device reads no lane there). The promise is that such a column
+/// enters every row linearly with the exact coefficient the table states,
+/// so a unit step on it moves each row by that coefficient: checked on
+/// `eval` and on the reactive rows, to the rounding of the rows' own
+/// magnitude. A zero step answer matches an absent entry.
+///
+/// Run under BOTH collapse settings (`collapse_applied` false, then true),
+/// stamping a guarded entry exactly when `contract.jacConstApplies` says a
+/// host would: its `Model` flag set and the collapse state it names.
+///
+/// Always on, not behind a flag: a gate that has to be asked for is one
+/// somebody forgets.
+fn narrowCheck(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    inline for (.{ false, true }) |collapsed| narrowCheckAs(collapsed, x, model, inst);
+}
+
+fn narrowCheckAs(comptime collapsed: bool, x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    const Dl = DualC(collapsed);
+    const r0 = dense(D.eval(Dl, x, model, inst, sim_state));
+    const q0: [n_u]Row = if (comptime @hasDecl(D, "q")) dense(qRowsOf(Dl, x, model, inst)) else undefined;
+    for (0..n_u) |c| {
+        if (hasLane(c)) continue;
+        var xs = x.*;
+        xs[c] += 1.0;
+        const r1 = dense(D.eval(Dl, &xs, model, inst, sim_state));
+        narrowAssert(Dl, "res", false, model, c, &r0, &r1);
+        if (comptime @hasDecl(D, "q")) {
+            const q1 = dense(qRowsOf(Dl, &xs, model, inst));
+            narrowAssert(Dl, "q", true, model, c, &q0, &q1);
+        }
+    }
+}
+
+/// The constant-stamp gate. A device that declares `constant` promises its
+/// Jacobian (`g`) or capacitance matrix (`c`) is the same at every x, so a
+/// host builds the stamp once: the whole local matrix, `jac_const`
+/// included, must come out the same at a second, unrelated bias, to the
+/// rounding of its own entries.
+fn constCheck(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    if (comptime !@hasDecl(D, "constant")) return;
+    var xs: [n_u]f64 = undefined;
+    for (&xs, x, 0..) |*o, v, i| o.* = v * 1.5 - 0.25 - 0.125 * @as(f64, @floatFromInt(i));
+    if (comptime D.constant.g) constAssert("res", withConst(Dual, D.eval(Dual, x, model, inst, sim_state), model, false), withConst(Dual, D.eval(Dual, &xs, model, inst, sim_state), model, false));
+    if (comptime D.constant.c and @hasDecl(D, "q")) constAssert("q", withConst(Dual, qRowsOf(Dual, x, model, inst), model, true), withConst(Dual, qRowsOf(Dual, &xs, model, inst), model, true));
+}
+
+fn constAssert(what: []const u8, a: [n_u]Row, b: [n_u]Row) void {
+    for (0..n_u) |i| for (0..n_u) |j| {
+        const p = a[i].d[j];
+        const q = b[i].d[j];
+        if (p == q or @abs(p - q) <= 1e-12 * @max(@abs(p), @abs(q))) continue;
+        std.debug.print("const_check FAIL: d{s}[{s}]/dx[{s}] is {e} at one bias and {e} at another, but the device declares it constant\n", .{ what, u_names[i], u_names[j], p, q });
+        std.process.exit(1);
+    };
+}
+
+fn hasLane(u: usize) bool {
+    return (contract.derivReads(D) >> @intCast(u)) & 1 != 0;
+}
+
+/// Column `c`'s unit step moved every row by `r1 - r0`; each must be the
+/// `jac_const` entry a host would stamp (0 when there is none), to the
+/// rounding of the rows' magnitude.
+fn narrowAssert(comptime Dl: type, what: []const u8, react: bool, model: *const D.Model, c: usize, r0: *const [n_u]Row, r1: *const [n_u]Row) void {
+    for (0..n_u) |i| {
+        var k: f64 = 0.0;
+        inline for (comptime contract.jacConst(D)) |e| {
+            if (@backingInt(e.row) == i and @backingInt(e.col) == c and
+                contract.jacConstApplies(D, e, model, Dl.collapse_applied)) k = if (react) e.c else e.g;
+        }
+        const moved = r1[i].v - r0[i].v;
+        const tol = 1e-9 * @max(@abs(r0[i].v), @abs(r1[i].v)) + 1e-300;
+        if (@abs(moved - k) <= tol) continue;
+        std.debug.print("narrow_check FAIL: d{s}[{s}]/dx[{s}]: a unit step moves the row by {e}, jac_const says {e}{s}\n", .{
+            what, u_names[i], u_names[c], moved, k, if (Dl.collapse_applied) " [collapse applied]" else "",
+        });
+        std.process.exit(1);
+    }
+}
+
+fn patAssert(what: []const u8, pat: [n_u]contract.Mask(D), r: *const [n_u]Row) void {
+    for (0..n_u) |i| for (0..n_u) |j| {
+        if (r[i].d[j] == 0.0) continue;
+        if ((pat[i] >> @intCast(j)) & 1 != 0) continue;
+        std.debug.print("pattern_check FAIL: d{s}[{s}]/dx[{s}] = {e} is outside the declared pattern\n", .{ what, u_names[i], u_names[j], r[i].d[j] });
+        std.process.exit(1);
+    };
+}
+
+/// The WRITTEN-ROW gate. A host drops a row outside `jac_rows`/`q_rows`
+/// entirely — no residual stamp, no charge-tape entry — so a clear bit
+/// with anything but a hard zero behind it is a term that vanishes from
+/// the netlist with no diagnostic. This is the check that fails if
+/// codegen ever writes `res[ru]` without going through `patRow`, and the
+/// value, not the derivative, is what it looks at: `isource` writes rows
+/// whose every partial is zero.
+fn rowAssert(what: []const u8, rows: contract.Mask(D), r: *const [n_u]Row) void {
+    for (0..n_u) |i| {
+        if ((rows >> @intCast(i)) & 1 != 0) continue;
+        if (r[i].v == 0.0) continue;
+        std.debug.print("row_check FAIL: {s}[{s}] = {e} but the row is declared never written\n", .{ what, u_names[i], r[i].v });
+        std.process.exit(1);
+    }
+}
+
+fn fusedAssert(what: []const u8, i: usize, a: f64, b: f64) void {
+    if (@as(u64, @bitCast(a)) == @as(u64, @bitCast(b))) return;
+    std.debug.print("fused_check FAIL: {s}[{s}]: evalQ {e} vs split {e}\n", .{ what, u_names[i], a, b });
+    std.process.exit(1);
+}
+
+fn fusedAssertSite(what: []const u8, k: usize, a: f64, b: f64) void {
+    if (@as(u64, @bitCast(a)) == @as(u64, @bitCast(b))) return;
+    std.debug.print("fused_check FAIL: {s} site {d}: evalQ {e} vs split {e}\n", .{ what, k, a, b });
+    std.process.exit(1);
+}
+
+/// §5.6.1.2 how many charges `q` returns, and the rows they stamp: `q`
+/// returns one per `ddt` site and `contract.qRows` sums them into the
+/// reactive residual's rows through `q_stamps`.
+const n_q = contract.nQ(D);
+
+/// A lane-free family's (`Val`, `Batch`) coerces to `[n_u]Sc.Of(0)`; a
+/// `Dual`'s is read through `dense`.
+fn qRowsOf(comptime Sc: type, x: *const [n_u]Sc.V, model: *const D.Model, inst: contract.InstancePtr(D)) contract.QRows(D, Sc) {
+    return contract.qRows(D, Sc, D.q(Sc, x, model, inst, sim_state));
+}
+
+/// The whole local Jacobian a host assembles: the device's lanes on the
+/// columns in `deriv_reads`, `jac_const` on the rest (`g` of `eval`, `c`
+/// of the reactive rows).
+fn withConst(comptime Dl: type, rows: anytype, model: *const D.Model, react: bool) [n_u]Row {
+    var out = dense(rows);
+    inline for (comptime contract.jacConst(D)) |e| {
+        if (contract.jacConstApplies(D, e, model, Dl.collapse_applied))
+            out[@backingInt(e.row)].d[@backingInt(e.col)] = if (react) e.c else e.g;
+    }
+    return out;
+}
+
+/// §4.5.2 accepted-step bookkeeping. `void` for a module with no stateful
+/// operator, which is most of them — codegen emits the state machine only
+/// when one is present.
+const State = if (@hasDecl(D, "updateState") and @hasDecl(D, "initState")) D.State else void;
+
+fn newState(model: *const D.Model, inst: *D.Instance) State {
+    if (State == void) return {};
+    return D.initState(model, inst);
+}
+
+/// Commit the accepted solution, exactly as a transient solver does after
+/// a converged step. `eval` READS the history out of `Instance`; this is the
+/// only thing that ever writes it, so without this call every §4.5 operator
+/// would answer from zero history at every time point and the transcript
+/// would claim more than it proves.
+///
+/// Returns `contract.UpdateResult.request_reject_at`'s time when the device
+/// rejects the step (VerA's `$vera_reject_step`), with every write this call
+/// made undone; null when it accepts.
+fn step(model: *const D.Model, inst: *D.Instance, x: *const [n_u]f64, state: *State) ?f64 {
+    if (State == void) return null;
+    const inst0 = inst.*;
+    const state0 = state.*;
+    switch (D.updateState(Val, model, inst, x.*, state, sim_state)) {
+        .ok => return null,
+        .request_reject_at => |r| {
+            inst.* = inst0;
+            state.* = state0;
+            return r;
+        },
+    }
+}
+
+/// Iteration history advances independently of accepted-time operators.
+/// §5.6.1.2 the accepted step's CHARGE, which is the other operand of the
+/// backward-Euler difference `solve` forms at the next time point. Taken
+/// before `step`, so it is the q of the state `eval` saw while this point
+/// was being solved and not of the history `updateState` is about to write.
+var q_prev: [n_u]f64 = @splat(0.0);
+
+fn commitCharge(model: *const D.Model, inst: *D.Instance, x: *const [n_u]f64) void {
+    if (comptime !@hasDecl(D, "q")) return;
+    const qq = dense(qRowsOf(Dual, x, model, inst));
+    for (0..n_u) |i| q_prev[i] = qq[i].v;
+}
+
+/// `acceptQ` is `q` then `updateState` from one core evaluation, so its
+/// charge must be `q`'s to the bit, lanes included. Run on copies: the
+/// transcript keeps advancing through `updateState` exactly as before.
+fn acceptCheck(model: *const D.Model, inst: *const D.Instance, x: *const [n_u]f64, state: *const State) void {
+    if (comptime !@hasDecl(D, "acceptQ") or State == void) return;
+    var iw = inst.*;
+    const want = dense(D.q(Dual, x, model, &iw, sim_state));
+    var ic = inst.*;
+    var sc = state.*;
+    const got = dense(D.acceptQ(Dual, x, model, &ic, &sc, sim_state));
+    for (0..n_q) |i| {
+        if (@as(u64, @bitCast(got[i].v)) == @as(u64, @bitCast(want[i].v)) and
+            std.mem.eql(u8, std.mem.asBytes(&got[i].d), std.mem.asBytes(&want[i].d))) continue;
+        std.debug.print("acceptQ FAIL: q site {d} {e} vs q() {e}\n", .{ i, got[i].v, want[i].v });
+        std.process.exit(1);
+    }
+}
+
+fn stepPost(model: *const D.Model, inst: *D.Instance, x: *const [n_u]f64, state: *State, solved: bool) ?f64 {
+    acceptCheck(model, inst, x, state);
+    stateCheck(model, inst, x, state);
+    const q0 = q_prev;
+    commitCharge(model, inst, x);
+    const r = stepAdvance(model, inst, x, state, solved);
+    if (r != null) q_prev = q0;
+    return r;
+}
+
+fn stepAdvance(model: *const D.Model, inst: *D.Instance, x: *const [n_u]f64, state: *State, solved: bool) ?f64 {
+    if (!solved) {
+        // Forced-point fixtures sample both lifetimes, and a forced point
+        // is one Newton iteration of an unbroken solve. Both updates read
+        // the same evaluated state, even when their inputs depend on one
+        // another; `limiter_previous` is the iteration hook's.
+        defer sim_state.iteration +|= 1;
+        if (@hasDecl(D, "advanceIteration")) {
+            var next = inst.*;
+            D.advanceIteration(Val, model, &next, x.*, sim_state);
+            const r = step(model, inst, x, state);
+            if (r == null and @hasField(D.Instance, "limiter_previous")) inst.limiter_previous = next.limiter_previous;
+            return r;
+        }
+    }
+    return step(model, inst, x, state);
+}
+
+/// A host whose time walk cannot go back (the mixed and VPI runners)
+/// refuses a `$vera_reject_step` request rather than accept the step anyway.
+fn retryUnsupported(r: f64) void {
+    std.debug.print("reject_step FAIL: this runner does not retry a rejected step (retry at {e})\n", .{r});
+    std.process.exit(1);
+}
+
+/// The host half of `contract.UpdateResult.request_reject_at` (VerA's
+/// `$vera_reject_step`): the step to `t` was rejected and undone, so a point
+/// is solved and accepted at `r`, between the last accepted time and `t`,
+/// and then `t` is solved again from there. The forced unknowns keep the
+/// values they have at `t`. A request during the retry is honoured the same
+/// way, 16 deep at most.
+fn retry(r: f64, n: usize, x: *[n_u]f64, forced: *const [n_u]?f64, model: *const D.Model, inst: *D.Instance, state: *State, depth: u32) void {
+    const t = sim_state.t;
+    const t_prev = t - sim_state.dt;
+    const last = sim_state.final_step;
+    if (!(r > t_prev and r < t) or depth == 16) {
+        std.debug.print("reject_step FAIL: retry at {e} is not inside ({e}, {e})\n", .{ r, t_prev, t });
+        std.process.exit(1);
+    }
+    if (print_residual) std.debug.print("--- point {d} rejected: retry at {e} ---\n", .{ n, r });
+    atPoint(r, r - t_prev);
+    sim_state.initial_step = false;
+    sim_state.final_step = false;
+    sim_state.analog_initial = false;
+    const solved_r = solve(x, forced, model, inst);
+    point(n, x, model, inst);
+    if (stepPost(model, inst, x, state, solved_r)) |r2| retry(r2, n, x, forced, model, inst, state, depth + 1);
+    atPoint(t, t - r);
+    sim_state.final_step = last;
+    const solved_t = solve(x, forced, model, inst);
+    point(n, x, model, inst);
+    if (stepPost(model, inst, x, state, solved_t)) |r3| retry(r3, n, x, forced, model, inst, state, depth + 1);
+}
+
+/// The forced unknowns at the last accepted point, which `locate` draws
+/// a `//! wave` from linearly, as the mixed runner's `pwl` does.
+var forced_prev: [n_u]?f64 = @splat(null);
+
+/// §5.10.3.1 where a `cross` with its own tolerances should have fired,
+/// when the point just solved found it outside the box they draw
+/// (`Instance.vera_cross_retry__`), else null. Read off `updateState` on
+/// copies, before the point prints, so the late attempt leaves neither
+/// transcript nor history: a host does not strobe a step it rejects.
+fn crossRetry(model: *const D.Model, inst: *const D.Instance, x: *const [n_u]f64, state: *const State) ?f64 {
+    if (comptime State == void or !@hasField(D.Instance, "vera_cross_retry__")) return null;
+    var ic = inst.*;
+    var sc = state.*;
+    _ = D.updateState(Val, model, &ic, x.*, &sc, sim_state);
+    return if (std.math.isFinite(ic.vera_cross_retry__)) ic.vera_cross_retry__ else null;
+}
+
+/// The point `crossRetry` asked for: solved and accepted at `r`, with each
+/// forced unknown on the line between the last accepted point and `t`,
+/// then `t` solved again from it. Returns whether that solve iterated, as
+/// `solve` does. 16 deep at most, as `retry`.
+fn locate(r: f64, n: usize, x: *[n_u]f64, forced: *const [n_u]?f64, model: *const D.Model, inst: *D.Instance, state: *State, depth: u32) bool {
+    const t = sim_state.t;
+    const t_prev = t - sim_state.dt;
+    const last = sim_state.final_step;
+    if (!(r > t_prev and r < t) or depth == 16) {
+        std.debug.print("cross FAIL: located at {e}, not inside ({e}, {e})\n", .{ r, t_prev, t });
+        std.process.exit(1);
+    }
+    if (print_residual) std.debug.print("--- point {d}: crossing located at {e} ---\n", .{ n, r });
+    var fr = forced.*;
+    for (&fr, forced_prev, x) |*f, p, *xi| if (f.*) |v| if (p) |v0| {
+        f.* = v0 + (v - v0) * (r - t_prev) / (t - t_prev);
+        xi.* = f.*.?;
+    };
+    atPoint(r, r - t_prev);
+    sim_state.initial_step = false;
+    sim_state.final_step = false;
+    sim_state.analog_initial = false;
+    var solved_r = solve(x, &fr, model, inst);
+    if (crossRetry(model, inst, x, state)) |r2| solved_r = locate(r2, n, x, &fr, model, inst, state, depth + 1);
+    point(n, x, model, inst);
+    if (stepPost(model, inst, x, state, solved_r)) |r2| retry(r2, n, x, &fr, model, inst, state, depth + 1);
+    forced_prev = fr;
+    for (forced, x) |f, *xi| if (f) |v| {
+        xi.* = v;
+    };
+    atPoint(t, t - r);
+    sim_state.final_step = last;
+    const solved_t = solve(x, forced, model, inst);
+    if (crossRetry(model, inst, x, state)) |r3| return locate(r3, n, x, forced, model, inst, state, depth + 1);
+    return solved_t;
+}
+
+/// §9.4 the model's display tasks at this accepted point: a printing
+/// device's own `display`, or what a device built `--display=record`
+/// records (`say`), rendered by `contract.formatSay`. Its `$debug` and
+/// `$fdebug` ran per iteration (`sayIteration`) when the point took any,
+/// so this is their `.accepted` pass; a point `solve` returned at once
+/// runs them here (`.all`).
+fn sayPoint(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    defer say_iterations = 0;
+    if (@hasDecl(D, "displayPass")) {
+        if (say_iterations != 0) D.displayPass(Dual, x, model, inst, sim_state, .accepted) else D.display(Dual, x, model, inst, sim_state);
+    } else if (@hasDecl(D, "display")) D.display(Dual, x, model, inst, sim_state);
+    if (comptime !@hasDecl(D, "say")) return;
+    sayPass(x, model, inst, if (say_iterations != 0) .accepted else .all);
+}
+
+/// §9.4.1 `$debug` "displays its arguments for each iteration of the analog
+/// solver", and §9.5.9 `$fdebug` writes "even if the evaluation occurred
+/// during an iteration that was rejected": the iteration pass at the
+/// iterate `x` (`contract.SayPass`), after each Newton iteration of `solve`.
+var say_iterations: usize = 0;
+fn sayIteration(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    say_iterations += 1;
+    if (@hasDecl(D, "displayPass")) D.displayPass(Dual, x, model, inst, sim_state, .iteration);
+    if (comptime !@hasDecl(D, "say")) return;
+    sayPass(x, model, inst, .iteration);
+}
+
+fn sayPass(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D), pass: contract.SayPass) void {
+    var store: [4096]f64 = undefined;
+    var s: contract.Say = .{ .buf = &store, .pass = pass };
+    D.say(Dual, x, model, inst, sim_state, &s);
+    var text: [65536]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&text);
+    // A record past the buffer prints what fits, then fails by name: a
+    // silently cut record reads as the device's whole output.
+    contract.formatSay(D, &s, title, &w) catch {
+        std.debug.print("{s}\nFAIL {s}: a say record passes {d} bytes\n", .{ w.buffered(), title, text.len });
+        std.process.exit(1);
+    };
+    std.debug.print("{s}", .{w.buffered()});
+}
+
+const u_names = blk: {
+    const f = @typeInfo(D.U).@"enum".field_names;
+    var names: [f.len][]const u8 = undefined;
+    for (f, 0..) |e, i| names[i] = e;
+    break :blk names;
+};
+
+/// One operating point: the bias, then whatever the model prints, then the
+/// residual it stamps and the Jacobian the solver would see. Under
+/// `//! print none` only the model's own output and the gates' FAILs print.
+fn point(n: usize, x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    if (print_residual) {
+        std.debug.print("--- point {d} ---\n", .{n});
+        for (0..n_u) |i| std.debug.print("  x[{s}] = {e:.6}\n", .{ u_names[i], x[i] });
+        if (sim_state.t != 0.0 or sim_state.dt != 0.0)
+            std.debug.print("  t = {e:.6}  dt = {e:.6}\n", .{ sim_state.t, sim_state.dt });
+    }
+
+    // §5.10.5 the host's breakpoint hook, when codegen emitted one (only a
+    // module with a `timer` has one). Printed OUTSIDE `print_residual`
+    // because it is not part of the residual and the fixtures that test it
+    // are `print none`; `@hasDecl` keeps every other transcript unchanged.
+    if (@hasDecl(D, "nextBreakpoint")) {
+        if (D.nextBreakpoint(model, sim_state.t)) |bp|
+            std.debug.print("  next_bp = {e:.6}\n", .{bp})
+        else
+            std.debug.print("  next_bp = none\n", .{});
+    }
+
+    // Differential gates — silent on success, fail the run loudly. They
+    // evaluate at points around `x` that no analysis asked for, so a
+    // §4.3.2 domain error there is muted (`vera_domain_muted`, read by
+    // the printing artifact's `zDomain`); `x` itself is evaluated first,
+    // unmuted, so its own error still reports.
+    _ = D.eval(Val, x, model, inst, sim_state);
+    muteDomain(true);
+    laneCheck(x, model, inst);
+    fusedCheck(x, model, inst);
+    patternCheck(x, model, inst);
+    narrowCheck(x, model, inst);
+    constCheck(x, model, inst);
+    fdCheck(x, model, inst);
+    finiteCheck(n, model, inst);
+    muteDomain(false);
+
+    // §9.4 the model's own transcript. Runs BEFORE the residual print so a
+    // fixture's `$strobe` lines sit next to the bias that produced them.
+    sayPoint(x, model, inst);
+    if (!print_residual) return;
+
+    const res = withConst(Dual, D.eval(Dual, x, model, inst, sim_state), model, false);
+    for (0..n_u) |i| {
+        std.debug.print("  res[{s}] = {e:.6}\n", .{ u_names[i], res[i].v });
+        for (0..n_u) |j| {
+            if (res[i].d[j] == 0.0) continue;
+            std.debug.print("    d res[{s}]/d x[{s}] = {e:.6}\n", .{ u_names[i], u_names[j], res[i].d[j] });
+        }
+    }
+    // §5.6.1.2 the reactive half, when the model has one. Its derivative is
+    // the capacitance/inductance matrix the host multiplies by d/dt.
+    if (@hasDecl(D, "q")) {
+        const qq = withConst(Dual, qRowsOf(Dual, x, model, inst), model, true);
+        for (0..n_u) |i| {
+            if (qq[i].v == 0.0 and allZero(qq[i].d)) continue;
+            std.debug.print("  q[{s}] = {e:.6}\n", .{ u_names[i], qq[i].v });
+            for (0..n_u) |j| {
+                if (qq[i].d[j] == 0.0) continue;
+                std.debug.print("    d q[{s}]/d x[{s}] = {e:.6}\n", .{ u_names[i], u_names[j], qq[i].d[j] });
+            }
+        }
+    }
+}
+
+/// The derivative gate, on under the suite's
+/// `--certify` (`fd_certify`): every Jacobian entry, as a host stamps it
+/// (`withConst`), against a central difference of the value-only `eval`
+/// and `q`. h = cbrt(eps)*max(|x|,1) makes the difference's truncation
+/// error about eps^(2/3), so 1e-5 relative has margin and still sees a
+/// wrong term. Where the forward and backward slopes disagree by more than
+/// curvature explains, a kink or a branch sits inside +-h and nothing there
+/// is smooth enough to difference: that lane is counted as skipped, never
+/// judged. Silent on success but for one census line.
+fn fdCheck(x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    if (!fd_certify) return;
+    // In a small-signal analysis the rows carry the §4.6.3/§4.6.4 excitations,
+    // which are sources and not part of the residual being linearized.
+    if (sim_state.kind == .ac or sim_state.kind == .noise) return;
+    var tally: [3]usize = .{ 0, 0, 0 }; // compared, skipped, failed
+    const ad = withConst(Dual, D.eval(Dual, x, model, inst, sim_state), model, false);
+    fdRows("res", false, x, model, inst, &ad, &tally);
+    if (comptime @hasDecl(D, "q")) {
+        const aq = withConst(Dual, qRowsOf(Dual, x, model, inst), model, true);
+        fdRows("q", true, x, model, inst, &aq, &tally);
+    }
+    std.debug.print("  fd_check: {d} compared, {d} skipped, {d} failed\n", .{ tally[0], tally[1], tally[2] });
+    if (tally[2] != 0) std.process.exit(1);
+}
+fn fdEval(react: bool, x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D)) [n_u]f64 {
+    var copy = inst.*; // a `mutable_eval` device writes its instance
+    var out: [n_u]f64 = @splat(0.0);
+    if (react) {
+        if (comptime @hasDecl(D, "q")) for (&out, @as([n_u]Val.Of(0), qRowsOf(Val, x, model, &copy))) |*o, e| {
+            o.* = e.v;
+        };
+    } else {
+        const r: [n_u]Val.Of(0) = D.eval(Val, x, model, &copy, sim_state);
+        for (&out, r) |*o, e| o.* = e.v;
+    }
+    return out;
+}
+fn fdRows(what: []const u8, react: bool, x: *const [n_u]f64, model: *const D.Model, inst: contract.InstancePtr(D), ad: *const [n_u]Row, tally: *[3]usize) void {
+    const eps = std.math.floatEps(f64);
+    const r0 = fdEval(react, x, model, inst);
+    for (0..n_u) |j| {
+        const h = std.math.cbrt(eps) * @max(@abs(x[j]), 1.0);
+        var xp = x.*;
+        xp[j] += h;
+        var xm = x.*;
+        xm[j] -= h;
+        const rp = fdEval(react, &xp, model, inst);
+        const rm = fdEval(react, &xm, model, inst);
+        for (0..n_u) |i| {
+            const a = ad[i].d[j];
+            if (!std.math.isFinite(a) or !std.math.isFinite(rp[i]) or !std.math.isFinite(rm[i]) or !std.math.isFinite(r0[i])) {
+                tally[1] += 1;
+                continue;
+            }
+            const fwd = (rp[i] - r0[i]) / h;
+            const bwd = (r0[i] - rm[i]) / h;
+            const round = 64.0 * eps * (@abs(rp[i]) + @abs(rm[i]) + @abs(r0[i])) / h;
+            if (@abs(fwd - bwd) > 1e-3 * (@abs(fwd) + @abs(bwd)) + round) {
+                tally[1] += 1;
+                continue;
+            }
+            tally[0] += 1;
+            const fd = 0.5 * (fwd + bwd);
+            if (@abs(fd - a) <= 1e-5 * @max(@abs(fd), @abs(a)) + round) continue;
+            tally[2] += 1;
+            std.debug.print("fd_check FAIL: d {s}[{s}]/d x[{s}]: jacobian {e} vs central difference {e} (h={e})\n", .{ what, u_names[i], u_names[j], a, fd, h });
+        }
+    }
+}
+
+/// The prover-soundness gate, on under `--certify`
+/// for a device whose every contribution unit the prover rated
+/// `.optimized` (`finite_proved`): its rows are finite doubles for any
+/// finite unknowns and in-range card (`proof.FloatMode`'s rules). So `eval`
+/// and `q` on this point's card and instance, at random unknowns, must
+/// return finite rows; a NaN or an inf is a prover bug. The testbench's
+/// card, not `D.Model{}`: without `//! param` it is the defaults, and with
+/// one a default may be an error the card overrides (§6.3.4, a dependent
+/// default `11 % zero_divisor`). Rule 3 there assumes `+ - * /` do not
+/// overflow at device magnitudes, so each unknown is drawn log-uniform in
+/// magnitude over 10^finite_decades, either sign; one time in eight
+/// exactly 0 (the divisor a prover must not miss) and one in eight at the
+/// bound, where overflow lives. Seeded by the point, so a failure reruns.
+/// Silent on success but for one census line.
+/// ponytail: one fixed bound (1 kV, 1 kA); thread `--unknown-bound=` here
+/// once the suite compiles with one.
+const finite_decades = [2]f64{ -6.0, 3.0 };
+const finite_samples = 64;
+fn finiteCheck(n: usize, model: *const D.Model, inst: contract.InstancePtr(D)) void {
+    if (!fd_certify or !finite_proved) return;
+    var prng = std.Random.DefaultPrng.init(0x4c34b +% n);
+    const r = prng.random();
+    for (0..finite_samples) |k| {
+        var x: [n_u]f64 = undefined;
+        for (&x) |*e| {
+            const sign: f64 = if (r.boolean()) 1.0 else -1.0;
+            e.* = switch (r.uintLessThan(u8, 8)) {
+                0 => 0.0,
+                1 => sign * std.math.pow(f64, 10.0, finite_decades[1]),
+                else => sign * std.math.pow(f64, 10.0, finite_decades[0] + (finite_decades[1] - finite_decades[0]) * r.float(f64)),
+            };
+        }
+        const res = fdEval(false, &x, model, inst);
+        const qq = fdEval(true, &x, model, inst);
+        for (0..n_u) |i| {
+            if (std.math.isFinite(res[i]) and std.math.isFinite(qq[i])) continue;
+            std.debug.print("finite_check FAIL: point {d} sample {d}: res[{s}] = {e}, q[{s}] = {e}, but every unit was proved finite; x =", .{ n, k, u_names[i], res[i], u_names[i], qq[i] });
+            for (x, 0..) |v, j| std.debug.print(" {s}={e}", .{ u_names[j], v });
+            std.debug.print("\n", .{});
+            std.process.exit(1);
+        }
+    }
+    std.debug.print("  finite_check: {d} samples finite\n", .{finite_samples});
+}
+
+/// The state-machine gate, on under `--certify` for
+/// a device with `stateCtl`: a host's reject path at each accepted point,
+/// on copies. Commit the working state (the last accepted point, as a host
+/// does before it may revert), try `updateState` at this point, then
+/// `stateCtl(.revert)`: every `Instance` and `State` field must be back to
+/// the bit, and `eval` must answer as it did before the attempt. Exempt:
+/// the §5.6.1.2 staging twins `wb__k`/`wq__k`, which `updateState` writes
+/// and only `.commit` reads, so a host stages them again before the next
+/// commit (`codegen/instance.zig` `emitStateTwins`). Silent on success but
+/// for one census line.
+fn stateCheck(model: *const D.Model, inst: *const D.Instance, x: *const [n_u]f64, state: *const State) void {
+    if (comptime State == void or !@hasDecl(D, "stateCtl")) return;
+    if (!fd_certify) return;
+    var ic = inst.*;
+    var sc = state.*;
+    _ = D.stateCtl(model, &ic, &sc, .commit);
+    const inst0 = ic;
+    const state0 = sc;
+    const before = fdEval(false, x, model, &ic);
+    _ = D.updateState(Val, model, &ic, x.*, &sc, sim_state);
+    _ = D.stateCtl(model, &ic, &sc, .revert);
+    const fields = stateFields("Instance", D.Instance, &inst0, &ic) + stateFields("State", State, &state0, &sc);
+    const after = fdEval(false, x, model, &ic);
+    for (0..n_u) |i| {
+        if (@as(u64, @bitCast(before[i])) == @as(u64, @bitCast(after[i])) or (before[i] != before[i] and after[i] != after[i])) continue;
+        std.debug.print("state_check FAIL: res[{s}] is {e} before updateState and {e} after its revert\n", .{ u_names[i], before[i], after[i] });
+        std.process.exit(1);
+    }
+    std.debug.print("  state_check: {d} fields restored\n", .{fields});
+}
+fn stateFields(what: []const u8, comptime T: type, want: *const T, got: *const T) usize {
+    const names = @typeInfo(T).@"struct".field_names;
+    @setEvalBranchQuota(1000 + 100 * names.len);
+    var bad = false;
+    inline for (names) |name| {
+        const staged = comptime std.mem.startsWith(u8, name, "wb__") or std.mem.startsWith(u8, name, "wq__");
+        if (!staged and !sameBits(@field(want.*, name), @field(got.*, name))) {
+            std.debug.print("state_check FAIL: {s}.{s} is {any} after updateState and stateCtl(.revert), {any} before\n", .{ what, name, @field(got.*, name), @field(want.*, name) });
+            bad = true;
+        }
+    }
+    if (bad) std.process.exit(1);
+    return names.len;
+}
+/// `a` and `b` to the bit, NaN payloads included. An integer compares by
+/// value: a held wide `reg` is a `uN` (`ZW`, N up to 128) whose storage
+/// has padding bits LLVM leaves undefined, so the bytes of two equal
+/// copies may differ outside Debug.
+fn sameBits(a: anytype, b: @TypeOf(a)) bool {
+    return switch (@typeInfo(@TypeOf(a))) {
+        .int => a == b,
+        .array => for (a, b) |x, y| {
+            if (!sameBits(x, y)) break false;
+        } else true,
+        // else: floats, bools, pointers and the padding-free structs a device holds: bytes are bits
+        else => std.mem.eql(u8, std.mem.asBytes(&a), std.mem.asBytes(&b)),
+    };
+}
+
+fn allZero(v: [n_u]f64) bool {
+    for (v) |e| if (e != 0.0) return false;
+    return true;
+}
+
+/// Pin an unknown at the value a `//! bias`, `//! sweep` or `//! wave` line
+/// gave it: the INITIAL GUESS Newton starts from, and the CONSTRAINT row it
+/// keeps. Both, from one directive, because a directive that names a value
+/// for an unknown is saying the host drives it.
+fn set(x: *[n_u]f64, forced: *[n_u]?f64, comptime name: []const u8, v: f64) void {
+    x[ix(name)] = v;
+    forced[ix(name)] = v;
+}
+
+/// §3.6.1.2 `abstol` — "the largest signal value that can be safely
+/// ignored" — per unknown, which is the absolute half of Newton's stopping
+/// test. The device declares it (codegen reads it off the net's discipline,
+/// §3.6.2.3 override included); the fallback is annex D's own defaults for
+/// `Voltage` and `Current`, for a hand-written device that declares neither
+/// table.
+const u_abstol: [n_u]f64 = if (@hasDecl(D, "u_abstol")) D.u_abstol else blk: {
+    var a: [n_u]f64 = @splat(1e-6);
+    if (@hasDecl(D, "u_kinds")) for (D.u_kinds, 0..) |k, i| {
+        if (k != .voltage) a[i] = 1e-12;
+    };
+    break :blk a;
+};
+
+/// The relative half. Tighter than a circuit simulator's default reltol
+/// because a fixture asserts a digit derived from the LRM, not a waveform:
+/// the systems here are small enough that the extra decades cost nothing.
+const solve_reltol = 1e-12;
+
+/// A cap, not a budget. Every fixture system converges in one step (linear)
+/// or a handful; reaching this means the iteration is not converging, and
+/// that has to be LOUD — see the exit below.
+const solve_max_iter = 100;
+
+/// §5.6 THE SOLVE, and it is a solve.
+///
+/// Verilog-A semantics are defined AT A SOLUTION of the nodal equations,
+/// never at an arbitrary point. §5.6.7's indirect contribution is a
+/// CONSTRAINT the simulator satisfies rather than an assignment — there is
+/// no way to express it by evaluating anything — and §5.4.2.2's "the
+/// potential of a source branch may be read" is a question about what the
+/// solver settled on. A harness that wrote `//! bias` into x[] and stopped
+/// could only ever hand a fixture back the number the harness itself just
+/// wrote.
+///
+/// So: Newton-Raphson on the residual the device stamps, with the Jacobian
+/// the forward-mode `Dual` above already carries. Dense LU with partial
+/// pivoting — a fixture's system is under ~10 unknowns, so a sparse
+/// factorisation or an ordering heuristic would be code with nothing to do.
+///
+/// ONE RULE BEYOND TEXTBOOK NEWTON, and it is what makes an isolated device
+/// solvable at all. A .va compiled alone is NOT a circuit. `I(p,n) <+ 0.0`
+/// stamps two identically-zero rows; a two-terminal module that never
+/// references ground leaves its common mode undetermined however nonlinear
+/// it is. Those are free directions of the device's own equations, not
+/// solver failures — a host pins them by CONNECTING the device to
+/// something. So a column with no usable pivot takes dx = 0 and its unknown
+/// HOLDS the operating point the `//!` lines declared, which is exactly the
+/// behaviour this harness had before it could solve at all. Convergence is
+/// then judged on the unknowns the system does determine, and only those.
+///
+/// ponytail: no gmin stepping, no source stepping, no continuation. Every
+/// system in the suite converges from the declared guess. Add the minimum
+/// and name it here if one ever does not.
+///
+/// §5.6.1.2's reactive half is folded in by BACKWARD EULER, because a
+/// fixture finally needed a transient solve: §5.4.3's port current is the
+/// whole of what the module stamps at the port, charge included, and
+/// `res[flow(<p>)] = x − res[p]` alone can only ever hand back the
+/// conduction half (ch05_analog_behavior/a02_06). So the row Newton sees is
+///
+///     eval(x) + (q(x) − q_prev) / dt
+///
+/// with `q_prev` the charge of the last accepted point (`commitCharge`).
+///
+/// ponytail: first order, fixed step, no LTE control and no step rejection
+/// — `//! time` states the steps and the suite asserts values a clause
+/// derives, not a waveform's accuracy. Trapezoidal or gear-2 is the upgrade
+/// if a fixture ever asserts a number the Euler truncation error moves.
+///
+/// dt = 0 is the DC point that opens a transient (`renderRunner` gives the
+/// first time step dt = 0 for exactly this reason, §4.5.3), and there the
+/// difference is undefined and the charge contributes nothing — so that
+/// point is still the resistive solve it always was.
+fn solve(x: *[n_u]f64, forced: *const [n_u]?f64, model: *const D.Model, inst: *D.Instance) bool {
+    // Nothing to determine: every unknown is one a `//!` line named, or the
+    // reference the harness ties the rest to without `//! solve`. x already
+    // holds the answer. Returning here is not only the cheap path — it is
+    // what keeps a `//! print none` fixture evaluated exactly as often as it
+    // was before there was a solver, so no §9.4 transcript moves.
+    for (forced) |f| {
+        if (f == null) break;
+    } else return false;
+    sim_state.iteration = 1;
+    var previous = x.*;
+    var worst: usize = 0;
+    var worst_dx: f64 = 0.0;
+    var iter: usize = 0;
+    while (iter < solve_max_iter) : (iter += 1) {
+        if (iter != 0) {
+            if (@hasDecl(D, "advanceIteration")) D.advanceIteration(Val, model, inst, previous, sim_state);
+            sim_state.iteration +|= 1;
+        }
+        previous = x.*;
+        var r = withConst(Dual, D.eval(Dual, x, model, inst, sim_state), model, false);
+        sayIteration(x, model, inst);
+        // §5.6.1.2 backward Euler — see the header. Value and derivative
+        // both, so the capacitance matrix reaches the Jacobian too.
+        if (comptime @hasDecl(D, "q")) if (sim_state.dt > 0.0) {
+            const qq = withConst(Dual, qRowsOf(Dual, x, model, inst), model, true);
+            for (0..n_u) |i| {
+                r[i].v += (qq[i].v - q_prev[i]) / sim_state.dt;
+                for (0..n_u) |j| r[i].d[j] += qq[i].d[j] / sim_state.dt;
+            }
+        };
+        var a: [n_u][n_u]f64 = undefined;
+        var b: [n_u]f64 = undefined;
+        var scale: f64 = 0.0;
+        for (0..n_u) |i| {
+            if (forced[i]) |v| {
+                // The host drives this one, so its row is the constraint and
+                // not the device's KCL. Written as a Newton row (1·dx =
+                // v - x) rather than by assignment, so the value survives
+                // elimination against every other row exactly.
+                a[i] = @splat(0.0);
+                a[i][i] = 1.0;
+                b[i] = v - x[i];
+            } else {
+                a[i] = r[i].d;
+                b[i] = -r[i].v;
+                // A forced column's dx is known, so it moves to the right-
+                // hand side. Left in, a large coupling (a charge over dt)
+                // wins that column's pivot from the constraint row, and the
+                // free column it displaces can fall under `eps`.
+                for (0..n_u) |j| if (forced[j]) |v| {
+                    b[i] -= a[i][j] * (v - x[j]);
+                    a[i][j] = 0.0;
+                };
+            }
+            // Row equilibration: each row is divided by its largest entry,
+            // which leaves dx unchanged. Without it one row's 1/dt (a §4.5.3
+            // `ddt` unknown's row, -2e8 at dt = 5 ns) sets `scale`, and a
+            // pivot of 1 in a row of order 1 falls under `eps`, so that
+            // unknown silently holds its guess.
+            var m: f64 = 0.0;
+            for (a[i]) |e| m = @max(m, @abs(e));
+            if (m > 0.0) {
+                for (&a[i]) |*e| e.* /= m;
+                b[i] /= m;
+                scale = 1.0;
+            }
+        }
+        var dx: [n_u]f64 = undefined;
+        var solved: [n_u]bool = undefined;
+        luSolve(&a, &b, &dx, &solved, scale);
+        var settled = true;
+        worst_dx = 0.0;
+        for (0..n_u) |i| {
+            if (!solved[i]) continue;
+            const tol = u_abstol[i] + solve_reltol * @abs(x[i]);
+            // Written so a NaN step (a NaN residual or Jacobian entry)
+            // never settles: it runs out the cap and fails by name.
+            const step_i = @abs(dx[i]);
+            if (step_i <= tol) continue;
+            settled = false;
+            if (!(step_i <= worst_dx)) {
+                worst_dx = step_i;
+                worst = i;
+            }
+        }
+        for (0..n_u) |i| x[i] += dx[i];
+        // §9.17.1 `limit`'s verdict is on the iterate at `old`. This harness
+        // accepts the updated x, not the linearization point, so it asks
+        // at x with `cur = old`, where every clamp is the identity.
+        const can_converge = if (@hasDecl(D, "limit")) D.limit(Val, model, inst, x.*, x.*, sim_state).converged else true;
+        if (settled and can_converge) return true;
+    }
+    // A testbench that does not converge must FAIL, loudly and by exit
+    // status, naming the unknown that would not settle. Falling through and
+    // letting the model assert against a half-iterated x would report a
+    // conformance verdict on arithmetic nobody solved.
+    std.debug.print(
+        "{s}: did not converge after {d} Newton iterations: x[{s}] still moving {e:.6} per step, tolerance {e:.6}\n",
+        .{ title, solve_max_iter, u_names[worst], worst_dx, u_abstol[worst] + solve_reltol * @abs(x[worst]) },
+    );
+    std.process.exit(1);
+}
+
+/// Dense LU with partial pivoting, rank-revealing exactly as far as `solve`
+/// needs: `solved[k]` is false for a column with no usable pivot, and
+/// `dx[k]` is then 0. Row `k` of the echelon form lives at `perm[…]`, so
+/// nothing is physically moved.
+fn luSolve(
+    a: *[n_u][n_u]f64,
+    b: *[n_u]f64,
+    dx: *[n_u]f64,
+    solved: *[n_u]bool,
+    scale: f64,
+) void {
+    // "Usable" is relative to the largest entry in the whole system: a
+    // structurally absent coupling and one that cancelled to rounding are
+    // both absence of information, and treating the second as a pivot is
+    // how a solver invents a 1e17 node voltage.
+    const eps = 1e-14 * scale;
+    var pivot: [n_u]usize = @splat(0);
+    var perm: [n_u]usize = undefined;
+    for (0..n_u) |i| perm[i] = i;
+    var rows: usize = 0; // rows consumed by a pivot so far
+    for (0..n_u) |k| {
+        var best = rows;
+        var best_v: f64 = -1.0;
+        for (rows..n_u) |i| {
+            const v = @abs(a[perm[i]][k]);
+            if (v > best_v) {
+                best_v = v;
+                best = i;
+            }
+        }
+        if (best_v <= eps) {
+            solved[k] = false;
+            continue;
+        }
+        std.mem.swap(usize, &perm[rows], &perm[best]);
+        const p = perm[rows];
+        pivot[k] = p;
+        solved[k] = true;
+        for (rows + 1..n_u) |i| {
+            const qr = perm[i];
+            if (a[qr][k] == 0.0) continue;
+            const f = a[qr][k] / a[p][k];
+            for (k..n_u) |j| a[qr][j] -= f * a[p][j];
+            b[qr] -= f * b[p];
+        }
+        rows += 1;
+    }
+    // Back-substitution over the pivoted columns, highest first. A free
+    // column contributes nothing to any row above it, because its dx is 0.
+    var k = n_u;
+    while (k > 0) {
+        k -= 1;
+        if (!solved[k]) {
+            dx[k] = 0.0;
+            continue;
+        }
+        const p = pivot[k];
+        var s = b[p];
+        for (k + 1..n_u) |j| s -= a[p][j] * dx[j];
+        dx[k] = s / a[p][k];
+    }
+}
+

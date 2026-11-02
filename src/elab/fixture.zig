@@ -3,13 +3,28 @@
 //! parser and (for Annex E's prelude) preprocessor the compiler runs, so a
 //! test of any `elab/` file starts from Verilog-AMS text. Test-only:
 //! only `test` blocks reach it. LRM Annex E (the prelude).
+//!
+//! Contents:
+//! - `pub const Fixture = struct`
+//! -   `pub fn deinit(self: *Fixture) void`
+//! -   `pub fn ctx(self: *Fixture) design.Ctx`
+//! - `pub fn parse(out: *Fixture, text: []const u8) !void`
+//! - `pub fn parseWithPrelude(out: *Fixture, text: []const u8) !void`
+//! - `pub fn flatten(f: *Fixture) !Flatten`
+//! - `pub fn hasCode(bag: *const diag.Bag, code: diag.Code) bool`
+//! - `pub fn moduleNamed(file: *const Ast.SourceFile, name: []const u8) ?*const Ast.ModuleDecl`
+//! - `pub fn paramNamed(file: *const Ast.SourceFile, top: *const Ast.ModuleDecl, name: []const u8) ?Ast.ParamDecl`
+//! - `pub fn netNamed(file: *const Ast.SourceFile, top: *const Ast.ModuleDecl, name: []const u8) ?Ast.NetDecl`
+//! - `pub fn id(file: *const Ast.SourceFile, s: []const u8) ?Ast.StrId`
 
 const std = @import("std");
-const elaborate = @import("elaborate.zig");
+const design = @import("design.zig");
+const Flatten = @import("Flatten.zig");
 const Ast = @import("frontend").Ast;
-const Lexer = @import("frontend").Lexer;
+const lexer = @import("frontend").lexer;
+const preprocessor = @import("frontend").preprocessor;
+const annex_e = @import("frontend").annex_e;
 const Parser = @import("frontend").Parser;
-const Preprocessor = @import("frontend").Preprocessor;
 const diag = @import("diag");
 
 /// One compilation for a test: the arena every parse and elaboration row
@@ -32,7 +47,7 @@ pub const Fixture = struct {
     /// Returns the `Ctx` that elaborates this fixture: basic discipline
     /// resolution, no `--param` overrides. Its bag is undefined until a
     /// `parse*` has run.
-    pub fn ctx(self: *Fixture) elaborate.Ctx {
+    pub fn ctx(self: *Fixture) design.Ctx {
         return .{
             .arena = self.arena.allocator(),
             .file = &self.file,
@@ -49,7 +64,7 @@ pub fn parse(out: *Fixture, text: []const u8) !void {
     const arena = out.arena.allocator();
     out.src = text;
     out.bag = diag.Bag.init(arena);
-    var toks = try Lexer.Lexer.tokenize(arena, text);
+    var toks = try lexer.tokenize(arena, text, null);
     out.starts = toks.items(.start);
     var p = Parser.Parser.init(arena, text, toks.items(.tag), out.starts, &out.bag);
     const parsed = try arena.create(Ast.SourceFile);
@@ -63,19 +78,19 @@ pub fn parse(out: *Fixture, text: []const u8) !void {
 pub fn parseWithPrelude(out: *Fixture, text: []const u8) !void {
     const arena = out.arena.allocator();
     out.bag = diag.Bag.init(arena);
-    out.src = (try Preprocessor.process(arena, text, .{ .bag = &out.bag })).text;
-    var toks = try Lexer.Lexer.tokenize(arena, out.src);
+    out.src = (try preprocessor.process(arena, text, .{ .bag = &out.bag })).text;
+    var toks = try lexer.tokenize(arena, out.src, null);
     out.starts = toks.items(.start);
     var p = Parser.Parser.init(arena, out.src, toks.items(.tag), out.starts, &out.bag);
     const parsed = try arena.create(Ast.SourceFile);
     parsed.* = try p.parseSourceFile();
-    out.file = parsed.overlay(.{ .builtin_modules = Preprocessor.spice_module_count });
+    out.file = parsed.overlay(.{ .builtin_modules = annex_e.spice_module_count });
 }
 
 /// Returns a `Flatten` over `f`'s file before any walk: no table seeded, no
 /// unit entered, and an empty generate-instance list for every module, so a
 /// transform can be called on its own. Rows live in `f`'s arena.
-pub fn flatten(f: *Fixture) !elaborate.Flatten {
+pub fn flatten(f: *Fixture) !Flatten {
     const gen = try f.arena.allocator().alloc([]const Ast.Instance, f.file.modules.len);
     for (gen) |*g| g.* = &.{};
     return .{ .ctx = f.ctx(), .gen_instances = gen };

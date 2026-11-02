@@ -1,6 +1,2 @@
 $ vera --run alias.va
-=== alias ===
---- point 0 ---
-  x[p] = 1.000000e0
-  x[n] = 0.000000e0
 r = 4000: I(p,n) = 0.00025 A

@@ -1,0 +1,46 @@
+// t_q tap chain — behavioural golden model, ports 1:1 with netlist/async_ctrl tq_chain
+// (4 taps: specs.design()["tq_n_taps"]; Verilog-A ports are fixed, so a different tap
+// count needs this file edited). Tap k switches k stage delays after `in`, same polarity.
+//
+// Continuous form (OpenVAF subset): per stage an internal RC node whose 50% crossing
+// lands tq after the previous stage switches, tanh threshold at VDD/2, Thevenin taps.
+// Stage 1 has its own delay (tq1): it sees the driving edge, inner stages a slow ramp.
+// Not modelled: mismatch between stages, edge rates, supply current.
+`include "disciplines.vams"
+`include "constants.vams"
+
+module tq_chain(in, tap1, tap2, tap3, tap4, vdd, vss);
+    inout in, tap1, tap2, tap3, tap4, vdd, vss;
+    electrical in, tap1, tap2, tap3, tap4, vdd, vss;
+    electrical m1, m2, m3, m4;                          // stage states
+
+    parameter real tq1 = 7.1e-9 from (0:inf);          // first stage delay (s)
+    parameter real tq = 9.55e-9 from (0:inf);           // inner stage delay (s)
+    parameter real rout = 1e3 from (0:inf);             // tap output resistance (ohm)
+
+    real vdd_, h0, h1, h2, h3, h4, rf;
+
+    analog function real hi;
+        input v, vdd_;
+        real v, vdd_;
+        hi = 0.5 * (1.0 + tanh((v - vdd_ / 2) / 0.02));
+    endfunction
+
+    analog begin
+        vdd_ = V(vdd, vss);
+        rf = 1e3;
+        h0 = hi(V(in, vss), vdd_);
+        h1 = hi(V(m1, vss), vdd_);
+        h2 = hi(V(m2, vss), vdd_);
+        h3 = hi(V(m3, vss), vdd_);
+        h4 = hi(V(m4, vss), vdd_);
+        I(m1, vss) <+ (V(m1, vss) - h0 * vdd_) / rf + tq1 / (rf * ln(2.0)) * ddt(V(m1, vss));
+        I(m2, vss) <+ (V(m2, vss) - h1 * vdd_) / rf + tq / (rf * ln(2.0)) * ddt(V(m2, vss));
+        I(m3, vss) <+ (V(m3, vss) - h2 * vdd_) / rf + tq / (rf * ln(2.0)) * ddt(V(m3, vss));
+        I(m4, vss) <+ (V(m4, vss) - h3 * vdd_) / rf + tq / (rf * ln(2.0)) * ddt(V(m4, vss));
+        I(tap1, vss) <+ (V(tap1, vss) - h1 * vdd_) / rout;
+        I(tap2, vss) <+ (V(tap2, vss) - h2 * vdd_) / rout;
+        I(tap3, vss) <+ (V(tap3, vss) - h3 * vdd_) / rout;
+        I(tap4, vss) <+ (V(tap4, vss) - h4 * vdd_) / rout;
+    end
+endmodule

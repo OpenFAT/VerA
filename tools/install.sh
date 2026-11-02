@@ -5,7 +5,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/OpenFAT/VerA/main/tools/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- 0.20.0      # a pinned version
 #
-# Each version lives in $VERA_HOME/<version> (bin/vera, share/vera/contract.zig)
+# Each version lives in $VERA_HOME/<version> (bin/vera, share/vera/contract.zig
+# and, from 0.21.0, the share/vera/contract/ it imports)
 # and $VERA_BIN/vera links to the one installed last. A tarball is kept in
 # $VERA_CACHE and checked against sources.json's sha256 before it is unpacked,
 # so installing a version again, or switching back to it, downloads nothing.
@@ -56,13 +57,15 @@ mv "$catalogue.part" "$catalogue"
 
 # sources.json is written by tools/update-sources.py with json.dump(indent=2,
 # sort_keys=True): a version's key at two spaces, a system's at four, its
-# url and sha256 at six. `field VERSION KEY NAME` prints one value.
+# url and sha256 at six. `field VERSION KEY NAME` prints one value (a string,
+# or `true`/`false`).
 field() {
   awk -v ver="$1" -v key="$2" -v name="$3" '
     /^  "[^"]*": \{/      { split($0, a, "\""); v = a[2]; k = "" }
     /^    "[^"]*": \{/    { split($0, a, "\""); k = a[2] }
     /^    "[^"]*": "/     { split($0, a, "\""); if (v == ver && key == "" && a[2] == name) print a[4] }
     /^      "[^"]*": "/   { split($0, a, "\""); if (v == ver && k == key && a[2] == name) print a[4] }
+    /^      "[^"]*": (true|false)/ { split($0, a, "\""); if (v == ver && k == key && a[2] == name) { sub(/^[^:]*: /, ""); sub(/,$/, ""); print } }
   ' "$catalogue"
 }
 
@@ -92,7 +95,17 @@ mkdir -p "$dest/bin" "$dest/share/vera"
 tar xzf "$tarball" -C "$dest/bin" vera
 contract_url=$(field "$version" contract url)
 contract_sha=$(field "$version" contract sha256)
-if [ -n "$contract_url" ] && [ -n "$contract_sha" ]; then
+if [ -n "$contract_url" ] && [ -n "$contract_sha" ] && [ "$(field "$version" contract archive)" = true ]; then
+  # The tag's source archive: lib/contract.zig and the lib/contract/ it imports.
+  a="$VERA_CACHE/vera-$version-src.tar.gz"
+  if [ ! -f "$a" ] || [ "$(sha256 "$a")" != "$contract_sha" ]; then
+    fetch "$contract_url" "$a.part" || die "cannot download $contract_url"
+    [ "$(sha256 "$a.part")" = "$contract_sha" ] || { rm -f "$a.part"; die "$contract_url: sha256 mismatch"; }
+    mv "$a.part" "$a"
+  fi
+  rm -rf "$dest/share/vera/contract.zig" "$dest/share/vera/contract"
+  tar xzf "$a" -C "$dest/share/vera" --strip-components=2 "VerA-$version/lib/contract.zig" "VerA-$version/lib/contract"
+elif [ -n "$contract_url" ] && [ -n "$contract_sha" ]; then
   c="$dest/share/vera/contract.zig"
   if [ ! -f "$c" ] || [ "$(sha256 "$c")" != "$contract_sha" ]; then
     fetch "$contract_url" "$c.part" || die "cannot download $contract_url"

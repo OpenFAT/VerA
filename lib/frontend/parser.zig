@@ -12,10 +12,21 @@
 //! `Ast.ModuleDecl` at `endmodule`. Statements (stmt.zig) and expressions
 //! (expr.zig) are reached from the items. Every node lands in `file`, the
 //! `Ast.SourceFile` stores this parse writes and `parseSourceFile` returns.
+//!
+//! Contents:
+//! - `pub const Error = error`
+//! - `pub const segment_levels = 4096`
+//! - `pub const caller_levels = 32`
+//! - `pub const Parser = struct`: `init`, `Seed`, `initSeeded`, `setLanguage`, `refuseAms`, `refuseDigital`, `digitalItem`, `parseSourceFile`, `discreteGrammar`, `peek`, `peekAt`, `eat`, `tokenText`, `reservedIs`, `eatSymbol`, `expect`, `identLike`, `warnOwnMathFn`, `expectIdent`, `expectIdentOrSys`, `internTok`, `skipAttributes`, `attributesEnd`, `pastAttributes`, `ownedAttributes`, `copyAttributes`, `statementAttributes`, `markAttributes`, `rewindAttributes`, `lteSince`, `keepLte`, `recoverStatement`, `report`, `nest`, `enter`, `leave`, `segmentDue`, `descend`, `walk`, `segment`, `failAt`, `failWith`, `found`
+//! - `pub const TestResult = struct`: `count`, `code`, `msg`
+//! - `pub fn newBag(arena: std.mem.Allocator, src: []const u8) !*diag.Bag`
+//! - `pub fn parseForTest(arena: std.mem.Allocator, src: []const u8) !TestResult`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const token = @import("token.zig");
 const lexer = @import("lexer.zig");
+const keyword = @import("keyword.zig");
 const Ast = @import("ast.zig");
 const diag = @import("diag");
 const deep_stack = @import("base").deep_stack;
@@ -28,9 +39,12 @@ pub const Error = error{ OutOfMemory, ParseError };
 /// runs on a fresh `deep_stack` segment, so nesting is bounded by memory, not
 /// by the calling thread's stack (`Parser.segment`).
 pub const segment_levels = 4096;
-/// Levels the caller's own stack holds before the first segment: half the
-/// 1024 the parser ran on any caller's stack before segments existed.
-pub const caller_levels = 512;
+
+/// Levels the caller's own stack holds before the first segment. The parser
+/// peaks near 6 KB a level in Debug, so 32 is under 200 KB: an embedder's
+/// 1 MiB thread holds it with room for the caller. 512 overflowed that thread
+/// (a 5000-deep else-if chain, tests/generators.zig `wide`).
+pub const caller_levels = 32;
 
 /// Parser state for one token stream. Every allocation comes from `arena`;
 /// `src`, `tags` and `starts` are borrowed and must outlive the produced
@@ -65,14 +79,14 @@ pub const Parser = struct {
     access_names: std.StringHashMapUnmanaged(void) = .empty,
     /// §10.6 reserved-keyword set in effect, and the sets saved by each open
     /// `begin_keywords directive. See `keywordsDirective` and `identLike`.
-    kw_set: token.KeywordSet = token.default_keyword_set,
-    kw_stack: std.ArrayList(token.KeywordSet) = .empty,
+    kw_set: keyword.KeywordSet = keyword.default_keyword_set,
+    kw_stack: std.ArrayList(keyword.KeywordSet) = .empty,
     /// The language this parse accepts (`vera --std=`), which is also §10.6's
     /// "implementation's default set of reserved keywords". Unlike `kw_set` it
     /// changes what parses: under a 1364 set a Verilog-AMS construct is E0242,
     /// because IEEE 1364-2005 annex A has no production for it. Set it with
     /// `setLanguage`.
-    language: token.KeywordSet = token.default_keyword_set,
+    language: keyword.KeywordSet = keyword.default_keyword_set,
     /// Parsing annex C's Verilog-A subset (`vera --sim=verilogA`): a digital
     /// or mixed-signal construct is E0250 (`refuseDigital`). The annex D
     /// prelude is seeded from a parse without it, so its `discrete`
@@ -188,26 +202,10 @@ pub const Parser = struct {
         };
     }
 
-    /// `own_math_fns` for `tags`: which of `expm1`/`ln1p` (bit 0/1) some
-    /// `function [real|integer] NAME` declares. One pass over the tags, so a
-    /// call ahead of the declaration reads the same way as one after it.
-    fn ownMathFns(tags: []const token.Tag) u2 {
-        var bits: u2 = 0;
-        for (tags, 0..) |t, i| {
-            if (t != .kw_expm1 and t != .kw_ln1p) continue;
-            if (i == 0) continue;
-            const before = tags[i - 1];
-            const declared = before == .kw_function or
-                ((before == .kw_real or before == .kw_integer) and i >= 2 and tags[i - 2] == .kw_function);
-            if (declared) bits |= if (t == .kw_expm1) 1 else 2;
-        }
-        return bits;
-    }
-
     /// The state a parse of a leading run of tokens leaves behind, so a parse
     /// of a longer stream that begins with that run can resume instead of
     /// redoing it. Built once per process for the annex D/E prelude by
-    /// `Preprocessor.preludeAst`, which asserts that every field not listed
+    /// `prelude.preludeAst`, which asserts that every field not listed
     /// here is back at its `init` value when the prefix parse ends.
     ///
     /// A new `Parser` field that a prefix parse can leave dirty must be added
@@ -254,7 +252,10 @@ pub const Parser = struct {
 
     /// Parses as `set`'s language: it becomes the §10.6 default keyword set and
     /// the ceiling on `begin_keywords` and on Verilog-AMS constructs (E0242).
-    pub fn setLanguage(self: *Parser, set: token.KeywordSet) void {
+    pub fn setLanguage(self: *Parser, set: keyword.KeywordSet) void {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         self.language = set;
         self.kw_set = set;
     }
@@ -265,10 +266,13 @@ pub const Parser = struct {
     /// starts; below that, such a keyword can only be an identifier. The
     /// construct is then parsed anyway, so the one error is the only one.
     pub fn refuseAms(self: *Parser) error{OutOfMemory}!void {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         const t = self.peek();
-        if (@backingInt(self.language) >= @backingInt(token.KeywordSet.vams_2_3) or !token.isKeyword(t)) return;
+        if (@backingInt(self.language) >= @backingInt(keyword.KeywordSet.vams_2_3) or !token.isKeyword(t)) return;
         const w = self.tokenText(self.pos);
-        if (token.isReserved(w, self.language)) return;
+        if (keyword.isReserved(w, self.language)) return;
         try self.report(self.pos, .E0242, "`{s}` under \"{s}\"", .{ w, self.language.specifier() });
     }
 
@@ -277,6 +281,9 @@ pub const Parser = struct {
     /// is then parsed anyway, so the one error is the only one. Asserts
     /// `verilog_a`.
     pub fn refuseDigital(self: *Parser, tok: u32, what: []const u8) error{OutOfMemory}!void {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         std.debug.assert(self.verilog_a);
         try self.report(tok, .E0250, "`{s}` under --sim=verilogA", .{what});
     }
@@ -328,59 +335,9 @@ pub const Parser = struct {
         };
     }
 
-    // Annex A.1.2 source_text, A.1.1 library source text, A.1.5 configurations
-    const parse_source = @import("parser/source.zig");
     /// Parses the whole stream. Returns `error.ParseError` at the end if anything
     /// was reported; the AST is then partial and must not be lowered.
     pub const parseSourceFile = parse_source.parseSourceFile;
-
-    // Annex A.1.2 module_declaration and A.1.4 module_item (LRM §6.2, Clause 3)
-    const parse_module = @import("parser/module.zig");
-
-    // Annex A.1.6/A.1.7 natures and disciplines (§3.6)
-    const parse_discipline = @import("parser/discipline.zig");
-
-    // Annex A.1.9 paramset (LRM §6.4)
-    const parse_paramset = @import("parser/paramset.zig");
-
-    // Annex A.1.8 connectrules (LRM §7.7)
-    const parse_connectrules = @import("parser/connectrules.zig");
-
-    // Annex A.5 user-defined primitives and their instances (IEEE 1364-2005 Clause 8)
-    const parse_udp = @import("parser/udp.zig");
-
-    // Annex A.2.1.1 parameters (§3.4), A.2.1.3 variables and events, A.2.5 dimensions
-    const parse_decl = @import("parser/decl.zig");
-
-    // Annex A.2.1.2/A.2.1.3/A.2.2 port, net and branch declarations, strengths and delays
-    const parse_net = @import("parser/net.zig");
-
-    // §6.7 / A.9.3 hierarchical names in declaration positions
-    const parse_hier = @import("parser/hier.zig");
-
-    // Annex A.2.6 analog functions (§4.7.1), IEEE 1364-2005 A.2.6/A.2.7 digital functions and tasks
-    const parse_function = @import("parser/function.zig");
-
-    // Annex A.4.1 module instantiation (LRM §6.2.2), A.3 gates and switches, A.6.2 initial/always
-    const parse_inst = @import("parser/inst.zig");
-
-    // Annex A.4.2 generate constructs (LRM §6.6)
-    const parse_generate = @import("parser/generate.zig");
-
-    // Annex A.7 specify blocks (IEEE 1364 Clause 14, inherited through LRM §1.1)
-    const parse_specify = @import("parser/specify.zig");
-
-    // Annex A.6.4 analog_statement (LRM Clause 5)
-    const parse_stmt = @import("parser/stmt.zig");
-
-    // Annex A.8.3 expressions (§4.1, §4.2 precedence climbing), A.8.2 calls and branch probes
-    const parse_expr = @import("parser/expr.zig");
-
-    // Annex A.8.1 concatenations and assignment patterns (§4.2.13, §4.2.14)
-    const parse_concat = @import("parser/concat.zig");
-
-    // Literals: §2.6 numbers, §2.7 strings
-    const parse_literal = @import("parser/literal.zig");
 
     // -----------------------------------------------------------------------
     // Token access: LRM §2.2 (the stream), §2.8 (identifiers)
@@ -406,6 +363,9 @@ pub const Parser = struct {
 
     /// Consumes the next token if it is `t`; returns whether it did.
     pub fn eat(self: *Parser, t: token.Tag) bool {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         if (self.peek() != t) return false;
         self.pos += 1;
         return true;
@@ -424,8 +384,7 @@ pub const Parser = struct {
             while (end < self.src.len and lexer.isIdentChar(self.src[end])) end += 1;
             return self.src[start..end];
         }
-        const lx: lexer.Lexer = .{ .src = self.src };
-        const text = lx.tokenText(self.starts[i]);
+        const text = lexer.tokenText(self.src, self.starts[i]);
         // §2.8.1: the `\` opens the identifier but is not part of the name.
         // The terminator is not in the span, so only the head is stripped.
         return if (self.tags[i] == .escaped_identifier) text[1..] else text;
@@ -442,27 +401,21 @@ pub const Parser = struct {
     /// The lexer tags them `.invalid` because outside a specify block none is
     /// an operator, so the spelling is the test.
     pub fn eatSymbol(self: *Parser, w: []const u8) bool {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         if (self.peek() != .invalid or !std.mem.eql(u8, self.tokenText(self.pos), w)) return false;
         self.pos += 1;
         return true;
-    }
-
-    /// Byte just past the previous token: where a missing terminator has to be
-    /// typed, and so where `expect`'s insertion fix is anchored. `tokenText`
-    /// strips an escaped identifier's `\` though it is in the source span,
-    /// and `.eof` has no text.
-    fn endOfPrev(self: *const Parser) u32 {
-        if (self.pos == 0) return self.starts[0];
-        const i = self.pos - 1;
-        if (self.tags[i] == .eof) return self.starts[i];
-        const backslash: u32 = @intFromBool(self.tags[i] == .escaped_identifier);
-        return self.starts[i] + backslash + @as(u32, @intCast(self.tokenText(i).len));
     }
 
     /// Consumes a `t` token and returns its index. Otherwise reports E0207,
     /// with an insertion fix when `t` is a terminator, and returns
     /// `error.ParseError` with the cursor unmoved.
     pub fn expect(self: *Parser, t: token.Tag) Error!u32 {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         if (self.peek() != t) {
             // The title is only "unexpected token", so the caret carries what
             // the grammar wanted here.
@@ -499,28 +452,34 @@ pub const Parser = struct {
         const j = @min(i, self.tags.len - 1);
         return switch (self.tags[j]) {
             .identifier, .escaped_identifier => true,
-            .kw_expm1 => self.own_math_fns & 1 != 0 or !token.isReserved("expm1", self.kw_set),
-            .kw_ln1p => self.own_math_fns & 2 != 0 or !token.isReserved("ln1p", self.kw_set),
+            .kw_expm1 => self.own_math_fns & 1 != 0 or !keyword.isReserved("expm1", self.kw_set),
+            .kw_ln1p => self.own_math_fns & 2 != 0 or !keyword.isReserved("ln1p", self.kw_set),
             // Default set ⇒ every keyword is reserved: no text to fetch.
-            else => |t| self.kw_set != token.default_keyword_set and // else: a keyword is an identifier only when the keyword set frees it
+            else => |t| self.kw_set != keyword.default_keyword_set and // else: a keyword is an identifier only when the keyword set frees it
                 token.isKeyword(t) and
-                !token.isReserved(self.tokenText(j), self.kw_set),
+                !keyword.isReserved(self.tokenText(j), self.kw_set),
         };
     }
 
     /// W0259 if the function name at the cursor is `expm1`/`ln1p` and the
     /// active §10.6 set reserves it: `own_math_fns` is what frees it.
     pub fn warnOwnMathFn(self: *Parser) error{OutOfMemory}!void {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         const t = self.peek();
         if (t != .kw_expm1 and t != .kw_ln1p) return;
         const w = self.tokenText(self.pos);
-        if (!token.isReserved(w, self.kw_set)) return;
+        if (!keyword.isReserved(w, self.kw_set)) return;
         try self.bag.add(.parse, .W0259, lexer.tokenSpan(self.src, self.starts, self.pos), "`{s}` is a built-in under \"{s}\"; calls in this file reach the declared function", .{ w, self.kw_set.specifier() });
     }
 
     /// Consumes a §2.8/§2.8.1 identifier (or a keyword `identLike` frees) and
     /// returns it interned. Reports E0208 otherwise.
     pub fn expectIdent(self: *Parser) Error!Ast.StrId {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         if (!self.identLike(self.pos))
             return self.failAt(self.pos, .E0208, "found {s}", .{self.found(self.pos)});
         const s = try self.internTok(self.pos);
@@ -531,6 +490,9 @@ pub const Parser = struct {
     /// `expectIdent`, or a §9.18 system name (`$mfactor`) where the grammar
     /// admits one as a parameter identifier.
     pub fn expectIdentOrSys(self: *Parser) Error!Ast.StrId {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         if (self.peek() != .system_identifier) return self.expectIdent();
         const s = try self.internTok(self.pos);
         self.pos += 1;
@@ -545,13 +507,16 @@ pub const Parser = struct {
     /// an identifier, so the mapping is injective; `naming.sanitize` later
     /// spells it `Z20`. Allocates only for an escaped name with a period.
     pub fn internTok(self: *Parser, i: u32) Error!Ast.StrId {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         // The bytes are spelled out, not imported from `ir/`: the frontend owns
         // the source half of this convention and does not depend on the IR.
         const text = self.tokenText(i);
         if (self.tags[i] != .escaped_identifier) return self.file.intern(self.arena, text);
         // IEEE 1364-2005 §3.7.3: a system task or function "shall not be
         // escaped", so `\$display` keeps its `\` and names no system task.
-        if (text[0] == '$') return self.file.intern(self.arena, (lexer.Lexer{ .src = self.src }).tokenText(self.starts[i]));
+        if (text[0] == '$') return self.file.intern(self.arena, lexer.tokenText(self.src, self.starts[i]));
         if (std.mem.findScalar(u8, text, '.') == null)
             return self.file.intern(self.arena, text);
         const buf = try self.arena.dupe(u8, text);
@@ -559,223 +524,17 @@ pub const Parser = struct {
         return self.file.intern(self.arena, buf);
     }
 
-    /// §2.9 Syntax 2-4 / A.9.1:
-    ///
-    ///     attribute_instance ::= (* attr_spec { , attr_spec } *)
-    ///     attr_spec          ::= attr_name [ = constant_expression ]
-    ///
-    /// Parses any attribute instances at the cursor and appends every spec to
-    /// `self.attrs`, which `parseModule` hands to the enclosing module for
-    /// validation. Also binds this prefix to the following declaration;
-    /// statement and expression callers refine that parsed owner below.
-    ///
-    /// A malformed attribute is reported and the cursor resynchronized past its
-    /// `*)`, so the caller always lands past the instance. Only OOM propagates.
-    pub fn skipAttributes(self: *Parser) error{OutOfMemory}!void {
-        const mark = self.attrs.items.len;
-        self.parseAttributes() catch |e| {
-            if (e == error.OutOfMemory) return error.OutOfMemory;
-            // Already reported. Resynchronize past the closing `*)` so one bad
-            // attribute does not also cost the decorated declaration a diagnostic.
-            while (true) : (self.pos += 1) switch (self.peek()) {
-                .eof => return,
-                .attr_close => {
-                    self.pos += 1;
-                    return;
-                },
-                else => {}, // else: any other token is inside the attribute being skipped
-            };
-        };
-        if (self.attrs.items.len != mark) try self.appendBinding(.{
-            .owner = .{ .kind = .declaration, .tok = self.pos },
-            .specs = try self.arena.dupe(Ast.NatureAttr, self.attrs.items[mark..]),
-        });
-    }
-
-    /// For a list loop that ran `skipAttributes` from token `from` and now
-    /// stops at its closer (`end`, `endmodule`, end of file, ...). §2.9 makes
-    /// an attribute instance "a prefix attached to" what follows it, so one
-    /// read here prefixes nothing: E0207 at the instance (#49). Every item
-    /// list reports it this way, the file's top level included.
-    pub fn attributesEnd(self: *Parser, from: u32) error{OutOfMemory}!void {
-        if (self.pos != from) try self.report(from, .E0207, "found {s}: an attribute instance prefixes nothing", .{self.found(self.pos)});
-    }
-
-    /// The token past the attribute instances at the cursor, found by
-    /// scanning to each `*)` without parsing, so nothing is read, bound or
-    /// reported. A statement loop asks it whether a prefix runs into the
-    /// loop's closer, which `parseStmt` would otherwise take for the start of
-    /// a statement (#66). Cost: the instances' tokens.
-    pub fn pastAttributes(self: *const Parser) u32 {
-        var i = self.pos;
-        while (self.tags[i] == .attr_open) {
-            while (self.tags[i] != .attr_close and self.tags[i] != .eof) i += 1;
-            if (self.tags[i] == .eof) break;
-            i += 1;
-        }
-        return i;
-    }
-
-    /// The one writer of `file.attributes`' rows, keeping `attr_at` beside it.
-    /// Asserts a declaration owner is not past the cursor, which is what lets
-    /// `bindingsFrom` skip every row appended before the cursor reached it.
-    fn appendBinding(self: *Parser, binding: Ast.AttributeBinding) error{OutOfMemory}!void {
-        std.debug.assert(self.attr_at.items.len == self.file.attributes.items.len);
-        std.debug.assert(binding.owner.kind != .declaration or binding.owner.tok <= self.pos);
-        try self.attr_at.ensureUnusedCapacity(self.arena, 1);
-        try self.file.attributes.append(self.arena, binding);
-        self.attr_at.appendAssumeCapacity(self.pos);
-    }
-
-    /// Index of the first `file.attributes` row appended with the cursor at or
-    /// past `tok`. No earlier row is owned by a declaration at `tok`.
-    /// Cost: O(log n) in the file's bindings.
-    fn bindingsFrom(self: *const Parser, tok: u32) usize {
-        // Most declarations and statements carry no attribute: then the
-        // newest row is older than `tok`, and so is every other.
-        const rows = self.attr_at.items;
-        if (rows.len == 0 or rows[rows.len - 1] < tok) return rows.len;
-        const order = struct {
-            fn f(want: u32, at: u32) std.math.Order {
-                return std.math.order(want, at);
-            }
-        }.f;
-        return std.sort.lowerBound(u32, rows, tok, order);
-    }
-
-    /// `skipAttributes`, then binds what it read to `owner` (an operator or
-    /// call suffix, or a statement prefix) instead of the next declaration.
-    /// Asserts a `.declaration` owner's token is not past the cursor.
-    pub fn ownedAttributes(self: *Parser, owner: Ast.AttributeOwner) error{OutOfMemory}!void {
-        std.debug.assert(owner.kind != .declaration or owner.tok <= self.pos); // `attr_at`'s invariant
-        const first = self.file.attributes.items.len;
-        try self.skipAttributes();
-        // §2.9/IEEE §3.8 prohibit attributes inside an attribute value;
-        // attr_depth diagnoses them. A successful run adds only this one
-        // prefix binding, whose specs include every adjacent instance.
-        std.debug.assert(self.file.attributes.items.len <= first + 1);
-        for (self.file.attributes.items[first..]) |*a| a.owner = owner;
-    }
-
-    /// Gives the declaration at token `to` every attribute binding the
-    /// declaration at token `from` has: §2.9 Example 5 puts a prefix on every
-    /// name of its list. A binding already copied is not added again. Cost:
-    /// the bindings appended since the cursor reached `from` (and `to`), not
-    /// the file's.
-    pub fn copyAttributes(self: *Parser, from: u32, to: u32) error{OutOfMemory}!void {
-        if (from == to) return;
-        const count = self.file.attributes.items.len;
-        for (self.bindingsFrom(from)..count) |i| {
-            const a = self.file.attributes.items[i];
-            if (a.owner.kind != .declaration or a.owner.tok != from) continue;
-            const exists = for (self.file.attributes.items[self.bindingsFrom(to)..]) |b| {
-                if (b.owner.kind == .declaration and b.owner.tok == to and b.specs.ptr == a.specs.ptr) break true;
-            } else false;
-            if (!exists) try self.appendBinding(.{ .owner = .{ .kind = .declaration, .tok = to }, .specs = a.specs });
-        }
-    }
-
-    /// Rebinds the declaration-owned attributes at token `tok` to the
-    /// statement that starts there. `skipAttributes` binds a prefix to a
-    /// declaration, and lookahead may have read a statement's prefix before
-    /// knowing it was one. Cost: the bindings appended since the cursor
-    /// reached `tok`.
-    pub fn statementAttributes(self: *Parser, tok: u32) void {
-        for (self.file.attributes.items[self.bindingsFrom(tok)..]) |*a| if (a.owner.kind == .declaration and a.owner.tok == tok) {
-            a.owner.kind = .statement;
-        };
-    }
-
-    /// Where a speculative `skipAttributes` started: the cursor and the
-    /// lengths of `attrs` and `file.attributes`. Both tables only grow while
-    /// it is held, so the lengths are enough to undo the read.
-    /// Both lengths are bounded by the token count, which is a `u32`.
-    const AttrMark = struct { pos: u32, specs: u32, bindings: u32 };
-    comptime {
-        std.debug.assert(@sizeOf(AttrMark) == 12);
-    }
-
-    /// Returns the mark `rewindAttributes` undoes a speculative read back to.
-    pub fn markAttributes(self: *const Parser) AttrMark {
-        return .{ .pos = self.pos, .specs = @intCast(self.attrs.items.len), .bindings = @intCast(self.file.attributes.items.len) };
-    }
-
-    /// Hands attribute instances read since `m` back to the token stream: the
-    /// cursor returns to `m` and their specs and bindings are dropped, so
-    /// whatever the instance prefixes collects it again. Asserts the cursor
-    /// has not moved back past `m`.
-    pub fn rewindAttributes(self: *Parser, m: AttrMark) void {
-        std.debug.assert(m.pos <= self.pos);
-        self.pos = m.pos;
-        self.attrs.shrinkRetainingCapacity(m.specs);
-        self.file.attributes.shrinkRetainingCapacity(m.bindings);
-        self.attr_at.shrinkRetainingCapacity(m.bindings);
-    }
-
-    /// The last spec of each VerA attribute in `self.attrs[mark..]` (§2.9:
-    /// "the last attribute value shall be used"), in `lte_kinds` order.
-    pub fn lteSince(self: *const Parser, mark: usize) [lte_kinds.len]?Ast.NatureAttr {
-        var out: [lte_kinds.len]?Ast.NatureAttr = @splat(null);
-        for (self.attrs.items[mark..]) |a| for (&out, lte_kinds) |*o, k| {
-            if (std.mem.eql(u8, self.file.str(a.name), @tagName(k))) o.* = a;
-        };
-        return out;
-    }
-
-    /// Records `lteSince`'s finds against statement `stmt` or call `expr`.
-    pub fn keepLte(self: *Parser, specs: [lte_kinds.len]?Ast.NatureAttr, stmt: Ast.StmtId, expr: Ast.ExprId) error{OutOfMemory}!void {
-        for (specs, lte_kinds) |f, k| if (f) |a| try self.file.lte_attrs.append(
-            self.arena,
-            .{ .kind = k, .stmt = stmt, .expr = expr, .value = a.value, .main_tok = a.main_tok },
-        );
-    }
-    const lte_kinds = std.enums.values(@FieldType(Ast.LteAttr, "kind"));
-
-    fn parseAttributes(self: *Parser) Error!void {
-        while (self.peek() == .attr_open) {
-            // §2.9: "Nesting of attribute instances is disallowed." An attribute
-            // value is a full `parseExpr`, and A.8.3 gives an operator its own
-            // `{ attribute_instance }` slot, so without this check
-            // `(* outer = (1 + (* inner *) 2) *)` would parse cleanly.
-            if (self.attr_depth != 0) {
-                var d = self.failWith(self.pos, .E0357);
-                d.msg("the value contains an attribute instance", .{});
-                d.note("§2.9: \"Nesting of attribute instances is disallowed\"", .{});
-                try d.emit();
-                return error.ParseError;
-            }
-            self.pos += 1;
-            self.attr_depth += 1;
-            defer self.attr_depth -= 1;
-            while (true) {
-                const tok = self.pos;
-                // `attr_name ::= identifier` (A.9.1), but §2.9.2's own `units`
-                // is an annex B keyword (`kw_units`) it prints unescaped. No
-                // clause grants any other keyword that exception (VD-024).
-                if (!self.identLike(tok) and self.peek() != .kw_units) {
-                    if (!token.isKeyword(self.peek()))
-                        return self.failAt(tok, .E0208, "found {s}", .{self.found(tok)});
-                    var d = self.failWith(tok, .E0208);
-                    d.msg("found keyword `{s}`: an attribute name is an identifier", .{self.tokenText(tok)});
-                    d.note("§2.9 / A.9.1: `attr_name ::= identifier`; only §2.9.2's `units` is exempt", .{});
-                    d.help("escape it: `\\{s} `", .{self.tokenText(tok)});
-                    try d.emit();
-                    return error.ParseError;
-                }
-                const name = try self.internTok(tok);
-                self.pos += 1;
-                // §2.9: "If the value is not specified, then ... the default
-                // value is 1." `.none` stands for that default.
-                const value: Ast.ExprId = if (self.eat(.assign_eq))
-                    try parse_expr.parseExpr(self)
-                else
-                    .none;
-                try self.attrs.append(self.arena, .{ .name = name, .value = value, .main_tok = tok });
-                if (!self.eat(.comma)) break;
-            }
-            _ = try self.expect(.attr_close);
-        }
-    }
+    // §2.9 attribute instances and their owners (parser/attributes.zig).
+    pub const skipAttributes = parse_attr.skipAttributes;
+    pub const attributesEnd = parse_attr.attributesEnd;
+    pub const pastAttributes = parse_attr.pastAttributes;
+    pub const ownedAttributes = parse_attr.ownedAttributes;
+    pub const copyAttributes = parse_attr.copyAttributes;
+    pub const statementAttributes = parse_attr.statementAttributes;
+    pub const markAttributes = parse_attr.markAttributes;
+    pub const rewindAttributes = parse_attr.rewindAttributes;
+    pub const lteSince = parse_attr.lteSince;
+    pub const keepLte = parse_attr.keepLte;
 
     /// Resynchronize after a bad statement or module item: past the next `;`,
     /// or up to a keyword that closes the enclosing construct. Always moves
@@ -811,6 +570,9 @@ pub const Parser = struct {
     /// `failAt` for a site that reports and carries on: the file is refused
     /// (`failed`) and parsing continues. Only OOM propagates.
     pub fn report(self: *Parser, tok: u32, code: diag.Code, comptime fmt: []const u8, args: anytype) error{OutOfMemory}!void {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         switch (self.failAt(tok, code, fmt, args)) {
             error.ParseError => {},
             error.OutOfMemory => |e| return e,
@@ -820,6 +582,9 @@ pub const Parser = struct {
     /// Counts one level of AST nesting toward `deepest`; the caller restores
     /// `depth`. A recursive grammar function calls `enter` instead.
     pub fn nest(self: *Parser) void {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         self.depth += 1;
         self.deepest = @max(self.deepest, self.depth);
     }
@@ -827,12 +592,18 @@ pub const Parser = struct {
     /// Opens one level of recursion: `nest` plus a native frame. The caller
     /// pairs it with `defer self.leave()`, and first asks `segmentDue`.
     pub fn enter(self: *Parser) void {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         self.nest();
         self.seg.frames += 1;
     }
 
     /// Closes the level `enter` opened.
     pub fn leave(self: *Parser) void {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         self.depth -= 1;
         self.seg.frames -= 1;
     }
@@ -849,6 +620,9 @@ pub const Parser = struct {
     /// `enter` site (the right-associative `?:` arm, a nested generate
     /// region).
     pub fn descend(self: *Parser, comptime f: anytype, args: anytype) @typeInfo(@TypeOf(f)).@"fn".return_type.? {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         if (self.segmentDue()) return self.segment(f, args);
         self.seg.frames += 1;
         defer self.seg.frames -= 1;
@@ -860,6 +634,9 @@ pub const Parser = struct {
     /// `deepest` (in place while that is shallow). E0241 at `tok` when that
     /// stack cannot be reserved.
     pub fn walk(self: *Parser, tok: u32, comptime f: anytype, args: anytype) Error!@typeInfo(@TypeOf(f)).@"fn".return_type.? {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         return deep_stack.run(self.deepest, f, args) catch
             self.failAt(tok, .E0241, "{d} levels deep", .{self.deepest});
     }
@@ -868,6 +645,9 @@ pub const Parser = struct {
     /// `segment_levels` levels (`deep_stack.run`). A segment that cannot be
     /// reserved is E0241, naming the depth reached.
     pub fn segment(self: *Parser, comptime f: anytype, args: anytype) @typeInfo(@TypeOf(f)).@"fn".return_type.? {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         return self.seg.segment(segment_levels, f, args) catch |e| switch (e) {
             error.DeepStackUnavailable => self.failAt(self.pos, .E0241, "{d} levels deep", .{self.depth}),
             else => |other| other,
@@ -879,6 +659,9 @@ pub const Parser = struct {
     /// bag cannot grow). An unterminated string at `tok` is reported as E0138
     /// instead of `code`.
     pub fn failAt(self: *Parser, tok: u32, code: diag.Code, comptime fmt: []const u8, args: anytype) Error {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         self.failed = true;
         const span = lexer.tokenSpan(self.src, self.starts, tok);
         if (tok < self.tags.len and self.tags[tok] == .invalid) {
@@ -888,32 +671,13 @@ pub const Parser = struct {
         return error.ParseError;
     }
 
-    /// Reports E0138 when the `.invalid` token at `span` is a §2.7 string that
-    /// runs off its line, which would otherwise read only "found invalid token".
-    /// Checked here in the funnel because the token is reachable from both
-    /// statement and module-item position. Returns whether it emitted.
-    fn failRunawayString(self: *Parser, span: diag.Span) Error!bool {
-        const kind = lexer.stringRunaway(self.src, span);
-        if (kind == .none) return false;
-
-        var d = self.bag.build(.parse, .E0138, span);
-        d.point("this literal is still open at the end of the line", .{});
-        if (kind == .line_continuation) {
-            d.note(
-                "the trailing `\\` is an IEEE 1800 SystemVerilog continuation (§5.9); " ++
-                    "Verilog-AMS derives from IEEE 1364-2005, which has no such escape",
-                .{},
-            );
-        }
-        d.help("keep the literal on one line — `\\n` inside it is what breaks the output", .{});
-        try d.emit();
-        return true;
-    }
-
     /// `failAt`'s diagnostic, opened for labels, notes and suggestions. Marks
     /// the parse failed; the caller must `emit` and then return
     /// `error.ParseError` itself.
     pub fn failWith(self: *Parser, tok: u32, code: diag.Code) diag.Builder {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
         self.failed = true;
         return self.bag.build(.parse, code, lexer.tokenSpan(self.src, self.starts, tok));
     }
@@ -932,33 +696,99 @@ pub const Parser = struct {
             else => |t| tagDesc(t), // else: every other tag implies its own text
         };
     }
+
+    // ---- private ----
+
+    // Annex A.1.2 source_text, A.1.1 library source text, A.1.5 configurations
+    const parse_source = @import("parser/source.zig");
+    // Annex A.1.2 module_declaration and A.1.4 module_item (LRM §6.2, Clause 3)
+    const parse_module = @import("parser/module.zig");
+    // Annex A.1.6/A.1.7 natures and disciplines (§3.6)
+    const parse_discipline = @import("parser/discipline.zig");
+    // Annex A.1.9 paramset (LRM §6.4)
+    const parse_paramset = @import("parser/paramset.zig");
+    // Annex A.1.8 connectrules (LRM §7.7)
+    const parse_connectrules = @import("parser/connectrules.zig");
+    // Annex A.5 user-defined primitives and their instances (IEEE 1364-2005 Clause 8)
+    const parse_udp = @import("parser/udp.zig");
+    // Annex A.2.1.1 parameters (§3.4), A.2.1.3 variables and events, A.2.5 dimensions
+    const parse_decl = @import("parser/decl.zig");
+    // Annex A.2.1.2/A.2.1.3/A.2.2 port, net and branch declarations, strengths and delays
+    const parse_net = @import("parser/net.zig");
+    // §6.7 / A.9.3 hierarchical names in declaration positions
+    const parse_hier = @import("parser/hier.zig");
+    // Annex A.2.6 analog functions (§4.7.1), IEEE 1364-2005 A.2.6/A.2.7 digital functions and tasks
+    const parse_function = @import("parser/function.zig");
+    // Annex A.4.1 module instantiation (LRM §6.2.2), A.3 gates and switches, A.6.2 initial/always
+    const parse_inst = @import("parser/inst.zig");
+    // Annex A.4.2 generate constructs (LRM §6.6)
+    const parse_generate = @import("parser/generate.zig");
+    // Annex A.7 specify blocks (IEEE 1364 Clause 14, inherited through LRM §1.1)
+    const parse_specify = @import("parser/specify.zig");
+    // Annex A.6.4 analog_statement (LRM Clause 5)
+    const parse_stmt = @import("parser/stmt.zig");
+    // Annex A.8.3 expressions (§4.1, §4.2 precedence climbing), A.8.2 calls and branch probes
+    const parse_expr = @import("parser/expr.zig");
+    // Annex A.8.1 concatenations and assignment patterns (§4.2.13, §4.2.14)
+    const parse_concat = @import("parser/concat.zig");
+    // Literals: §2.6 numbers, §2.7 strings
+    const parse_literal = @import("parser/literal.zig");
+    // §2.9 attribute instances
+    const parse_attr = @import("parser/attributes.zig");
+
+    /// `own_math_fns` for `tags`: which of `expm1`/`ln1p` (bit 0/1) some
+    /// `function [real|integer] NAME` declares. One pass over the tags, so a
+    /// call ahead of the declaration reads the same way as one after it.
+    fn ownMathFns(tags: []const token.Tag) u2 {
+        var bits: u2 = 0;
+        for (tags, 0..) |t, i| {
+            if (t != .kw_expm1 and t != .kw_ln1p) continue;
+            if (i == 0) continue;
+            const before = tags[i - 1];
+            const declared = before == .kw_function or
+                ((before == .kw_real or before == .kw_integer) and i >= 2 and tags[i - 2] == .kw_function);
+            if (declared) bits |= if (t == .kw_expm1) 1 else 2;
+        }
+        return bits;
+    }
+
+    /// Byte just past the previous token: where a missing terminator has to be
+    /// typed, and so where `expect`'s insertion fix is anchored. `tokenText`
+    /// strips an escaped identifier's `\` though it is in the source span,
+    /// and `.eof` has no text.
+    fn endOfPrev(self: *const Parser) u32 {
+        if (self.pos == 0) return self.starts[0];
+        const i = self.pos - 1;
+        if (self.tags[i] == .eof) return self.starts[i];
+        const backslash: u32 = @intFromBool(self.tags[i] == .escaped_identifier);
+        return self.starts[i] + backslash + @as(u32, @intCast(self.tokenText(i).len));
+    }
+
+    /// Reports E0138 when the `.invalid` token at `span` is a §2.7 string that
+    /// runs off its line, which would otherwise read only "found invalid token".
+    /// Checked here in the funnel because the token is reachable from both
+    /// statement and module-item position. Returns whether it emitted.
+    fn failRunawayString(self: *Parser, span: diag.Span) Error!bool {
+        assert(self.pos < self.tags.len);
+        const pos_in = self.pos;
+        defer assert(self.pos >= pos_in);
+        const kind = @import("token_value.zig").stringRunaway(self.src, span);
+        if (kind == .none) return false;
+
+        var d = self.bag.build(.parse, .E0138, span);
+        d.point("this literal is still open at the end of the line", .{});
+        if (kind == .line_continuation) {
+            d.note(
+                "the trailing `\\` is an IEEE 1800 SystemVerilog continuation (§5.9); " ++
+                    "Verilog-AMS derives from IEEE 1364-2005, which has no such escape",
+                .{},
+            );
+        }
+        d.help("keep the literal on one line — `\\n` inside it is what breaks the output", .{});
+        try d.emit();
+        return true;
+    }
 };
-
-/// Name of an expected token in a diagnostic. Punctuation is spelled as the
-/// character to type, in backticks (from `token.Tag.quoted`); categories with
-/// no fixed spelling stay prose.
-fn tagDesc(t: token.Tag) []const u8 {
-    return switch (t) {
-        .eof => "end of file",
-        .invalid => "invalid token",
-        .identifier, .escaped_identifier => "an identifier",
-        .system_identifier => "a system task or function name",
-        .int_literal => "an integer literal",
-        .real_literal => "a real literal",
-        .string_literal => "a string literal",
-        .kw_reserved => "a reserved keyword",
-        else => token.Tag.quoted(t) orelse @tagName(t), // else: every other tag implies its own text
-    };
-}
-
-/// Tokens that close something: when one is missing, the place to type it is
-/// the end of the construct before it. Drives the insertion fix in `expect`.
-fn isTerminator(t: token.Tag) bool {
-    return switch (t) {
-        .semicolon, .comma, .rparen, .rbracket, .rbrace => true,
-        else => false, // else: not a list or statement terminator
-    };
-}
 
 /// A parsed file and the bag holding its diagnostics (`parseForTest`).
 pub const TestResult = struct {
@@ -996,7 +826,7 @@ pub fn newBag(arena: std.mem.Allocator, src: []const u8) !*diag.Bag {
 /// the partial file, so a test can inspect both it and the diagnostics.
 /// For tests (`tests/unit.zig`, `constfold.zig`'s).
 pub fn parseForTest(arena: std.mem.Allocator, src: []const u8) !TestResult {
-    var list = try lexer.Lexer.tokenize(arena, src);
+    var list = try lexer.tokenize(arena, src, null);
     const bag = try newBag(arena, src);
     var p = Parser.init(arena, src, list.items(.tag), list.items(.start), bag);
     const file = p.parseSourceFile() catch |e| switch (e) {
@@ -1004,6 +834,34 @@ pub fn parseForTest(arena: std.mem.Allocator, src: []const u8) !TestResult {
         else => return e,
     };
     return .{ .file = file, .bag = bag };
+}
+
+// ---- private ----
+
+/// Name of an expected token in a diagnostic. Punctuation is spelled as the
+/// character to type, in backticks (from `token.Tag.quoted`); categories with
+/// no fixed spelling stay prose.
+fn tagDesc(t: token.Tag) []const u8 {
+    return switch (t) {
+        .eof => "end of file",
+        .invalid => "invalid token",
+        .identifier, .escaped_identifier => "an identifier",
+        .system_identifier => "a system task or function name",
+        .int_literal => "an integer literal",
+        .real_literal => "a real literal",
+        .string_literal => "a string literal",
+        .kw_reserved => "a reserved keyword",
+        else => token.Tag.quoted(t) orelse @tagName(t), // else: every other tag implies its own text
+    };
+}
+
+/// Tokens that close something: when one is missing, the place to type it is
+/// the end of the construct before it. Drives the insertion fix in `expect`.
+fn isTerminator(t: token.Tag) bool {
+    return switch (t) {
+        .semicolon, .comma, .rparen, .rbracket, .rbrace => true,
+        else => false, // else: not a list or statement terminator
+    };
 }
 
 test {
@@ -1024,4 +882,5 @@ test {
     _ = Parser.parse_expr;
     _ = Parser.parse_concat;
     _ = Parser.parse_literal;
+    _ = Parser.parse_attr;
 }

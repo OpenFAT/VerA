@@ -2,8 +2,17 @@
 //! sites, small-signal rows) -> every value the shared core returns, and why,
 //! resolved before a unit is written. Clauses: §2.9, §4.5, §4.6.3, §4.6.4, §5.6,
 //! §5.6.1.2, §5.6.1.3, §5.6.7, §5.10, §5.10.3.3, §9.4, §9.13, §9.17, §9.21.1.
+//!
+//! Contents:
+//! - `pub const display_comment = "§9.4 display tasks, in source order"`
+//! - `pub const Jobs = struct`
+//! - `pub const Job = struct`
+//! - `pub fn PlanError(comptime Dyn: type) type`
+//! - `pub fn plan(self: Input, from: From, dyn: anytype) PlanError(@TypeOf(dyn))!Jobs`
+//! - members: `Job.Kind`, `always.isDynamic`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 const proof = @import("prove").proof;
 const OpKind = @import("ir").op.OpKind;
@@ -13,6 +22,7 @@ const Names = @import("names.zig").Names;
 const LimitCall = @import("limit.zig").LimitCall;
 const plan_noise = @import("noise.zig");
 const plan_topo = @import("topology.zig");
+const Fixture = @import("prove").Fixture;
 
 /// The doc line of the §9.4 display unit's declaration.
 pub const display_comment = "§9.4 display tasks, in source order";
@@ -25,29 +35,6 @@ pub const Jobs = struct {
     /// when the §9.4 tasks are dropped). The job that renders it is queued
     /// last.
     display_name: []const u8 = "",
-};
-
-/// What `plan` reads besides the lowered module.
-const From = struct {
-    /// `plan/names.zig`: the canonical units, whose operators queue inputs.
-    names: *const Names,
-    /// `proof.Verdict.unit_modes`: the float mode of each CONTRIBUTION unit.
-    unit_modes: []const proof.FloatMode,
-    /// `Limits.calls`: the honoured §4.5.15 sites.
-    limits: []const LimitCall,
-    /// `plan/noise.zig`: the §4.6.4 generator rows and §4.6.3 stimulus rows.
-    noise: *const plan_noise.Noise,
-    /// `Options.display == .emit`: the §9.4 tasks become a unit of their own.
-    emit_display: bool,
-    /// A `.record` device has tasks its `say` records (`cg_display.planSay`):
-    /// the display unit is that entry point's body.
-    record_display: bool = false,
-    /// `plan/qsite.zig` `QSites.sites`: the `Lowered.charge_sites` that get a
-    /// `q` slot, in slot order. Each one's charge is a core live-out.
-    q_sites: []const u32 = &.{},
-    /// `Options.vpi_contribs`: every value `vpiContribs` and `vpiShares`
-    /// report is a core live-out.
-    vpi: bool = false,
 };
 
 /// One core target, resolved before anything is written.
@@ -106,6 +93,9 @@ pub const Job = struct {
         /// Clause 12 (`From.vpi`): a row's reactive half, or one instance's
         /// share of a shared row, that `vpiContribs`/`vpiShares` report.
         vpi,
+        /// An operating-point variable's end-of-block value (`Lowered.op_vars`),
+        /// which `opVars` reports.
+        op_var,
         /// §9.4: the one job that is NOT folded into the core, because its
         /// body has side effects the residual must not trigger. See
         /// `plan_core.plan`.
@@ -113,11 +103,55 @@ pub const Job = struct {
     };
 };
 
+/// What `plan` reads besides the lowered module.
+const From = struct {
+    /// `plan/names.zig`: the canonical units, whose operators queue inputs.
+    names: *const Names,
+    /// `proof.Verdict.unit_modes`: the float mode of each CONTRIBUTION unit.
+    unit_modes: []const proof.FloatMode,
+    /// `Limits.calls`: the honoured §4.5.15 sites.
+    limits: []const LimitCall,
+    /// `plan/noise.zig`: the §4.6.4 generator rows and §4.6.3 stimulus rows.
+    noise: *const plan_noise.Noise,
+    /// `Options.display == .emit`: the §9.4 tasks become a unit of their own.
+    emit_display: bool,
+    /// A `.record` device has tasks its `say` records (`cg_display.planSay`):
+    /// the display unit is that entry point's body.
+    record_display: bool = false,
+    /// `plan/qsite.zig` `QSites.sites`: the `Lowered.charge_sites` that get a
+    /// `q` slot, in slot order. Each one's charge is a core live-out.
+    q_sites: []const u32 = &.{},
+    /// `Options.vpi_contribs`: every value `vpiContribs` and `vpiShares`
+    /// report is a core live-out.
+    vpi: bool = false,
+};
+
+/// A `dyn` stub: every §4.5 control argument and §4.6.3 stimulus reads the solve.
+const always = struct {
+    pub fn isDynamic(_: @This(), _: Mir.Value) error{}!bool {
+        return true;
+    }
+}{};
+
+/// `plan`'s errors for a `dyn` of type `Dyn`: allocation, and every error
+/// `Dyn.isDynamic` returns.
+pub fn PlanError(comptime Dyn: type) type {
+    if (!@hasDecl(Dyn, "isDynamic")) @compileError(@typeName(Dyn) ++ " has no pub fn isDynamic");
+    const ret = @typeInfo(@TypeOf(Dyn.isDynamic)).@"fn".return_type.?;
+    comptime assert(@typeInfo(ret) == .error_union);
+    return std.mem.Allocator.Error || @typeInfo(ret).error_union.error_set;
+}
+
 /// Returns every core target in queue order (`Job.Kind`); slices are owned by
 /// `self.arena`. `dyn.isDynamic(v)` answers whether a §4.5 control argument
 /// renders only off the core, so a test can pass a stub. Fails on
-/// allocation or with `dyn`'s error.
-pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
+/// allocation or with `dyn`'s error (`PlanError`). Asserts that at most one
+/// of `from.emit_display` and `from.record_display` is set, and that
+/// `from.unit_modes` rates no more units than there are contributions.
+pub fn plan(self: Input, from: From, dyn: anytype) PlanError(@TypeOf(dyn))!Jobs {
+    assert(from.names.units.len == from.names.unit_names.len);
+    if (from.emit_display) assert(!from.record_display);
+    assert(from.unit_modes.len <= self.lowered.contributions.items.len);
     var out: Jobs = .{};
     var jobs: std.ArrayList(Job) = .empty;
     for (self.lowered.contributions.items, 0..) |c, i| {
@@ -350,6 +384,19 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
             try queueVpi(self, &jobs, from, sh.react_val, sh.row);
         }
     }
+    // The operating-point variables, which `opVars` reads out of its slice of
+    // the core. After every kind `eval` reads, so a model that gains a `desc`
+    // renumbers no field before them. `.strict` unconditionally: a report is
+    // not on the residual path, and proof.zig rates contributions only.
+    for (self.lowered.op_vars.items) |ov| {
+        const v = self.an.rv(ov.final);
+        if (v == .f_zero) continue; // reported as 0 without a field
+        try jobs.append(self.arena, .{
+            .kind = .op_var,
+            .target = v,
+            .mode = .strict,
+        });
+    }
     // §9.4 the display tasks, as one unit. Queued last, so no existing job
     // (and so no declaration name) moves when a model gains or loses a
     // `$strobe`. `.strict` unconditionally: a print is not on the residual
@@ -367,11 +414,26 @@ pub fn plan(self: Input, from: From, dyn: anytype) !Jobs {
         });
     }
     out.list = jobs.items;
+    // Queue order is `Job.Kind` order, the one interleave being each
+    // contribution's `.react` jobs after its own `.resist` job.
+    for (1..@max(out.list.len, 1)) |k| {
+        const prev = @backingInt(out.list[k - 1].kind);
+        const kind = out.list[k].kind;
+        if (kind != .resist) assert(prev <= @backingInt(kind));
+        if (kind == .resist) assert(prev <= @backingInt(Job.Kind.react));
+    }
+    // The display job, when there is one, is the last and is named.
+    if (out.display_name.len != 0) assert(out.list[out.list.len - 1].kind == .display);
+    if (out.display_name.len == 0) for (out.list) |j| assert(j.kind != .display);
     return out;
 }
 
+// ---- private ----
+
 /// Queues `v`, a value of contribution `row`, as a `.vpi` job unless it is 0.
 fn queueVpi(self: Input, jobs: *std.ArrayList(Job), from: From, v: Mir.Value, row: usize) !void {
+    assert(from.vpi);
+    assert(row < self.lowered.contributions.items.len);
     const t = self.an.rv(v);
     if (t == .f_zero) return;
     try jobs.append(self.arena, .{
@@ -379,16 +441,18 @@ fn queueVpi(self: Input, jobs: *std.ArrayList(Job), from: From, v: Mir.Value, ro
         .target = t,
         .mode = unitMode(from.unit_modes, row),
     });
+    assert(jobs.items[jobs.items.len - 1].kind == .vpi);
 }
 
 /// Value -> some instruction reads it, or a job in `queued` returns it. Dead
 /// instructions count: the answer only has to be a superset. One sweep of
 /// every instruction, O(instructions).
 fn readSet(self: Input, queued: []const Job) ![]bool {
+    assert(queued.len <= std.math.maxInt(u32));
     const read = try self.arena.alloc(bool, self.an.nv);
     @memset(read, false);
     for (queued) |j| read[@backingInt(self.an.rv(j.target))] = true;
-    for (0..self.mir.insts.len) |ii| {
+    for (0..self.mir.instCount()) |ii| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
         switch (self.mir.instData(inst)) {
             .unary => |d| read[@backingInt(self.an.rv(d.operand))] = true,
@@ -414,12 +478,15 @@ fn readSet(self: Input, queued: []const Job) ![]bool {
             .jump, .anew => {},
         }
     }
+    assert(read.len == self.mir.valueCount());
     return read;
 }
 
 /// Returns the prover's float mode for unit `i`, or `.strict` for a unit
 /// the prover did not rate.
 fn unitMode(unit_modes: []const proof.FloatMode, i: usize) proof.FloatMode {
+    assert(unit_modes.len <= std.math.maxInt(u32));
+    assert(i <= std.math.maxInt(u32)); // a unit index
     // proof.zig rates the CONTRIBUTION units only (proof.unitCount ==
     // lower.contributions.len); an analog-operator unit is not covered, so
     // it takes the safe side.
@@ -433,7 +500,7 @@ fn unitMode(unit_modes: []const proof.FloatMode, i: usize) proof.FloatMode {
 /// so it is not one). Everything else stays a `constant_expression` and is
 /// still E0515 when it is a solve result.
 fn isDynCtrlArg(k: OpKind, ai: usize) bool {
-    return switch (k) {
+    const dyn = switch (k) {
         // td ("dynamic: expr, td"), and maxdelay: the constant one, but §4.5.14
         // samples a dynamic value there "at the start of the analysis", which
         // `updateState` latches off this field (`absdelayMaxdSampled`).
@@ -452,9 +519,10 @@ fn isDynCtrlArg(k: OpKind, ai: usize) bool {
         .cross => ai >= 1 and ai <= 3,
         .none, .transition, .slew, .above, .timer, .bound_step, .discontinuity => false,
     };
+    // Position 0 is the operator's input, a unit of its own, never a control.
+    if (ai == 0) assert(!dyn);
+    return dyn;
 }
-
-const Fixture = @import("prove").Fixture;
 
 test "jobs queue in insert-tolerant order: contributions, operator inputs, held values" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };
@@ -496,13 +564,6 @@ test "jobs queue in insert-tolerant order: contributions, operator inputs, held 
     try std.testing.expectEqual(va, jobs.list[2].target);
     try std.testing.expectEqualStrings("", jobs.display_name);
 }
-
-/// A `dyn` stub: every §4.5 control argument and §4.6.3 stimulus reads the solve.
-const always = struct {
-    pub fn isDynamic(_: @This(), _: Mir.Value) error{}!bool {
-        return true;
-    }
-}{};
 
 test "§4.5 Table 4-20: an absdelay's td and maxdelay are queued only when they render off the core" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };

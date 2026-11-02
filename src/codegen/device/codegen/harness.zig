@@ -2,8 +2,14 @@
 //! lowered into MIR, with `gen*` running proof and codegen over it. Used by
 //! the codegen tests (`tests/unit.zig`) and the display tests beside
 //! `cg_display.zig`. Analysed only by a test. No clause of its own.
+//!
+//! Contents:
+//! - `pub const Harness = struct`
+//! - members: `Harness.run`, `Harness.runOver`, `Harness.gen`, `Harness.genDisplay`,
+//!   `Harness.genOut`, `Harness.genWith`, `Harness.deinit`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const codegen = @import("../codegen.zig");
 const Mir = @import("ir").Mir;
 const Lower = @import("analog").Lower;
@@ -11,8 +17,9 @@ const Lowered = @import("ir").Lowered;
 const proof = @import("prove").proof;
 const diag = @import("diag");
 const Ast = @import("frontend").Ast;
-const Preprocessor = @import("frontend").Preprocessor;
-const Lexer = @import("frontend").Lexer;
+const preprocessor = @import("frontend").preprocessor;
+const lexer = @import("frontend").lexer;
+const annex_e = @import("frontend").annex_e;
 const Parser = @import("frontend").Parser;
 const Output = codegen.Output;
 const generate = codegen.generate;
@@ -45,53 +52,61 @@ pub const Harness = struct {
         const arena = out.arena_state.allocator();
         // One diagnostic bag threaded through every stage (diag.zig).
         out.bag = diag.Bag.init(arena);
-        const pp = try Preprocessor.process(arena, src, .{ .bag = &out.bag });
+        const pp = try preprocessor.process(arena, src, .{ .bag = &out.bag });
         const text = pp.text;
-        const toks = try Lexer.Lexer.tokenize(arena, text);
+        const toks = try lexer.tokenize(arena, text, null);
         var p = Parser.Parser.init(arena, text, toks.items(.tag), toks.items(.start), &out.bag);
         const parse = try arena.create(Ast.SourceFile);
         parse.* = try p.parseSourceFile();
-        // The annex E prelude came with `Preprocessor.process` (std_defs is on by
+        // The annex E prelude came with `preprocessor.process` (std_defs is on by
         // default), so its modules are the leading entries of `file.modules`.
         // Elaboration writes the overlay, never the parse.
-        out.file = parse.overlay(.{ .builtin_modules = Preprocessor.spice_module_count });
+        out.file = parse.overlay(.{ .builtin_modules = annex_e.spice_module_count });
         // `directives` as `root.compile` passes them: a §10.3
         // `default_transition` reaches §4.5.8 only through it.
         out.lowered = (try Lower.lower(arena, &out.mir, &out.file, text, toks.items(.start), &out.bag, .{
             .param_overrides = over,
             .directives = pp.directives,
         })).lowered;
+        assert(out.file.base == parse);
+        assert(out.file.builtin_modules == annex_e.spice_module_count);
     }
 
     /// `genOut`'s device text.
     pub fn gen(self: *Harness, gpa: std.mem.Allocator) ![]const u8 {
-        return (try self.genOut(gpa)).text;
+        const o = try self.genOut(gpa);
+        assert(o.text.len != 0); // `generate` never returns an empty file
+        return o.text;
     }
 
     /// `gen` with §9.4 display tasks emitted: the printing artifact. Reports
     /// to no bag.
     pub fn genDisplay(self: *Harness, gpa: std.mem.Allocator) ![]const u8 {
-        var fatal = false;
-        return (try self.proveAndGenerate(gpa, .{ .display = .emit }, &fatal)).text;
+        const device = try self.proveAndGenerate(gpa, .{ .display = .emit });
+        assert(device.output.text.len != 0);
+        return device.output.text;
     }
 
     /// Proves with `gpa` and generates with the default options into the
     /// harness bag; a fatal generation still returns its output.
     pub fn genOut(self: *Harness, gpa: std.mem.Allocator) !Output {
-        var fatal = false;
-        return self.proveAndGenerate(gpa, .{ .diags = &self.bag }, &fatal);
+        const device = try self.proveAndGenerate(gpa, .{ .diags = &self.bag });
+        assert(device.output.text.len != 0);
+        return device.output;
     }
 
     /// Proves and generates with `opts`, `.diags` set to the harness bag.
     /// Fails the test with the bag's count when generation is fatal: every
-    /// caller asserts on a device that was meant to compile.
+    /// caller asserts on a device that was meant to compile. Asserts that
+    /// `opts.diags` is unset: the harness supplies its own bag.
     pub fn genWith(self: *Harness, opts: codegen.Options) !Output {
+        assert(opts.diags == null);
         var o = opts;
         o.diags = &self.bag;
-        var fatal = false;
-        const out = try self.proveAndGenerate(std.testing.allocator, o, &fatal);
-        if (fatal) return error.GenerationWasFatal;
-        return out;
+        const device = try self.proveAndGenerate(std.testing.allocator, o);
+        if (device.compile_error) return error.GenerationWasFatal;
+        assert(device.output.text.len != 0);
+        return device.output;
     }
 
     // ponytail: the harness hands `generate` its arena as the output gpa, so
@@ -100,11 +115,14 @@ pub const Harness = struct {
     // cost `generate`'s gpa parameter exists to avoid only bites at MB scale.
     // The harness bag is arena-lived and never detached, so unlike the
     // driver's it is still the right one to hand codegen.
-    fn proveAndGenerate(self: *Harness, gpa: std.mem.Allocator, opts: codegen.Options, fatal: *bool) !Output {
-        const v = try proof.proveOpts(gpa, &self.mir, &self.lowered, .{}, &self.bag);
+    fn proveAndGenerate(self: *Harness, gpa: std.mem.Allocator, opts: codegen.Options) !codegen.Device {
+        if (opts.diags) |d| assert(d == &self.bag);
+        const v = try proof.prove(gpa, &self.mir, &self.lowered, .{}, &self.bag);
         defer v.deinit(gpa);
         const a = self.arena_state.allocator();
-        return generate(a, a, &self.mir, &self.lowered, v, fatal, opts);
+        const device = try generate(a, a, &self.mir, &self.lowered, v, opts);
+        assert(device.output.unit_lo.len == device.output.unit_hi.len);
+        return device;
     }
 
     /// Frees everything `run` lowered and every output generated since.

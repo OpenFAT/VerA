@@ -14,6 +14,10 @@ const TestFn = std.lang.TestFn;
 /// elsewhere, `contract.validating`), so a contract regression fails CI.
 pub const vera_validate_contract = true;
 
+/// `error.SkipZigTest` is a failure (AGENTS.md: unsupported fails and never
+/// skips): a test that cannot run on a target is left out of that target's
+/// build, with its reason, and a gap is an `xfail(...)` test.
+///
 /// A test named `xfail(<reason>): ...` states a behaviour the code does not
 /// have yet: it must fail, and passing is an XPASS
 /// failure, so the marker cannot outlive the gap. A leak is never excused.
@@ -92,7 +96,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
 /// Runs every test of `builtin.test_functions` in order and writes the report
 /// to `reporter`. Exits the process with status 1 when a test failed or
-/// leaked, and returns only when every test passed or was skipped. Results
+/// leaked, and returns only when every test passed or was an expected failure. Results
 /// and stack traces live in `arena`.
 pub fn run(
     arena: *std.heap.ArenaAllocator,
@@ -111,7 +115,7 @@ pub fn run(
 
     try reporter.writeTitle(report.process_name, tests.len);
     try runTests(arena, io, environ, tests, &report);
-    // Write before the failure exit, preserving skips and expected failures.
+    // Write before the failure exit, preserving expected failures.
     // Each artifact has its own file; parallel runs never share a writer.
     if (results_path) |path| {
         if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
@@ -122,7 +126,6 @@ pub fn run(
             const status: []const u8 = if (result.isMemoryLeak()) "fail" else switch (result) {
                 .passed => "pass",
                 .failed => "fail",
-                .skipped => "skip",
                 .xfailed => "xfail",
             };
             try out.writer.print("{s}\t{s}\n", .{ status, name });
@@ -133,12 +136,21 @@ pub fn run(
     try reporter.writeSummary(
         report.passed_count,
         report.failed_count,
-        report.skipped_count,
         report.xfail_count,
         report.total_duration,
         report.is_mem_leak,
     );
-    if (report.failed_count != 0 or report.is_mem_leak) std.process.exit(1);
+    if (report.failed_count != 0 or report.is_mem_leak) {
+        // The report above went to stdout, which `zig build` shows only for a
+        // step that writes no failure of its own; name every failure on
+        // stderr too, so a CI log says which test it was.
+        for (report.test_results) |r| switch (r) {
+            .failed => |f| std.debug.print("FAIL {s}.{s}: {s}\n", .{ f.@"test".namespace, f.@"test".name, @errorName(f.err) }),
+            .passed => |p| if (p.is_mem_leak) std.debug.print("LEAK {s}.{s}\n", .{ p.@"test".namespace, p.@"test".name }),
+            .xfailed => |x| if (x.is_mem_leak) std.debug.print("LEAK {s}.{s}\n", .{ x.@"test".namespace, x.@"test".name }),
+        };
+        std.process.exit(1);
+    }
 }
 
 fn runTests(
@@ -158,13 +170,12 @@ fn runTests(
         switch (report.test_results[idx]) {
             .passed => report.passed_count += 1,
             .failed => report.failed_count += 1,
-            .skipped => report.skipped_count += 1,
             .xfailed => report.xfail_count += 1,
         }
         report.is_mem_leak = report.is_mem_leak or report.test_results[idx].isMemoryLeak();
     }
     // Every test counted exactly once.
-    assert(report.passed_count + report.failed_count + report.skipped_count + report.xfail_count == tests.len);
+    assert(report.passed_count + report.failed_count + report.xfail_count == tests.len);
     const total_end = std.Io.Clock.Timestamp.now(io, .awake);
     report.total_duration = total_start.durationTo(total_end).raw;
 }
@@ -225,7 +236,7 @@ const Test = struct {
         return instance;
     }
 
-    /// Runs the test and returns its result; `error.SkipZigTest` reports as skipped.
+    /// Runs the test and returns its result; `error.SkipZigTest` is a failure.
     fn run(
         self: Test,
         arena: *std.heap.ArenaAllocator,
@@ -266,9 +277,13 @@ const Test = struct {
                 .passed = .{ .@"test" = self, .duration = duration, .is_mem_leak = is_mem_leak },
             };
         } else |err| switch (err) {
-            error.SkipZigTest => {
-                test_result = TestResult{ .skipped = self };
-            },
+            error.SkipZigTest => test_result = .{ .failed = .{
+                .@"test" = self,
+                .duration = duration,
+                .is_mem_leak = is_mem_leak,
+                .err = error.SkipZigTest,
+                .stack_trace = "  SKIP: unsupported fails, never skips. Make it pass, name the gap `xfail(...)`, or leave the\n  test out of the targets it cannot run on (a comptime reference), with the reason.\n",
+            } },
             else => if (xfail) {
                 test_result = .{ .xfailed = .{ .@"test" = self, .is_mem_leak = is_mem_leak } };
             } else {
@@ -303,7 +318,6 @@ const Test = struct {
 pub const TestResult = union(enum) {
     passed: struct { @"test": Test, duration: Duration, is_mem_leak: bool },
     failed: struct { @"test": Test, duration: Duration, err: anyerror, stack_trace: []const u8, is_mem_leak: bool },
-    skipped: Test,
     /// An `xfail(...)` test that failed, as it says it does.
     xfailed: struct { @"test": Test, is_mem_leak: bool },
 
@@ -312,17 +326,15 @@ pub const TestResult = union(enum) {
         return switch (self) {
             .passed => |result| result.@"test",
             .failed => |result| result.@"test",
-            .skipped => |t| t,
             .xfailed => |result| result.@"test",
         };
     }
 
-    /// Whether `std.testing.allocator` reported a leak; a skipped test never does.
+    /// Whether `std.testing.allocator` reported a leak.
     fn isMemoryLeak(self: TestResult) bool {
         return switch (self) {
             .passed => |result| result.is_mem_leak,
             .failed => |result| result.is_mem_leak,
-            .skipped => false,
             .xfailed => |result| result.is_mem_leak,
         };
     }
@@ -332,11 +344,10 @@ pub const TestResult = union(enum) {
 const Report = struct {
     process_name: []const u8,
     test_results: []TestResult,
-    // `u32`: counts per artifact, and `writeSummary` adds all four, so no
+    // `u32`: counts per artifact, and `writeSummary` adds all three, so no
     // module's test count may overflow the sum (one already has > 255).
     passed_count: u32 = 0,
     failed_count: u32 = 0,
-    skipped_count: u32 = 0,
     xfail_count: u32 = 0,
     total_duration: Duration = .zero,
     is_mem_leak: bool = false,
@@ -357,7 +368,6 @@ const FileReporter = struct {
         .summary = Color.cyan,
         .passed = Color.green,
         .failed = Color.red,
-        .skipped = Color.yellow,
         .xfail = Color.yellow,
         .memory_leak = Color.magenta,
     };
@@ -429,9 +439,6 @@ const FileReporter = struct {
                     .{ result.duration, @errorName(result.err) },
                 );
             },
-            .skipped => {
-                try self.colorize(colors.skipped, " SKIPPED", .{});
-            },
             .xfailed => {
                 try self.colorize(colors.xfail, " XFAIL", .{});
             },
@@ -451,25 +458,22 @@ const FileReporter = struct {
         self: *FileReporter,
         passed: u32,
         failed: u32,
-        skipped: u32,
         xfail: u32,
         total_duration: Duration,
         is_mem_leak: bool,
     ) std.Io.Terminal.SetColorError!void {
-        if (passed + skipped + failed + xfail == 0 and !is_mem_leak)
+        if (passed + failed + xfail == 0 and !is_mem_leak)
             return;
 
         try self.colorize(
             colors.summary,
             border ++ "\nTotal {d} tests were run in {f}: ",
-            .{ passed + failed + skipped + xfail, total_duration },
+            .{ passed + failed + xfail, total_duration },
         );
         if (passed > 0)
             try self.colorize(colors.passed, "{d} passed; ", .{passed});
         if (failed > 0)
             try self.colorize(colors.failed, "{d} failed; ", .{failed});
-        if (skipped > 0)
-            try self.colorize(colors.skipped, "{d} skipped;", .{skipped});
         if (xfail > 0)
             try self.colorize(colors.xfail, " {d} xfail;", .{xfail});
         if (is_mem_leak)
@@ -525,15 +529,13 @@ test "Test.wrap: the namespace before `.test.`/`.decltest.`, the name after" {
     }
 }
 
-test "TestResult: the test it is for, and a skip never leaks" {
+test "TestResult: the test it is for; an xfail excuses no leak" {
     const f = struct {
         fn f() anyerror!void {}
     }.f;
     const t = Test.wrap(.{ .name = "m.test.x", .func = &f });
-    const skipped: TestResult = .{ .skipped = t };
-    try std.testing.expect(!skipped.isMemoryLeak());
-    try std.testing.expectEqualStrings("x", skipped.@"test"().name);
     const xfailed: TestResult = .{ .xfailed = .{ .@"test" = t, .is_mem_leak = true } };
+    try std.testing.expectEqualStrings("x", xfailed.@"test"().name);
     // An xfail excuses the failure, never the leak.
     try std.testing.expect(xfailed.isMemoryLeak());
 }

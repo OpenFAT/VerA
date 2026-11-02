@@ -1,59 +1,117 @@
 //! Scalar family text (`contract.family_fns`): a MIR value's unknown set
-//! (`Analysis.unknownDeps`) in, the mask literals, `zTo`/`zOf` wrappers and
-//! the per-device `lane_masks` table out. A mask is written only where values
-//! merge (hoisted slot, lazy `if` arms, array element, kernel result, returned
-//! field, residual row); `zTo` fails to compile on a value whose lanes the mask
-//! misses, so an unsound mask cannot drop a lane silently.
-//! LRM clauses cited: none (it realises `contract.family_fns`).
+//! (`Analysis.unknownDeps`) in, the mask literals, `zTo`/`zOf` wrappers, the
+//! per-device `lane_masks` table and the `contract.Constant` verdict out. A
+//! mask is written only where values merge (hoisted slot, lazy `if` arms,
+//! array element, kernel result, returned field, residual row); `zTo` fails
+//! to compile on a value whose lanes the mask misses, so an unsound mask
+//! cannot drop a lane silently.
+//! Cites: none (it realises `contract.family_fns` and `contract.Constant`).
+//!
+//! Contents:
+//! - `pub const Constant = struct`
+//! - `pub fn mask(self: *const Gen, v: Mir.Value) []const u64`
+//! - `pub fn acDyn(self: *const Gen, v: Mir.Value) []const u64`
+//! - `pub fn openTo(self: *Gen, m: []const u64) Error!void`
+//! - `pub fn ofText(self: *Gen, m: []const u64) Error![]const u8`
+//! - `pub fn note(self: *Gen, m: []const u64) Error!void`
+//! - `pub fn emitLaneMasks(self: *Gen, deriv_reads: []const u64) Error!void`
+//! - `pub fn constant(self: *Gen) Error!Constant`
 
 const std = @import("std");
 const assert = std.debug.assert;
+const Mir = @import("ir").Mir;
 const codegen = @import("../codegen.zig");
-const Gen = codegen.Gen;
 const gen_call = @import("call.zig");
+const call_analysis = @import("call_analysis.zig");
 const gen_dispatch = @import("dispatch.zig");
 const gen_mask = @import("mask.zig");
-const Mir = @import("ir").Mir;
+const Gen = codegen.Gen;
 const Error = codegen.Error;
 
-/// Returns the unknowns `v` may depend on, `Gen.mw` words: its mask before
-/// `zdr` cuts it.
+/// `contract.Constant`: `g` when ∂eval/∂x cannot depend on x, `c` when ∂q/∂x
+/// cannot, at every x and analysis point. False is always sound.
+pub const Constant = struct { g: bool, c: bool };
+
+/// The two fixpoints `constant` settles, read per value: the affine set and
+/// the host-state cone, both `nv` long.
+const Lattice = struct {
+    g: *const Gen,
+    aff: []const bool,
+    host: []const bool,
+
+    fn affine(k: Lattice, v: Mir.Value) bool {
+        assert(k.aff.len == k.host.len);
+        assert(k.aff.len == k.g.an.nv);
+        return k.aff[@backingInt(k.g.an.rv(v))];
+    }
+
+    fn card(k: Lattice, v: Mir.Value) bool {
+        assert(k.host.len == k.g.an.nv);
+        return !k.g.an.xDep(v) and !k.host[@backingInt(k.g.an.rv(v))];
+    }
+};
+
+/// Returns the unknowns `v` may depend on, `Gen.mw` words borrowed from
+/// `Gen.deps`: its mask before `zdr` cuts it. Asserts that `deps` holds `mw`
+/// words per value.
 pub fn mask(self: *const Gen, v: Mir.Value) []const u64 {
+    assert(self.deps.len == @as(usize, self.an.nv) * self.mw);
     const i: usize = @backingInt(self.an.rv(v));
+    assert(i < self.an.nv);
     return self.deps[i * self.mw ..][0..self.mw];
 }
 
 /// Returns the unknowns whose derivative reaches `v` through a
-/// frequency-dependent operator (`Analysis.acDynDeps`), `Gen.mw` words.
+/// frequency-dependent operator (`Analysis.acDynDeps`), `Gen.mw` words
+/// borrowed from `Gen.acdyn` (or `Gen.zero_mask` when no operator is).
+/// Asserts that a non-empty `acdyn` holds `mw` words per value.
 pub fn acDyn(self: *const Gen, v: Mir.Value) []const u64 {
-    if (self.acdyn.len == 0) return self.zero_mask;
+    if (self.acdyn.len == 0) {
+        assert(self.zero_mask.len == self.mw);
+        return self.zero_mask;
+    }
+    assert(self.acdyn.len == @as(usize, self.an.nv) * self.mw);
     const i: usize = @backingInt(self.an.rv(v));
     return self.acdyn[i * self.mw ..][0..self.mw];
 }
 
 /// Writes `zTo(S, 0x<m>, `; the caller writes the value and the closing `)`.
+/// Asserts that `m` is `mw` words. Invalidates slices of `g.out.items`.
 pub fn openTo(self: *Gen, m: []const u64) Error!void {
+    assert(m.len == self.mw);
+    const len_before = self.out.items.len;
     try self.b("zTo(S, 0x{f}, ", .{gen_mask.hex(m, false)});
+    assert(self.out.items.len > len_before);
 }
 
-/// Returns `zOf(S, 0x<m>)` as text for a `{s}` slot, allocated in the arena.
+/// Returns `zOf(S, 0x<m>)` as text for a `{s}` slot, owned by `g.arena`.
+/// Asserts that `m` is `mw` words.
 pub fn ofText(self: *Gen, m: []const u64) Error![]const u8 {
-    return self.arena.print("zOf(S, 0x{f})", .{gen_mask.hex(m, false)});
+    assert(m.len == self.mw);
+    const text = try self.arena.print("zOf(S, 0x{f})", .{gen_mask.hex(m, false)});
+    assert(text.len > "zOf(S, 0x)".len);
+    return text;
 }
 
 /// Records one real the shared core declares at mask `m`, for `lane_masks`.
-/// Ignored in `setup` (value scalar) and in a `probeBody` dry run.
+/// Ignored in `setup` (value scalar) and in a `probeBody` dry run. `m` is
+/// borrowed until `emitLaneMasks`. Asserts that `m` is `mw` words.
 pub fn note(self: *Gen, m: []const u64) Error!void {
-    if (self.probe.active or !self.emitting_common or self.su.mode) return;
+    assert(m.len == self.mw);
+    if (self.cur.probe.active or !self.cur.emitting_common or self.su.mode) return;
+    const n_before = self.fam_masks.items.len;
     try self.fam_masks.append(self.arena, m);
+    assert(self.fam_masks.items.len == n_before + 1);
 }
 
 /// Writes `lane_masks`: every distinct mask a real was declared at, cut to
 /// `deriv_reads`, with its use count. A host sizes its lane types from it.
 /// Sorts `fam_masks` in place. Not written past 64 unknowns, where a
 /// `contract.LaneUse` mask cannot hold one; `contract.laneMasks` then gives
-/// one entry, `deriv_reads`.
+/// one entry, `deriv_reads`. Asserts that `deriv_reads` is `mw` words.
+/// Invalidates slices of `g.out.items`.
 pub fn emitLaneMasks(self: *Gen, deriv_reads: []const u64) Error!void {
+    assert(deriv_reads.len == self.mw);
     if (self.mw > 1) return;
     const ms = self.fam_masks.items;
     for (ms) |*m| {
@@ -85,16 +143,17 @@ pub fn emitLaneMasks(self: *Gen, deriv_reads: []const u64) Error!void {
     try self.w("}};\n\n", .{});
 }
 
-/// Returns `contract.Constant`: `.g` when ∂eval/∂x cannot depend on x, `.c`
-/// when ∂q/∂x cannot, at every x and analysis point. False is always sound.
+/// Returns `contract.Constant` for this device (see `Constant`).
 ///
 /// A value is affine in x when its lanes depend on the card alone: a probe, a
 /// card constant, a sum or negation of affine values, an affine value times or
 /// divided by a card constant, or a select or join on a card constant over
 /// affine arms. A card constant varies with neither x nor host-rewritten state
-/// (`gen_call.readsHostState`): `$abstime * V` has a constant partial at every
-/// x and a different one at every time.
-pub fn constant(self: *Gen) Error!struct { g: bool, c: bool } {
+/// (`call_analysis.readsHostState`): `$abstime * V` has a constant partial at every
+/// x and a different one at every time. Two `nv`-long scratch columns live
+/// on `g.gpa` for the call. Asserts that the value table holds every
+/// builtin value.
+pub fn constant(self: *Gen) Error!Constant {
     const nv = self.an.nv;
     // `host` and `aff` are scratch of this pass (two nv-long columns, 250 KiB
     // on hisimhv_va): on the gpa, freed on return.
@@ -103,7 +162,7 @@ pub fn constant(self: *Gen) Error!struct { g: bool, c: bool } {
     defer self.gpa.free(host);
     @memset(host, false);
     var steered = false;
-    for (0..self.mir.insts.len) |i| {
+    for (0..self.mir.instCount()) |i| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(i));
         if (self.mir.instOp(inst) == .branch and self.an.xDep(self.mir.instData(inst).branch.cond)) steered = true;
     }
@@ -147,22 +206,13 @@ pub fn constant(self: *Gen) Error!struct { g: bool, c: bool } {
     return .{ .g = g, .c = c };
 }
 
-const Lattice = struct {
-    g: *const Gen,
-    aff: []const bool,
-    host: []const bool,
-    fn affine(k: Lattice, v: Mir.Value) bool {
-        assert(k.aff.len == k.host.len);
-        return k.aff[@backingInt(k.g.an.rv(v))];
-    }
-    fn card(k: Lattice, v: Mir.Value) bool {
-        return !k.g.an.xDep(v) and !k.host[@backingInt(k.g.an.rv(v))];
-    }
-};
+// ---- private ----
 
 /// One step of the host-state cone: a call that reads host state, or any
 /// operand in the cone.
 fn hostStep(self: *const Gen, v: Mir.Value, host: []const bool) bool {
+    assert(host.len == self.an.nv);
+    assert(@backingInt(v) < self.an.nv);
     const in = struct {
         fn f(g: *const Gen, h: []const bool, o: Mir.Value) bool {
             return h[@backingInt(g.an.rv(o))];
@@ -174,7 +224,7 @@ fn hostStep(self: *const Gen, v: Mir.Value, host: []const bool) bool {
     var g = self.mir.guardConds(inst);
     while (g.next()) |c| if (in(self, host, c)) return true;
     return switch (self.mir.instData(inst)) {
-        .call => |c| gen_call.readsHostState(self, inst) or for (c.args) |a| {
+        .call => |c| call_analysis.readsHostState(self, inst) or for (c.args) |a| {
             if (in(self, host, a)) break true;
         } else false,
         .unary => |u| in(self, host, u.operand),
@@ -191,6 +241,8 @@ fn hostStep(self: *const Gen, v: Mir.Value, host: []const bool) bool {
 
 /// One step of the affine set, given the current answer for the operands.
 fn affineStep(self: *const Gen, v: Mir.Value, aff: []const bool, host: []const bool, steered: bool) bool {
+    assert(aff.len == self.an.nv);
+    assert(host.len == aff.len);
     const k: Lattice = .{ .g = self, .aff = aff, .host = host };
     if (k.card(v)) return true;
     const def = self.mir.valueDef(self.an.rv(v));

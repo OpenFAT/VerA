@@ -13,7 +13,6 @@ running its command and saving it into DIR, so a second run re-renders without
 re-measuring. The logs and the commands:
 
     strict.txt       zig build suite -- --strict     (stdout and stderr, merged)
-    coverage1364.txt zig build suite -- ieee1364 --coverage
     devices.txt      zig build suite -- devices
     vpi.txt          zig build suite -- vpi
     sweep.txt        zig build suite -- --sweep
@@ -21,7 +20,6 @@ re-measuring. The logs and the commands:
 
 Everything is built ReleaseFast: the suite's timing table says Debug is "NOT
 the shipping number". The page states what it read, never a typed number.
-The parsing of the measures lines is conformance.py's.
 """
 import argparse
 import datetime
@@ -46,7 +44,6 @@ ROOT = C.ROOT
 OPT = "-Doptimize=ReleaseFast"
 SUITES = {
     "strict": ["zig", "build", OPT, "suite", "--", "--strict"],
-    "coverage1364": ["zig", "build", OPT, "suite", "--", "ieee1364", "--coverage"],
     "devices": ["zig", "build", OPT, "suite", "--", "devices"],
     "vpi": ["zig", "build", OPT, "suite", "--", "vpi"],
     "sweep": ["zig", "build", OPT, "suite", "--", "--sweep"],
@@ -73,7 +70,7 @@ pub const vera_validate_contract = true;
 
 const contract = @import("contract");
 
-/// The `--dyn` hook (`src/zigbuild/orchestrator.zig`): exports `bench_evalq`
+/// The `--dyn` hook (`src/zigbuild/shim.zig`): exports `bench_evalq`
 /// for `D`. `name` is unused: one device per `.so`, under a fixed symbol.
 pub fn exportDevice(comptime D: type, comptime name: []const u8) void {
     _ = name;
@@ -101,10 +98,6 @@ fn Bench(comptime D: type) type {
 # A no-op `dyn`: exports nothing, so no device code compiles.
 NOOP_DYN = "pub fn exportDevice(comptime D: type, comptime name: []const u8) void {\n    _ = D;\n    _ = name;\n}\n"
 BUILD_TIMEOUT_S = 1800
-KINDS = ["non-normative", "no-prohibition", "optional", "implementation-defined",
-         "resource-limit", "unspecified", "not-supported"]
-
-
 def log(logs, name):
     """DIR/name.txt, running its command first when it is not there. The exit
     status is kept on the log's last line, as CI's `strict exit: N` is."""
@@ -115,6 +108,11 @@ def log(logs, name):
         p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         path.write_bytes(p.stdout + f"\nstrict exit: {p.returncode}\n".encode())
     return path.read_text(errors="replace")
+
+
+def first(pattern, text):
+    m = re.search(pattern, text, re.M)
+    return m.group(1) if m else ""
 
 
 def suite_binary():
@@ -145,10 +143,6 @@ def tsv(text, header):
     return rows
 
 
-def top(clause):
-    return clause.split(".")[0]
-
-
 # ---------------------------------------------------------------------------
 # Fixtures: what each one declares
 # ---------------------------------------------------------------------------
@@ -164,106 +158,6 @@ def fixture_tags(rel):
     if not rejects and re.search(r"(?m)^\s*// digital-runner: reject\s*$", source):
         rejects = ["(digital-runner: reject)"]
     return [r.strip() or "(any diagnostic)" for r in rejects], (xf.group(1).strip() if xf else None)
-
-
-def classifications():
-    """{(std, clause): (kind, evidence)} from every CLAUSES.tsv: the kind of a
-    clause that states no rule an input can break, and the quote that justifies it."""
-    out = {}
-    for path in sorted(C.CLAUSES_DIR.rglob("CLAUSES.tsv")):
-        ieee = "ieee1364" in path.parts
-        for line in path.read_text().split("\n"):
-            if not line.strip() or line.startswith("#"):
-                continue
-            cells = line.split("\t")
-            if len(cells) > 1 and cells[1] != "-":
-                evidence = cells[3] if ieee and len(cells) > 3 else (cells[2] if not ieee and len(cells) > 2 else "")
-                out[("ieee" if ieee else "ams", cells[0].strip())] = (cells[1].strip(), evidence.strip())
-    return out
-
-
-def ieee_titles():
-    out = {}
-    for line in (ROOT / "tests/conformance/vera/clauses/ieee1364/CLAUSES.tsv").read_text().split("\n"):
-        cells = line.split("\t")
-        if line.startswith("#") or len(cells) < 3:
-            continue
-        out[cells[0].strip()] = cells[2].strip()
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Coverage logs -> one row per clause
-# ---------------------------------------------------------------------------
-
-BUCKETS = {"POSITIVE CITATIONS ONLY": "positive-only", "REJECTION CITATIONS ONLY": "rejection-only",
-           "UNCITED": "uncited", "CLASSIFIED": "classified"}
-ROW = re.compile(r"^§(\S+) (.*?)(?:  \[([\w-]+)\])?(?:  \((.+?)\))?(?:  ~ .*)?$")
-
-
-def buckets(text):
-    """{clause: (bucket, title)} from the one-way, uncited and classified lists
-    the coverage reports print (tests/suite.zig's Coverage and Ieee1364)."""
-    out, current = {}, None
-    for line in text.split("\n"):
-        head = next((b for h, b in BUCKETS.items() if line.startswith(h + " ")), None)
-        if head:
-            current = head
-        elif not line.strip():
-            current = None
-        elif current and line.startswith("§"):
-            m = ROW.match(line)
-            if m:
-                out[m.group(1)] = (current, m.group(2))
-    return out
-
-
-def clause_rows(cov1364):
-    kinds = classifications()
-    rows = []
-
-    def entry(std, cid, bucket, title, pos, neg):
-        kind, why = kinds.get((std, cid), (None, ""))
-        negs = []
-        for p in sorted(set(neg)):
-            codes, _ = fixture_tags(p)
-            negs.append({"path": p, "reject": codes})
-        xf = []
-        for p in sorted(set(pos) | set(neg)):
-            _, reason = fixture_tags(p)
-            if reason is not None:
-                xf.append({"path": p, "reason": reason})
-        rows.append({"std": std, "id": cid, "chapter": top(cid), "title": title,
-                     "status": bucket, "kind": kind if bucket == "classified" else None,
-                     "reason": why if bucket == "classified" else "",
-                     "positive": sorted(set(pos)), "rejection": negs, "xfail": xf})
-
-    cites = C.fixture_cites()
-    bk = buckets(cov1364)
-    for cid, title in sorted(ieee_titles().items(), key=lambda kv: C.sort_key(kv[0])):
-        # tests/suite.zig's Ieee1364 counts verilog/*.v and the `.c` VPI runs only.
-        c = cites.get(("ieee", cid), {"pos": [], "neg": []})
-        keep = [p for p in c["pos"] if "/tests/verilog/" in p or p.endswith(".c")]
-        keepn = [p for p in c["neg"] if "/tests/verilog/" in p or p.endswith(".c")]
-        bucket, _ = bk.get(cid, ("both", title))
-        entry("ieee", cid, bucket, title, keep, keepn)
-    return rows
-
-
-def chapter_table(rows, std):
-    out = {}
-    for r in rows:
-        if r["std"] != std:
-            continue
-        ch = out.setdefault(r["chapter"], {"chapter": r["chapter"], "both": 0, "classified": 0,
-                                           "one-way": 0, "uncited": 0, "xfail": 0,
-                                           "kinds": {k: 0 for k in KINDS}})
-        key = {"positive-only": "one-way", "rejection-only": "one-way"}.get(r["status"], r["status"])
-        ch[key] += 1
-        if r["kind"]:
-            ch["kinds"][r["kind"].replace("_", "-")] = ch["kinds"].get(r["kind"].replace("_", "-"), 0) + 1
-        ch["xfail"] += bool(r["xfail"])
-    return sorted(out.values(), key=lambda c: C.sort_key(c["chapter"]))
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +224,7 @@ def quantile(sorted_vals, p):
 def speed(strict, sweep):
     rows = tsv(strict, "fixture\tdemands\tvera_ns\tvera_out\tvera_ok")
     fx = [{"path": r["fixture"], "demands": r["demands"], "ns": int(r["vera_ns"]),
-           "ok": r["vera_ok"] == "1"} for r in rows if C.is_num(r["vera_ns"])]
+           "ok": r["vera_ok"] == "1"} for r in rows if r["vera_ns"].isdigit()]
     chapters = {}
     for f in fx:
         chapters.setdefault(f["path"].split("/")[0], []).append(f["ns"])
@@ -442,29 +336,6 @@ def legend(names, colors):
         f'<span><i style="background:{c}"></i>{E(n)}</span>' for n, c in zip(names, colors)) + "</div>"
 
 
-def hstack(rows, label, keys, names, colors, note=lambda r: ""):
-    """Horizontal stacked bars, one per row, scaled to the largest total."""
-    bar_h, gap, lw, w = 16, 6, 46, 640
-    peak = max((sum(r[k] for k in keys) for r in rows), default=1) or 1
-    h = len(rows) * (bar_h + gap) + 4
-    out = [f'<svg viewBox="0 0 {w} {h}" class="chart" role="img">']
-    for i, r in enumerate(rows):
-        y = i * (bar_h + gap)
-        out.append(f'<text x="{lw - 6}" y="{y + 12}" class="lab" text-anchor="end">{E(r[label])}</text>')
-        x = lw
-        for k, n, c in zip(keys, names, colors):
-            v = r[k]
-            if not v:
-                continue
-            bw = (w - lw - 70) * v / peak
-            out.append(f'<rect x="{x:.1f}" y="{y}" width="{max(bw - 2, 1):.1f}" height="{bar_h}" rx="2" '
-                       f'fill="{c}"><title>{E(r[label])} · {E(n)}: {v}</title></rect>')
-            x += bw
-        out.append(f'<text x="{x + 4:.1f}" y="{y + 12}" class="val">{sum(r[k] for k in keys)}{E(note(r))}</text>')
-    out.append("</svg>")
-    return "".join(out)
-
-
 def histogram(values_ns):
     """Log-binned compile-time histogram, quarter-decade bins."""
     if not values_ns:
@@ -561,26 +432,13 @@ table{border-collapse:collapse;width:100%;font-size:.88em}td,th{border-bottom:1p
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
 .tile{background:var(--card);border-radius:8px;padding:10px 12px}.tile b{font-size:1.4em;display:block}
 .tile span{color:var(--mut);font-size:.85em}.note{color:var(--mut);font-size:.85em}
-details summary{cursor:pointer}input,select{font:inherit;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
-.filters{display:flex;flex-wrap:wrap;gap:8px;margin:.5em 0}
-.st-both{color:var(--s3)}.st-classified{color:var(--mut)}.st-uncited,.st-positive-only,.st-rejection-only{color:var(--s8)}
+details summary{cursor:pointer}
 pre{white-space:pre-wrap;background:var(--card);padding:8px;border-radius:6px;font-size:.8em}
-"""
-
-JS = """
-const q=document.getElementById('q'),fs=document.getElementById('fstd'),ft=document.getElementById('fst'),cnt=document.getElementById('cnt');
-const rows=[...document.querySelectorAll('#rules tbody tr')];
-function apply(){const t=q.value.toLowerCase();let n=0;for(const r of rows){const ok=(!t||r.dataset.k.includes(t))&&(!fs.value||r.dataset.std==fs.value)&&(!ft.value||r.dataset.st==ft.value);r.hidden=!ok;n+=ok}cnt.textContent=n+' of '+rows.length+' clauses'}
-[q,fs,ft].forEach(e=>e.addEventListener('input',apply));apply();
 """
 
 
 def tile(big, small):
     return f'<div class="tile"><b>{E(big)}</b><span>{E(small)}</span></div>'
-
-
-def paths(items, fmt=lambda p: E(p)):
-    return "<br>".join(fmt(p) for p in items)
 
 
 def render(d):
@@ -594,38 +452,18 @@ def render(d):
              f"{E(meta['date'])} · Zig {E(meta['zig'])} · {E(meta['machine'])} · {E(meta['load'])}</p>")
     o.append("<p>Every number on this page was read from the logs of the commands below "
              "(<code>tools/report.py</code>; raw data in <a href=data.json>data.json</a>). "
-             "B and C are static citation inventories: a cite is not a passing test."
              "</p><details><summary>Commands</summary><pre>"
              + E("\n".join(meta["commands"])) + "</pre></details>")
 
-    o.append("<p><a href=#conf>Conformance</a> · <a href=#speed>Speed</a> · <a href=#gaps>Gaps</a> · "
-             "<a href=#rules-h>Rule map</a></p>")
+    o.append("<p><a href=#conf>Conformance</a> · <a href=#speed>Speed</a> · <a href=#gaps>Gaps</a></p>")
     # --- Conformance -------------------------------------------------------
     o.append("<h2 id=conf>Conformance</h2><div class=tiles>")
     o.append(tile(f"{a['pass']} / {a['total']}", f"A — fixtures behaving as stated · FAIL {a['fail']} · "
                   f"unasserted {a['unasserted']} · XFAIL {a['xfail']} · --strict exit {a['strict_rc']}"))
-    for key, name in (("B", "IEEE 1364-2005 clauses"),):
-        x = m[key]
-        o.append(tile(f"{x['both']} / {x['clauses']} both ways", f"{key} — {name} · classified {x['classified']} · "
-                      f"positive-only {x['pos']} · rejection-only {x['neg']} · uncited {x['unc']}"))
     o.append(tile("hand-entered", "D — ARCHITECTURE.md §6 phases; not measured by any command"))
     o.append(tile(m["devices"] or "(no summary line)", "zig build suite -- devices"))
     o.append(tile(m["vpi"] or "(no summary line)", "zig build suite -- vpi"))
     o.append("</div>")
-    keys = ["both", "classified", "one-way", "uncited"]
-    names = ["cited both ways", "classified (CLAUSES.tsv)", "one-way", "uncited"]
-    cols = SERIES[:4]
-    for std, title in (("ieee", "IEEE 1364-2005 clauses by chapter (measure B)"),):
-        chs = d["chapters"][std]
-        o.append(f"<h3>{title}</h3>" + legend(names, cols)
-                 + hstack(chs, "chapter", keys, names, cols, lambda r: f"  · {r['xfail']} xfail" if r["xfail"] else ""))
-        kinds = [k for k in KINDS if any(c["kinds"].get(k) for c in chs)]
-        flat = [dict(c, **{k: c["kinds"].get(k, 0) for k in kinds}) for c in chs if any(c["kinds"].get(k) for k in kinds)]
-        if flat:
-            o.append(f"<details><summary>Classified clauses by kind</summary>{legend(kinds, SERIES)}"
-                     f"{hstack(flat, 'chapter', kinds, kinds, SERIES)}</details>")
-    o.append("<p class=note>A clause with an XFAIL fixture is counted in its bucket and marked “xfail” at the bar end.</p>")
-
     # --- Speed -------------------------------------------------------------
     o.append("<h2 id=speed>Speed</h2>")
     o.append(f"<p class=note>Suite timing table: {E(s['header'])}. One accept/reject compilation per fixture, "
@@ -696,12 +534,6 @@ def render(d):
     # --- Gaps --------------------------------------------------------------
     g = d["gaps"]
     o.append("<h2 id=gaps>Gaps</h2>")
-    o.append(f"<h3>Normative clauses closed by classification ({len(g['classified_normative'])})</h3>"
-             "<p class=note>Classified under a kind other than non-normative: a reviewed claim that nothing "
-             "can be pinned both ways, not evidence. Each is a place a future fixture could replace the claim.</p>"
-             "<details><summary>list</summary><div class=wrap><table>"
-             + "".join(f"<tr><td class=mono>{'LRM' if c['std'] == 'ams' else '1364'} {E(c['id'])}</td><td>{E(c['title'])}</td>"
-                       f"<td>{E(c['kind'])}</td></tr>" for c in g["classified_normative"]) + "</table></div></details>")
     o.append(f"<h3>XFAIL fixtures ({len(g['xfail'])})</h3>"
              + ("<ul>" + "".join(f"<li class=mono>{E(x['path'])}: {E(x['reason'])}</li>" for x in g["xfail"]) + "</ul>"
                 if g["xfail"] else "<p>None: no fixture carries <code>//! xfail</code> and no running <code>.c</code> fixture a <code>//! xfail</code>.</p>"))
@@ -711,33 +543,7 @@ def render(d):
     o.append(f"<h3>docs/specification/Vague_Decisions.md: CHANGE NEEDED, not DONE ({len(g['vague'])})</h3><details><summary>list</summary><ul>"
              + "".join(f"<li><b>{E(v['id'])}</b> {E(v['title'])}: {E(v['change'])}</li>" for v in g["vague"]) + "</ul></details>")
 
-    # --- Rule map ----------------------------------------------------------
-    o.append("<h2 id=rules-h>Rule map</h2><p class=note>One row per clause. Positive (+) and rejection (−) "
-             "fixtures are the citing files; rejection fixtures show the diagnostic their <code>//! reject</code> "
-             "names.</p><div class=filters><input id=q placeholder='filter: clause, title, fixture, E-code' size=30>"
-             "<select id=fstd><option value=''>both standards</option><option value=ams>LRM</option>"
-             "<option value=ieee>IEEE 1364</option></select><select id=fst><option value=''>any status</option>"
-             + "".join(f"<option>{x}</option>" for x in ("both", "classified", "positive-only", "rejection-only", "uncited"))
-             + "</select><span id=cnt class=note></span></div><div class=wrap><table id=rules><thead><tr>"
-             "<th>Clause</th><th>Title</th><th>Status</th><th>Fixtures</th></tr></thead><tbody>")
-    for r in d["clauses"]:
-        std = "LRM" if r["std"] == "ams" else "1364"
-        neg = [f"{n['path']} [{', '.join(n['reject'])}]" for n in r["rejection"]]
-        key = " ".join([r["id"], r["title"], r["status"], r["kind"] or "", *r["positive"], *neg]).lower()
-        status = r["status"] + (f" · {r['kind']}" if r["kind"] else "") + (" · xfail" if r["xfail"] else "")
-        detail = ""
-        if r["reason"]:
-            detail += f"<div class=note>{E(r['reason'][:600])}</div>"
-        if r["positive"] or neg or r["xfail"]:
-            detail += (f"<details><summary>+{len(r['positive'])} −{len(neg)}"
-                       f"{' xfail ' + str(len(r['xfail'])) if r['xfail'] else ''}</summary><div class=mono>"
-                       + paths(["+ " + p for p in r["positive"]] + ["− " + p for p in neg]
-                               + [f"xfail {x['path']}: {x['reason']}" for x in r["xfail"]]) + "</div></details>")
-        o.append(f"<tr data-std={r['std']} data-st={r['status']} data-k=\"{E(key)}\"><td class=mono>{std} {E(r['id'])}</td>"
-                 f"<td>{E(r['title'])}</td><td class=st-{r['status']}>{E(status)}</td><td>{detail}</td></tr>")
-    o.append("</tbody></table></div>")
-
-    o.append(f"<script>{JS}</script></body></html>")
+    o.append("</body></html>")
     return "\n".join(o)
 
 
@@ -793,11 +599,6 @@ def load():
 
 def selftest():
     """The parsers against the frozen report shapes they read."""
-    cov = ("STATIC CITATION INVENTORY\n\n§3.1\n  + verilog/03/a.v\n\n"
-           "UNCITED — no fixture names these at all:\n§2.1 Lexical  (x/CLAUSES.tsv)  ~ compile-only .c cite\n\n"
-           "CLASSIFIED — CLAUSES.tsv: ...\n§3 Data types  [no_prohibition]  (x/CLAUSES.tsv)\n")
-    assert buckets(cov) == {"2.1": ("uncited", "Lexical"), "3": ("classified", "Data types")}
-    assert buckets("POSITIVE CITATIONS ONLY — x:\n§17.1 Display tasks\n") == {"17.1": ("positive-only", "Display tasks")}
     assert tsv("a\tb\n1\t2\n3\t4\n\nx", "a\tb") == [{"a": "1", "b": "2"}, {"a": "3", "b": "4"}]
     assert quantile([1, 2, 3, 4], 50) == 3
     assert isinstance(open_defects(), list) and isinstance(vpi_xfails(), list)
@@ -893,20 +694,8 @@ def export_svgs(d, out):
     sub = f"VerA {meta['sha'][:8]} · {meta['date'][:10]} · measured by tools/report.py"
     rows = [("A · fixtures", [("pass", int(a["pass"]), VAR[0]), ("known gap (XFAIL)", int(a["xfail"]), VAR[1]),
                               ("FAIL", int(a["fail"]) + int(a["unasserted"]), VAR[3])])]
-    for key, name in (("B", "B · IEEE 1364 clauses"),):
-        x = m[key]
-        rows.append((name, [("tested both ways", int(x["both"]), VAR[0]),
-                            ("one-way or uncited", int(x["pos"]) + int(x["neg"]) + int(x["unc"]), VAR[1]),
-                            ("classified", int(x["classified"]), VAR[2])]))
-    files = {"conformance.svg": standalone(pct_rows(rows), "Conformance: measures A and B", sub,
-                                           [("pass / tested both ways", VAR[0]), ("known gap", VAR[1]),
-                                            ("classified (CLAUSES.tsv)", VAR[2])])}
-    keys = ["both", "classified", "one-way", "uncited"]
-    names = ["tested both ways", "classified", "one-way", "uncited"]
-    for std, fname, title in (("ieee", "ieee-chapters.svg", "IEEE 1364-2005 clauses by chapter (B)"),):
-        chs = d["chapters"][std]
-        cols = [VAR[0], VAR[2], VAR[1], VAR[3]]  # the same roles as conformance.svg
-        files[fname] = standalone(hstack(chs, "chapter", keys, names, cols), title, sub, list(zip(names, cols)))
+    files = {"conformance.svg": standalone(pct_rows(rows), "Conformance: measure A", sub,
+                                           [("pass", VAR[0]), ("known gap", VAR[1])])}
     r = s["summary"][0] if s["summary"] else None
     hsub = sub + (f" · median {fmt_ns(int(r['p50_ns']))}, p99 {fmt_ns(int(r['p99_ns']))}, n={r['n']}" if r else "")
     files["compile-time.svg"] = standalone(histogram([f["ns"] for f in s["fixtures"]]),
@@ -949,27 +738,17 @@ def main(argv):
 
     if subprocess.run(["zig", "build", OPT, "install"], cwd=ROOT, stdout=sys.stderr).returncode:
         return 2
-    strict, cov1364 = log(args.logs, "strict"), log(args.logs, "coverage1364")
+    strict = log(args.logs, "strict")
     devices, vpi, sweep = log(args.logs, "devices"), log(args.logs, "vpi"), log(args.logs, "sweep")
 
-    # Measures A and B, parsed the way conformance.py parses them.
+    # Measure A: the `pass fail unasserted xfail` row tests/suite.zig prints.
     head = [i for i, l in enumerate(strict.split("\n")) if l == "pass\tfail\tunasserted\txfail"]
     row = strict.split("\n")[head[-1] + 1].split("\t") if head else ["?"] * 4
     rcs = re.findall(r"^(?:strict exit: |exit=)(\d+)", strict, re.M)
     measures = {"A": dict(zip(("pass", "fail", "unasserted", "xfail"), row), strict_rc=rcs[-1] if rcs else "?")}
-    measures["A"]["total"] = sum(int(v) for v in row if C.is_num(v))
-    for key, text, pat in (("B", cov1364, r"^\d+ of (\d+)(?= IEEE 1364-2005 clauses cited)"),):
-        both, pos, neg, unc = C.polarity(text)
-        measures[key] = {"both": both, "pos": pos, "neg": neg, "unc": unc, "clauses": C.first(pat, text),
-                         "classified": C.first(r"(\d+)(?= classified$)", text)}
-    measures["devices"] = C.first(r"^devices: (.*)$", devices)
-    measures["vpi"] = C.first(r"^vpi: (.*)$", vpi)
-
-    clauses = clause_rows(cov1364)
-    for key, std in (("B", "ieee"),):
-        n = sum(r["std"] == std for r in clauses)
-        if str(n) != measures[key]["clauses"]:
-            print(f"report.py: {std} rule map has {n} rows, the tally says {measures[key]['clauses']}", file=sys.stderr)
+    measures["A"]["total"] = sum(int(v) for v in row if v.isdigit())
+    measures["devices"] = first(r"^devices: (.*)$", devices)
+    measures["vpi"] = first(r"^vpi: (.*)$", vpi)
 
     xfail = []
     for p in C.fixture_files("*.va", "*.v"):
@@ -997,11 +776,7 @@ def main(argv):
                  + ([f"vera --emit-so --contract lib/contract.zig --dyn dyn.zig (report.py's DYN) -I {args.models} --work-dir out <model>.va"
                      f"  (x{args.reps}, median; and vera --emit-zig)"] if args.models else [])},
         "measures": measures,
-        "chapters": {"ieee": chapter_table(clauses, "ieee")},
-        "clauses": clauses,
-        "gaps": {"classified_normative": [{k: r[k] for k in ("std", "id", "title", "kind")} for r in clauses
-                                          if r["kind"] and r["kind"] != "non-normative"],
-                 "xfail": xfail + vpi_xfails(), "defects": open_defects(), "vague": vague_open()},
+        "gaps": {"xfail": xfail + vpi_xfails(), "defects": open_defects(), "vague": vague_open()},
         "speed": speed(strict, sweep),
         "models": models,
     }

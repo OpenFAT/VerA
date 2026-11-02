@@ -6,8 +6,14 @@
 //!
 //! LRM clauses cited: §3.6.1, §3.6.1.2, §3.6.1.3, §3.6.2, §3.6.2.1 to
 //! §3.6.2.3, §3.6.2.7.
+//!
+//! Contents:
+//! - `pub fn parseNature(self: *Parser) Error!Ast.NatureDecl`
+//! - `pub fn parseNatureAttr(self: *Parser) Error!Ast.NatureAttr`
+//! - `pub fn parseDiscipline(self: *Parser) Error!Ast.DisciplineDecl`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("../parser.zig");
 const Parser = parser.Parser;
 const parse_expr = @import("expr.zig");
@@ -19,6 +25,9 @@ const Error = parser.Error;
 /// as branch probes. Whether a base nature declares `abstol` and `access` is
 /// lowering's check.
 pub fn parseNature(self: *Parser) Error!Ast.NatureDecl {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     self.pos += 1; // 'nature'
     const name = try self.expectIdent();
@@ -64,6 +73,9 @@ pub fn parseNature(self: *Parser) Error!Ast.NatureDecl {
 /// The five LRM-defined attribute names (§3.6.1.2: abstol, access,
 /// idt_nature, ddt_nature, units) are keywords.
 pub fn parseNatureAttr(self: *Parser) Error!Ast.NatureAttr {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const tok = self.pos;
     const name: Ast.StrId = switch (self.peek()) {
         .identifier, .escaped_identifier => try self.expectIdent(),
@@ -82,6 +94,9 @@ pub fn parseNatureAttr(self: *Parser) Error!Ast.NatureAttr {
 
 /// Parses a §3.6.2 discipline declaration (A.1.7), cursor on `discipline`.
 pub fn parseDiscipline(self: *Parser) Error!Ast.DisciplineDecl {
+    assert(self.pos < self.tags.len);
+    const pos_in = self.pos;
+    defer assert(self.pos >= pos_in);
     const main_tok = self.pos;
     self.pos += 1; // 'discipline'
     const name = try self.expectIdent();

@@ -1,7 +1,3 @@
 $ vera --run selfcheck.va
-=== selfcheck ===
---- point 0 ---
-  x[p] = 7.500000e-1
-  x[n] = 2.500000e-1
 V(p,n) got=0.5 want=0.5 ok=1
 I(p,n) = V/r got=0.00025 want=0.00025 ok=1

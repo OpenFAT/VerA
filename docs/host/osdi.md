@@ -17,8 +17,8 @@ vera --emit-osdi design.v              # a Verilog module's contract device, the
 ```
 
 It is `--emit-so` under a `dyn` module VerA ships, `lib/osdi_dyn.zig`,
-which `vera` carries inside it and writes beside its own copy of
-`contract.zig` in the work directory (`.zig-cache/vera-tb` unless
+which `vera` carries inside it and writes beside its own copy of the
+contract (`contract.zig` and `contract/`) in the work directory (`.zig-cache/vera-tb` unless
 `--work-dir` says otherwise). So it takes neither `--dyn` nor `--emit-zig`,
 `--emit-exe` or `--run`; each of those is refused with exit status 2. The
 library holds one OSDI 0.4 descriptor, named after the module, which is the
@@ -81,16 +81,12 @@ in a static solve that is any iterate whose events print, and each time
 ngspice sets an instance up again (a new analysis) the design restarts from
 time 0, so an `initial` block prints again.
 
-## Comparing against OpenVAF
+## Checking against ngspice
 
-The repository's `nix develop .#benchmarking` shell carries ngspice (an OSDI
-host) and OpenVAF-Reloaded (`openvaf-r`, x86_64-linux only), so a VerA
-`.osdi` and an OpenVAF `.osdi` of the same model can run in the same deck.
-`tools/external_analog.py` does exactly that, among other suites:
-hand-derived ngspice decks over `--emit-osdi` libraries (`mixed.sp` wires a
-`.v` design's library to a `.va` model's), and the
-VA-Models compact models compiled by both and run through the same QA tests
+`tools/external_analog.py` runs hand-derived ngspice decks over
+`--emit-osdi` libraries (`tests/osdi/`; `mixed.sp` wires a `.v` design's
+library to a `.va` model's), in `nix develop .#external`
 ([External accuracy suites](../using/external-suites.md)). The CI job
-`external-analog` runs them on every push to `main` and every pull request,
-and gates their FAIL names against each suite's `TRIAGE.md`. This book quotes no numbers from them; the job summary and
-its artifact are the record.
+`external-analog` runs them on every push to `main` and every pull request.
+This book quotes no numbers from them; the job summary and its artifact are
+the record.

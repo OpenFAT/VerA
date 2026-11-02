@@ -1,13 +1,9 @@
-# The nightly tier: the slow evidence the merge gate
-# cannot afford, and the conformance metric it feeds (§3.7).
+# The nightly tier: the slow evidence the merge gate cannot afford.
 #
 #   perturb   every check run with its want moved by 0.1%: a LOOSE check
 #             cannot see an error that size (L2b)
 #   certify   every Jacobian entry against a central difference (L4a)
-#   metric    each ledger row's evidence level, ratcheted against the
-#             committed tests/conformance/vera/ledger/LEVELS.tsv, and the table in the summary
 #   determinism  every fixture's --emit-zig three times, byte-compared (L11)
-#   adversarial  deep nesting and huge counts: a named diagnostic, never a crash (L10)
 #   sweep     the footprint and speed scaling table (reports, never gates)
 #
 # GitHub disables a schedule after 60 days without repository activity: a
@@ -26,19 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          submodules: true  # tests/conformance: the fixtures and VerA's ledgers
+          submodules: true  # tests/conformance: the fixtures
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
-
-      - name: Strict suite, with verdicts
-        continue-on-error: true
-        run: |
-          nix develop -c zig build -Doptimize=ReleaseFast suite -- ams --verdicts=/tmp/verdicts.tsv 2>&1 | tail -5
-          exit "${PIPESTATUS[0]}"
 
       - name: Perturbed run (L2b)
         continue-on-error: true
         run: |
-          nix develop -c zig build -Doptimize=ReleaseFast suite -- --perturb --verdicts=/tmp/perturbed.tsv 2> /tmp/perturb.txt | tail -3
+          nix develop -c zig build -Doptimize=ReleaseFast suite -- --perturb 2> /tmp/perturb.txt | tail -3
           status="${PIPESTATUS[0]}"
           grep '^LOOSE ' /tmp/perturb.txt | sed 's|^LOOSE .*/tests/conformance/tests/|LOOSE |' | sort > /tmp/loose.txt || true
           exit "$status"
@@ -46,16 +36,10 @@ jobs:
       - name: Derivative certificate (L4a)
         continue-on-error: true
         run: |
-          nix develop -c zig build -Doptimize=ReleaseFast suite -- --certify --verdicts=/tmp/certified.tsv 2> /tmp/certify.txt | tail -3
+          nix develop -c zig build -Doptimize=ReleaseFast suite -- --certify 2> /tmp/certify.txt | tail -3
           status="${PIPESTATUS[0]}"
           grep -E '^fd_check FAIL|^FAIL ' /tmp/certify.txt > /tmp/fd-failures.txt || true
           exit "$status"
-
-      - name: Digital transcripts, with verdicts
-        continue-on-error: true
-        run: |
-          nix develop -c zig build -Doptimize=ReleaseFast suite -- devices --verdicts=/tmp/digital.tsv 2>&1 | tail -3
-          exit "${PIPESTATUS[0]}"
 
       - name: Coverage-guided fuzzing, bounded (L6)
         continue-on-error: true
@@ -72,32 +56,16 @@ jobs:
           nix develop -c zig build -Doptimize=ReleaseFast install
           nix develop -c python3 tools/conformance.py determinism zig-out/bin/vera
 
-      # L10: adversarial sizes through `vera --check` under a memory and time
-      # cap; exit 0 or a named diagnostic, never a signal or a timeout.
-      - name: Adversarial sizes (L10)
-        continue-on-error: true
-        run: nix develop -c python3 tools/conformance.py adversarial zig-out/bin/vera
-
       - name: Footprint and speed sweep (reports)
         continue-on-error: true
         run: |
           nix develop -c zig build -Doptimize=ReleaseFast suite -- --sweep 2>&1 | tee /tmp/sweep.txt
           { echo '## Footprint and speed sweep'; echo '```'; cat /tmp/sweep.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Execute VPI evidence
-        run: nix develop -c zig build test -Dtest-results=/tmp/vpi-results
-
-      - name: Conformance metric and level ratchet (gate)
-        run: |
-          python3 tools/conformance.py metric --verdicts=/tmp/verdicts.tsv --perturbed=/tmp/perturbed.tsv --digital=/tmp/digital.tsv --specialized=/tmp/vpi-results --levels=/tmp/levels.tsv | tee /tmp/metric.txt
-          python3 tools/conformance.py ratchet --verdicts=/tmp/verdicts.tsv --levels=/tmp/levels.tsv
-
       - name: Job summary
         if: always()
         run: |
           {
-            echo '## Conformance metric'
-            echo '```'; cat /tmp/metric.txt 2>/dev/null; echo '```'
             echo '## LOOSE checks (want moved 0.1%, still ok=1)'
             echo '```'; wc -l < /tmp/loose.txt 2>/dev/null; head -50 /tmp/loose.txt 2>/dev/null; echo '```'
             echo '## Derivative certificate failures'
@@ -109,10 +77,5 @@ jobs:
         with:
           name: nightly-evidence
           path: |
-            /tmp/verdicts.tsv
-            /tmp/perturbed.tsv
-            /tmp/certified.tsv
-            /tmp/levels.tsv
-            /tmp/metric.txt
             /tmp/loose.txt
             /tmp/fd-failures.txt

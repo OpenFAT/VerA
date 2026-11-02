@@ -1,0 +1,22 @@
+// §3.2.2 a memory-backed array in a device the VPI analog library builds.
+// The library's runner head declares `mem_bytes`, `bigStack`'s share for
+// the arrays, as `vera --emit-exe`'s runner does: 8 bytes per element of
+// `tbl`'s 4096 reals is 32768 (exe.facts.memBytes). The VPI host rendered
+// it 0 before pass 3 (it passed `Facts{ .validate_contract = true }`).
+//
+// Hand oracle for the run: tbl[k] = k after initial_step, so the branch
+// conducts V(p, n) * tbl[7] * 1e-3 = 1 V * 7 * 1e-3 = 7 mA.
+//
+//! lrm 3.2.2
+//! bias V(p) = 1.0, V(n) = 0.0
+`include "disciplines.vams"
+module memory_array_library(p, n);
+  inout p, n;
+  electrical p, n;
+  real tbl[0:4095];
+  integer i;
+  analog begin
+    @(initial_step) for (i = 0; i < 4096; i = i + 1) tbl[i] = i;
+    I(p, n) <+ V(p, n) * tbl[7] * 1e-3;
+  end
+endmodule

@@ -1,9 +1,4 @@
 $ vera --run pnjlim.va
-=== pnjlim ===
---- point 0 ---
-  x[a] = 9.000000e-1
-  x[k] = 0.000000e0
-  x[ai] = 9.000000e-1
 limit[0].ai got=0.7947939867307013 want=0.7947939867307013 ok=1
 limit[0].converged got=0 want=0 ok=1
 limit[1].ai got=0.9 want=0.9 ok=1

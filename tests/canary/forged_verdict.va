@@ -1,0 +1,13 @@
+// CANARY: a hand-written `ok=10` beside a correct check. A verdict is the
+// whole token `ok=1`, so the harness must count `ok=10` as a failure.
+//! lrm 5.6.3
+//! bias V(p) = 1.5, V(n) = 0.25
+`include "check.vh"
+module canary_forged_verdict(p, n);
+  inout p, n; electrical p, n;
+  analog begin
+    `CHECKX("branch potential", V(p, n), 1.25);
+    $strobe("forged verdict ok=10");
+    I(p, n) <+ V(p, n) / 1k;
+  end
+endmodule

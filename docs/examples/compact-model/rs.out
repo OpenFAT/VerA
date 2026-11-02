@@ -1,58 +1,9 @@
 $ vera --run --param rs=100 nmos1.va
-=== nmos1 ===
---- point 0 ---
-  x[d] = 5.000000e-1
-  x[g] = 4.000000e-1
-  x[s] = 0.000000e0
-  x[di] = 5.000000e-1
-  x[si] = 0.000000e0
-  x[flowZ28dZ2cdiZ29] = 0.000000e0
-  x[flowZ28sZ2csiZ29] = 0.000000e0
 vgs = 0.4 V  vds = 0.5 V  ids = 0.00000e+00 A
---- point 1 ---
-  x[d] = 1.000000e0
-  x[g] = 4.000000e-1
-  x[s] = 0.000000e0
-  x[di] = 1.000000e0
-  x[si] = 0.000000e0
-  x[flowZ28dZ2cdiZ29] = 0.000000e0
-  x[flowZ28sZ2csiZ29] = 0.000000e0
 vgs = 0.4 V  vds = 1.0 V  ids = 0.00000e+00 A
---- point 2 ---
-  x[d] = 2.000000e0
-  x[g] = 4.000000e-1
-  x[s] = 0.000000e0
-  x[di] = 2.000000e0
-  x[si] = 0.000000e0
-  x[flowZ28dZ2cdiZ29] = 0.000000e0
-  x[flowZ28sZ2csiZ29] = 0.000000e0
 vgs = 0.4 V  vds = 2.0 V  ids = 0.00000e+00 A
---- point 3 ---
-  x[d] = 5.000000e-1
-  x[g] = 1.500000e0
-  x[s] = 0.000000e0
-  x[di] = 5.000000e-1
-  x[si] = 3.443359e-2
-  x[flowZ28dZ2cdiZ29] = 3.443359e-4
-  x[flowZ28sZ2csiZ29] = 0.000000e0
 vgs = 1.5 V  vds = 0.5 V  ids = 3.44336e-04 A
---- point 4 ---
-  x[d] = 1.000000e0
-  x[g] = 1.500000e0
-  x[s] = 0.000000e0
-  x[di] = 1.000000e0
-  x[si] = 4.634063e-2
-  x[flowZ28dZ2cdiZ29] = 4.634063e-4
-  x[flowZ28sZ2csiZ29] = 0.000000e0
 vgs = 1.5 V  vds = 1.0 V  ids = 4.63406e-04 A
---- point 5 ---
-  x[d] = 2.000000e0
-  x[g] = 1.500000e0
-  x[s] = 0.000000e0
-  x[di] = 2.000000e0
-  x[si] = 4.716745e-2
-  x[flowZ28dZ2cdiZ29] = 4.716745e-4
-  x[flowZ28sZ2csiZ29] = 0.000000e0
 vgs = 1.5 V  vds = 2.0 V  ids = 4.71675e-04 A
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(di,si) — compiles with @setFloatMode(.strict)
   --> nmos1.va:57:5

@@ -3,13 +3,23 @@
 //! emitted from, with §4.6.4.3/.4 tables folded and sorted. Refusals
 //! (E0519/E0520) are recorded for `Gen.prepare` to report. Clauses:
 //! §1.3.1.1, §4.6.3, §4.6.4, §4.6.4.1, §4.6.4.3, §4.6.4.4, §4.6.4.6.
+//!
+//! Contents:
+//! - `pub const Error = std.mem.Allocator.Error`
+//! - `pub const Noise = struct`
+//! - `pub const NoiseRow = struct`
+//! - `pub fn plan(self: Input, branch_u: []const u32) Error!Noise`
+//! - `pub fn psdConst(mir: *const Mir, v: Mir.Value) ?f64`
+//! - members: `Noise.Refusal`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Mir = @import("ir").Mir;
 const Lower = @import("ir").Lowered;
 const diag = @import("diag");
 const Input = @import("prove").Input;
 const plan_topo = @import("topology.zig");
+const Fixture = @import("prove").Fixture;
 
 /// Every fallible call here fails only on allocation.
 pub const Error = std.mem.Allocator.Error;
@@ -78,6 +88,9 @@ pub const NoiseRow = struct {
     coeff: Mir.Value,
 };
 
+/// `plan/names.zig`'s "no branch current" marker, for the tests' `branch_u`.
+const names_none = std.math.maxInt(u32);
+
 /// Flattens every contribution's generator set into `Noise.rows`, in the
 /// order `noise_gens` declares them; slices are owned by `self.arena`.
 /// §4.6.4.6's shared-generator identity (`NoiseSrc.id`) is renamed densely in
@@ -85,6 +98,7 @@ pub const NoiseRow = struct {
 /// `ac_rows`: it is a stimulus, not a generator. Refusals are recorded, not
 /// reported.
 pub fn plan(self: Input, branch_u: []const u32) Error!Noise {
+    assert(branch_u.len <= self.lowered.contributions.items.len);
     var out: Noise = .{};
     var rows: std.ArrayList(NoiseRow) = .empty;
     var ac: std.ArrayList(NoiseRow) = .empty;
@@ -114,8 +128,13 @@ pub fn plan(self: Input, branch_u: []const u32) Error!Noise {
         // is decided per instance at run time, so the generator stays on
         // the nodes, where a host folds it into KCL either way.
         const series = c.kind == .direct and c.access == .potential and plan_topo.switchFlowOf(self, ci) == null;
+        if (series) assert(ci < branch_u.len);
         const row = if (series) branch_u[ci] else if (c.hi != Lower.ground) c.hi else c.lo;
         const col = if (series) row else if (c.lo != Lower.ground) c.lo else row;
+        // Off the series case the ground-ground branch was refused above, so
+        // at least one end is a node and both indices name it or the other.
+        if (!series) assert(row != Lower.ground);
+        if (!series) assert(col != Lower.ground);
         for (c.noise_srcs) |s| {
             // §4.6.3 a stimulus has no PSD, no table and no §4.6.4.6
             // identity: one call is one source, and `addNoiseSrc` already
@@ -180,8 +199,26 @@ pub fn plan(self: Input, branch_u: []const u32) Error!Noise {
     out.tabs = tabs.items;
     out.tab_vals = tab_vals.items;
     out.ac_rows = ac.items;
+    // Every id renamed densely came with the row that first used it.
+    assert(ids.items.len <= out.rows.len);
+    // `tab_vals` is positional against `tabs` and stops at the last
+    // parametric table.
+    assert(out.tab_vals.len <= out.tabs.len);
+    for (out.rows) |r| if (r.table) |t| assert(t < out.tabs.len);
     return out;
 }
+
+/// Returns `v` as a compile-time f64, or null when only the core can answer.
+pub fn psdConst(mir: *const Mir, v: Mir.Value) ?f64 {
+    assert(@backingInt(v) < mir.valueCount());
+    return switch (mir.valueDef(v)) {
+        .float_const => |x| x,
+        .int_const => |x| @floatFromInt(x),
+        .undef, .str_const, .param_ref, .block_param, .inst_result => null,
+    };
+}
+
+// ---- private ----
 
 /// §4.6.4.3/.4 folds one `noise_table`/`noise_table_log` argument into a
 /// sorted `(frequency, power)` table appended to `tabs`, and returns its
@@ -210,6 +247,8 @@ fn planNoiseTable(
     tab_vals: *std.ArrayList([]const [2]Mir.Value),
     s: Lower.NoiseSrc,
 ) Error!?u16 {
+    assert(s.kind == .table or s.kind == .table_log);
+    assert(tab_vals.items.len <= tabs.items.len);
     const vals = s.table;
     if (vals.len == 0) {
         try refuseNoise(self, out, .E0519, s.tok, "the argument is not a vector of " ++
@@ -226,6 +265,7 @@ fn planNoiseTable(
     // must be the same knot.
     const Knot = struct { f: f64, p: f64, fv: Mir.Value, pv: Mir.Value };
     const knots = try self.arena.alloc(Knot, vals.len / 2);
+    assert(knots.len != 0); // a nonempty, even count
     var parametric = false;
     for (knots, 0..) |*k, i| {
         const fv = vals[2 * i];
@@ -278,6 +318,9 @@ fn planNoiseTable(
             return null;
         }
     }
+    // Every frequency passed as finite and unique, so the sort ordered them
+    // strictly (a NaN could have broken the order, but it was refused above).
+    for (pts[1..], pts[0 .. pts.len - 1]) |p, q| assert(q[0] < p[0]);
     try tabs.append(self.arena, pts);
     if (parametric) {
         const mvs = try self.arena.alloc([2]Mir.Value, knots.len);
@@ -287,6 +330,7 @@ fn planNoiseTable(
         while (tab_vals.items.len + 1 < tabs.items.len) try tab_vals.append(self.arena, &.{});
         try tab_vals.append(self.arena, mvs);
     }
+    assert(tab_vals.items.len <= tabs.items.len);
     return @intCast(tabs.items.len - 1);
 }
 
@@ -307,18 +351,9 @@ fn refuseNoise(
     try out.refusals.append(self.arena, .{ .code = code, .tok = tok, .msg = msg });
     if (out.fatal == null)
         out.fatal = try self.arena.print("LRM 4.6.4: {s}", .{msg});
+    assert(out.fatal != null);
+    assert(out.refusals.items.len != 0);
 }
-
-/// Returns `v` as a compile-time f64, or null when only the core can answer.
-pub fn psdConst(mir: *const Mir, v: Mir.Value) ?f64 {
-    return switch (mir.valueDef(v)) {
-        .float_const => |x| x,
-        .int_const => |x| @floatFromInt(x),
-        .undef, .str_const, .param_ref, .block_param, .inst_result => null,
-    };
-}
-
-const Fixture = @import("prove").Fixture;
 
 test "a noise table is sorted, and a repeated frequency is refused" {
     var f: Fixture = .{ .arena = .init(std.testing.allocator) };
@@ -488,9 +523,6 @@ test "§4.6.4.1 a generator in a potential contribution is row == col on the bra
     try std.testing.expectEqual(@as(u32, 0), n.rows[2].col);
     try std.testing.expect(!n.rows[2].neg);
 }
-
-/// `plan/names.zig`'s "no branch current" marker, for the tests' `branch_u`.
-const names_none = std.math.maxInt(u32);
 
 test "§4.6.4.6 one table call shared by two branches is one generator: one table, or one refusal" {
     for ([_]bool{ true, false }) |valid| {

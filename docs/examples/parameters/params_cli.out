@@ -1,8 +1,4 @@
 $ vera --run --param stages=4 params.va
-=== params ===
---- point 0 ---
-  x[p] = 1.000000e0
-  x[n] = 0.000000e0
 r = 2000 (given: 1), stages = 4, g = 0.0005 S, topology = series
 I(p,n) = 0.000125 A
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(p,n) — compiles with @setFloatMode(.strict)
@@ -20,10 +16,6 @@ warning[W0650]: unit is not provably finite, so it compiles in strict float mode
 
 warning: 1 warning(s) emitted
 $ vera --run --param topology=parallel params.va
-=== params ===
---- point 0 ---
-  x[p] = 1.000000e0
-  x[n] = 0.000000e0
 r = 2000 (given: 1), stages = 2, g = 0.0005 S, topology = parallel
 I(p,n) = 0.001 A
 warning[W0650]: unit is not provably finite, so it compiles in strict float mode: unit 0 — I(p,n) — compiles with @setFloatMode(.strict)

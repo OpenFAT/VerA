@@ -2,10 +2,18 @@
 //! real-value nets): parsed source file in, E0918 (a wreal net with a second
 //! driver in its module) and E0919 (a port joining a wreal to a net type other
 //! than wire/tri/wreal) out. Shared by the compiler and the digital runner.
+//!
+//! Contents:
+//! - `pub fn check(file: *const Ast.SourceFile, starts: []const u32, bag: *diag.Bag) std.mem.Allocator.Error!void`
 
 const std = @import("std");
+const assert = std.debug.assert;
 const diag = @import("diag");
 const Ast = @import("ast.zig");
+const testing = std.testing;
+
+/// Token index k starts at byte 10·k, so a diagnostic's span names its token.
+const test_starts = [_]u32{ 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 };
 
 // ponytail: drivers are counted per module (assigns and the declaration's
 // own `=`); a driver arriving through a port is not. Counting those needs the
@@ -51,9 +59,9 @@ pub fn check(file: *const Ast.SourceFile, starts: []const u32, bag: *diag.Bag) s
                 const outer = netKind(m, ex.strOf(conn.expr)) orelse continue;
                 if ((outer == .wreal) == (port.kind == .wreal)) continue;
                 const other = if (outer == .wreal) port.kind else outer;
-                std.debug.assert(other != .wreal); // exactly one side is a wreal
+                assert(other != .wreal); // exactly one side is a wreal
                 if (other == .wire or other == .tri) continue;
-                std.debug.assert(starts.len != 0);
+                assert(starts.len != 0);
                 const start = starts[@min(conn.main_tok, starts.len - 1)];
                 try bag.add(.lower, .E0919, .{ .start = start, .end = start }, "`{s}` is a {s} and port `{s}` is a {s}", .{
                     file.str(ex.strOf(conn.expr)), @tagName(outer), file.str(port.name), @tagName(port.kind),
@@ -63,13 +71,15 @@ pub fn check(file: *const Ast.SourceFile, starts: []const u32, bag: *diag.Bag) s
     }
 }
 
+// ---- private ----
+
 fn wrealDrivers(file: *const Ast.SourceFile, starts: []const u32, bag: *diag.Bag, m: *const Ast.ModuleDecl, name: Ast.StrId, declared: bool) std.mem.Allocator.Error!void {
     var count: u32 = @intFromBool(declared);
     for (m.assigns) |a| {
         if (a.target == .none or file.exprs.tag(a.target) != .ident or file.exprs.strOf(a.target) != name) continue;
         count += 1;
         if (count != 2) continue;
-        std.debug.assert(starts.len != 0);
+        assert(starts.len != 0);
         const start = starts[@min(a.main_tok, starts.len - 1)];
         try bag.add(.lower, .E0918, .{ .start = start, .end = start }, "`{s}` is already driven", .{file.str(name)});
     }
@@ -78,17 +88,20 @@ fn wrealDrivers(file: *const Ast.SourceFile, starts: []const u32, bag: *diag.Bag
 // The `n`-th A.1.3 port of `ports`, or null past the last. The parts of a
 // concatenated port after its first (`concat_rest`) are the same port.
 fn nthPort(ports: []const Ast.Port, n: usize) ?Ast.Port {
+    if (n >= ports.len) return null;
     var k: usize = 0;
     for (ports) |p| {
         if (p.concat_rest) continue;
         if (k == n) return p;
         k += 1;
     }
+    assert(k <= n);
     return null;
 }
 
 /// Whether `m` declares a wreal net or port.
 fn hasWreal(m: *const Ast.ModuleDecl) bool {
+    assert(m.name != .none);
     for (m.ports) |p| if (p.kind == .wreal) return true;
     for (m.nets) |n| if (n.kind == .wreal) return true;
     return false;
@@ -99,15 +112,11 @@ fn hasWreal(m: *const Ast.ModuleDecl) bool {
 
 /// The declared net type of `name` in `m`, or null if `m` declares no such net.
 fn netKind(m: *const Ast.ModuleDecl, name: Ast.StrId) ?Ast.NetKind {
+    assert(name != .none);
     for (m.ports) |p| if (p.name == name) return p.kind;
     for (m.nets) |n| if (n.name == name) return n.kind;
     return null;
 }
-
-const testing = std.testing;
-
-/// Token index k starts at byte 10·k, so a diagnostic's span names its token.
-const test_starts = [_]u32{ 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 };
 
 fn ident(f: *Ast.SourceFile, a: std.mem.Allocator, name: []const u8) !Ast.ExprId {
     return f.exprs.add(a, .{ .tag = .ident, .str = try f.intern(a, name) });
@@ -115,8 +124,9 @@ fn ident(f: *Ast.SourceFile, a: std.mem.Allocator, name: []const u8) !Ast.ExprId
 
 /// Expects exactly `want` diagnostics, as (code, span start) pairs in order.
 fn expectReports(bag: *const diag.Bag, want: []const struct { diag.Code, u32 }) !void {
-    try testing.expectEqual(want.len, bag.records.items.len);
-    for (want, bag.records.items) |w, r| {
+    try testing.expectEqual(want.len, bag.count());
+    for (want, 0..) |w, i| {
+        const r = bag.at(i);
         try testing.expectEqual(w[0], r.code);
         try testing.expectEqual(w[1], r.span.start);
     }

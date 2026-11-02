@@ -1,0 +1,16 @@
+// CANARY: a run-time refusal whose run is not refused. The divisor is never
+// zero, so the testbench ends with status 0 and prints no `error[` line;
+// `//! reject-run E0601` must FAIL it rather than count the passing check.
+//! reject-run E0601
+//! sweep V(p) = 3, -3
+//! print none
+`include "check.vh"
+module reject_run_clean_exit(p, n);
+  inout p, n; electrical p, n;
+  integer d;
+  analog begin
+    d = V(p,n);
+    `CHECKI("11 % d is 2 at both points", 11 % d, 2);
+    I(p,n) <+ d;
+  end
+endmodule

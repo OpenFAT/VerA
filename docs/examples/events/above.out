@@ -1,16 +1,7 @@
 $ vera --run above.va
-=== above ===
---- point 0 ---
-  x[p] = 0.000000e0
 V(p) = 0  above events = 0  cross events = 0
---- point 1 ---
-  x[p] = 4.000000e-1
 V(p) = 0.4  above events = 0  cross events = 0
---- point 2 ---
-  x[p] = 6.000000e-1
 V(p) = 0.6  above events = 1  cross events = 0
---- point 3 ---
-  x[p] = 1.000000e0
 V(p) = 1  above events = 1  cross events = 0
 warning[W0750]: event fires on the testbench's fixed time grid, not at its own time: the testbench inserts no timepoint at it
   --> above.va:15:5
