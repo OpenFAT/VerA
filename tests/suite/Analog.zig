@@ -4,6 +4,13 @@
 //! build a native testbench, run, and print `ok=1` for every assertion. The
 //! `want` of an assertion is a hand-derived literal, so VerA never supplies its
 //! own expectation and no golden transcript exists.
+//!
+//! Contents:
+//! - `pub const Ctx = struct`
+//! - `pub fn Ctx.deinit(ctx: *Ctx, gpa: std.mem.Allocator) void`
+//! - `pub fn compiler(ctx: *Ctx) harness.Compiler`
+//! - `pub fn acceptRejectCompiler() harness.Compiler`
+//! - `pub fn compileOnce(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: tb.Spec) !?usize`
 
 const Fixtures = @import("Fixtures.zig");
 const Digital = @import("Digital.zig");
@@ -11,28 +18,10 @@ const std = @import("std");
 const vera = @import("vera");
 const tb = @import("exe");
 const zigbuild = @import("zigbuild");
-const harness = Fixtures;
-const digital = Digital;
 const options = @import("suite_options");
-/// The suite's fixture root and LRM directory, shared with `Fixtures`.
-const suite = options;
-
 const Io = std.Io;
 const Fixture = harness.Fixture;
 const Result = harness.Result;
-
-/// VerA at full depth: compile, build a testbench, run it, read the `ok=`
-/// columns. `ctx` must outlive the returned plug.
-pub fn compiler(ctx: *Ctx) harness.Compiler {
-    return .{
-        .name = "vera",
-        .runs = true,
-        .owns_xfail = true,
-        .ctx = ctx,
-        .check = check,
-        .prepare = prepare,
-    };
-}
 
 /// `compiler`'s state: the suite's knobs, and the testbenches `prepare` built
 /// in batches.
@@ -53,6 +42,12 @@ pub const Ctx = struct {
     }
 };
 
+const harness = Fixtures;
+const digital = Digital;
+
+/// The suite's fixture root and LRM directory, shared with `Fixtures`.
+const suite = options;
+
 /// One fixture's member slot in a batch binary.
 const Batched = struct { bin: []const u8, index: usize };
 
@@ -60,35 +55,6 @@ const Batched = struct { bin: []const u8, index: usize };
 /// cost once instead of `batch_size` times; larger batches serialise more of
 /// the run behind one build and hold more in one compiler's memory.
 const batch_size = 8;
-
-/// The compile -> batch-build half of the run: every fixture is compiled and
-/// staged as `check` would, and each run of `batch_size` consecutive fixtures
-/// whose testbench is a plain analog runner is built as one binary (the mixed
-/// runner links `sim` and stays one build per fixture). `check` then compiles
-/// again (milliseconds), finds the batch binary, and runs it in place of its
-/// own build. A batch that does not build marks nothing: its fixtures build
-/// one by one in `check`, so a failure names its own fixture.
-fn prepare(ctx_ptr: *anyopaque, gpa: std.mem.Allocator, io: Io, fixtures: []const Fixture, jobs: usize) anyerror!void {
-    // ponytail: argv[0] dispatch goes through a symlink; Windows builds one by one.
-    if (@import("builtin").os.tag == .windows) return;
-    const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr));
-    const chunks = try gpa.alloc(Chunk, (fixtures.len + batch_size - 1) / batch_size);
-    defer gpa.free(chunks);
-    @memset(chunks, .{});
-    var pool: Pool = .{ .gpa = gpa, .io = io, .ctx = ctx, .fixtures = fixtures, .chunks = chunks };
-    var group: Io.Group = .init;
-    var hands: usize = 0;
-    while (hands < jobs) : (hands += 1) group.concurrent(io, Pool.work, .{&pool}) catch break;
-    if (hands == 0) pool.work();
-    try group.await(io);
-
-    for (chunks, 0..) |c, k| {
-        const bin = c.bin orelse continue;
-        try ctx.bins.append(gpa, bin);
-        const lo = k * batch_size;
-        for (c.member[0..c.n], 0..) |fi, i| try ctx.batched.put(gpa, fixtures[lo + fi].path, .{ .bin = bin, .index = i });
-    }
-}
 
 /// One batch's outcome: which of its fixtures (offsets in the chunk, each
 /// below `batch_size`) are members, in member order, and the binary when it
@@ -161,70 +127,7 @@ const Pool = struct {
     }
 };
 
-/// VerA held to what a foreign compiler is held to (accept or refuse only), so
-/// the head-to-head's agreement column asks both sides the same question.
-pub fn acceptRejectCompiler() harness.Compiler {
-    return .{
-        .name = "vera",
-        .runs = false,
-        // `//! xfail` marks debt against the full claim; a fixture that compiles
-        // and then computes a wrong number is met here and would XPASS.
-        .owns_xfail = false,
-        .ctx = &no_ctx,
-        .check = checkAcceptReject,
-    };
-}
-
 var no_ctx: u8 = 0;
-
-fn checkAcceptReject(
-    _: *anyopaque,
-    gpa: std.mem.Allocator,
-    _: Io,
-    _: std.mem.Allocator,
-    f: Fixture,
-    source: []const u8,
-    d: tb.Spec,
-    w: *Io.Writer,
-) anyerror!Result {
-    var outcome = try compileFixture(gpa, f, source, d);
-    defer outcome.deinit(gpa);
-    const must_reject = d.harness.reject.len != 0;
-    if ((outcome == .accepted) == !must_reject) return .met;
-    if (must_reject) {
-        try w.print("FAIL {s}: the LRM says this must not compile, and vera accepted it.\n", .{f.path});
-    } else {
-        try w.print("FAIL {s}: must compile, and vera refused it: {s}\n", .{ f.path, outcome.refused.error_name });
-    }
-    return .unmet;
-}
-
-/// One accept/reject compilation, the unit the head-to-head times: returns the
-/// emitted device's size, or null when VerA refused. No testbench is built, so
-/// no `zig build-exe` time lands in VerA's number.
-pub fn compileOnce(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: tb.Spec) !?usize {
-    var outcome = try compileFixture(gpa, f, source, d);
-    defer outcome.deinit(gpa);
-    return switch (outcome) {
-        .accepted => |n| n,
-        .refused => null,
-    };
-}
-
-fn check(
-    ctx: *anyopaque,
-    gpa: std.mem.Allocator,
-    io: Io,
-    arena: std.mem.Allocator,
-    f: Fixture,
-    source: []const u8,
-    d: tb.Spec,
-    w: *Io.Writer,
-) anyerror!Result {
-    const c: *const Ctx = @ptrCast(@alignCast(ctx));
-    if (d.harness.reject.len != 0) return verifyRejected(gpa, f, source, d, w);
-    return runAndCheck(gpa, io, arena, c, f, source, d, w, null);
-}
 
 /// Why a fixture failed to produce a device, in the vocabulary the `//! reject`
 /// directives are written in.
@@ -253,6 +156,188 @@ const Outcome = union(enum) {
         }
     }
 };
+
+const Tally = struct { total: usize, failed: usize };
+
+const posix = struct {
+    test "a batch runs each member by argv[0]; one member that does not compile fails the batch" {
+        const gpa = std.testing.allocator;
+        const io = std.testing.io;
+        var arena_state: std.heap.ArenaAllocator = .init(gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const work = options.work_root ++ "/batch-selftest";
+        // Prints its device's tag and the plusargs it was handed.
+        const runner =
+            \\const std = @import("std");
+            \\const device = @import("device");
+            \\pub fn main(init: std.process.Init.Minimal) void {
+            \\    const argv = init.args.toSlice(std.heap.page_allocator) catch return;
+            \\    std.debug.print("{s}", .{device.tag});
+            \\    for (argv[1..]) |a| std.debug.print(" {s}", .{a});
+            \\    std.debug.print("\n", .{});
+            \\}
+            \\
+        ;
+        const tags = [_][]const u8{ "a", "b", "broken" };
+        var staged: [tags.len]zigbuild.Staged = undefined;
+        var dirs: [tags.len][]const u8 = undefined;
+        for (&staged, &dirs, tags) |*s, *dir, tag| {
+            dir.* = try std.fs.path.join(arena, &.{ work, tag });
+            const device = if (std.mem.eql(u8, tag, "broken")) "pub const tag = 1 +;\n" else try arena.print("pub const tag = \"{s}\";\n", .{tag});
+            s.* = try zigbuild.stage(arena, io, device, runner, .{ .work_dir = dir.*, .contract = options.contract, .name = tag, .zig_exe = options.zig_exe });
+        }
+        const opts: zigbuild.BuildOptions = .{ .work_dir = work ++ "/batch", .contract = options.contract, .name = "batch", .zig_exe = options.zig_exe, .strip = true };
+
+        const built = try zigbuild.buildBatch(gpa, io, staged[0..2], opts);
+        defer built.deinit(gpa);
+        const bin = switch (built) {
+            .ok => |p| p,
+            .failed => |text| {
+                std.debug.print("{s}\n", .{text});
+                return error.TestUnexpectedResult;
+            },
+        };
+        for (0..2) |i| {
+            const link = try linkBatched(gpa, io, arena, dirs[i], .{ .bin = bin, .index = i });
+            defer link.deinit(gpa);
+            const got = try capture(gpa, io, link.ok, dirs[i], 0, &.{ "+x=1", "+y" });
+            defer gpa.free(got);
+            try std.testing.expectEqualStrings(try arena.print("{s} +x=1 +y\n", .{tags[i]}), got);
+        }
+
+        const bad = try zigbuild.buildBatch(gpa, io, &staged, opts);
+        defer bad.deinit(gpa);
+        try std.testing.expect(bad == .failed);
+    }
+
+    test "capture forwards runtime argv without expansion and preserves order" {
+        // Independent POSIX argv probe, not a generated model: the model's current
+        // plusarg stub cannot distinguish missing runner plumbing from its own bug.
+        // Only this fixed script is interpreted; fixture bytes stay positional
+        // arguments, quoted by the probe and never inserted into its source.
+        const got = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{
+            "-c",      "for arg do printf '%s\\n' \"$arg\" >&2; done", "argv-probe",
+            "+gain=7", "+gain=8",                                      "+gain=7",
+            "+empty=", "+literal=$HOME;*",                             "+literal=$(printf_EXPANDED)",
+        });
+        defer std.testing.allocator.free(got);
+        try std.testing.expectEqualStrings(
+            "+gain=7\n+gain=8\n+gain=7\n+empty=\n+literal=$HOME;*\n+literal=$(printf_EXPANDED)\n",
+            got,
+        );
+        const absent = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{});
+        defer std.testing.allocator.free(absent);
+        try std.testing.expectEqualStrings("", absent);
+    }
+};
+
+/// VerA at full depth: compile, build a testbench, run it, read the `ok=`
+/// columns. `ctx` must outlive the returned plug.
+pub fn compiler(ctx: *Ctx) harness.Compiler {
+    return .{
+        .name = "vera",
+        .runs = true,
+        .owns_xfail = true,
+        .ctx = ctx,
+        .check = check,
+        .prepare = prepare,
+    };
+}
+
+/// VerA held to what a foreign compiler is held to (accept or refuse only), so
+/// the head-to-head's agreement column asks both sides the same question.
+pub fn acceptRejectCompiler() harness.Compiler {
+    return .{
+        .name = "vera",
+        .runs = false,
+        // `//! xfail` marks debt against the full claim; a fixture that compiles
+        // and then computes a wrong number is met here and would XPASS.
+        .owns_xfail = false,
+        .ctx = &no_ctx,
+        .check = checkAcceptReject,
+    };
+}
+
+/// One accept/reject compilation, the unit the head-to-head times: returns the
+/// emitted device's size, or null when VerA refused. No testbench is built, so
+/// no `zig build-exe` time lands in VerA's number.
+pub fn compileOnce(gpa: std.mem.Allocator, f: Fixture, source: []const u8, d: tb.Spec) !?usize {
+    var outcome = try compileFixture(gpa, f, source, d);
+    defer outcome.deinit(gpa);
+    return switch (outcome) {
+        .accepted => |n| n,
+        .refused => null,
+    };
+}
+
+// ---- private ----
+
+/// The compile -> batch-build half of the run: every fixture is compiled and
+/// staged as `check` would, and each run of `batch_size` consecutive fixtures
+/// whose testbench is a plain analog runner is built as one binary (the mixed
+/// runner links `sim` and stays one build per fixture). `check` then compiles
+/// again (milliseconds), finds the batch binary, and runs it in place of its
+/// own build. A batch that does not build marks nothing: its fixtures build
+/// one by one in `check`, so a failure names its own fixture.
+fn prepare(ctx_ptr: *anyopaque, gpa: std.mem.Allocator, io: Io, fixtures: []const Fixture, jobs: usize) anyerror!void {
+    // ponytail: argv[0] dispatch goes through a symlink; Windows builds one by one.
+    if (@import("builtin").os.tag == .windows) return;
+    const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr));
+    const chunks = try gpa.alloc(Chunk, (fixtures.len + batch_size - 1) / batch_size);
+    defer gpa.free(chunks);
+    @memset(chunks, .{});
+    var pool: Pool = .{ .gpa = gpa, .io = io, .ctx = ctx, .fixtures = fixtures, .chunks = chunks };
+    var group: Io.Group = .init;
+    var hands: usize = 0;
+    while (hands < jobs) : (hands += 1) group.concurrent(io, Pool.work, .{&pool}) catch break;
+    if (hands == 0) pool.work();
+    try group.await(io);
+
+    for (chunks, 0..) |c, k| {
+        const bin = c.bin orelse continue;
+        try ctx.bins.append(gpa, bin);
+        const lo = k * batch_size;
+        for (c.member[0..c.n], 0..) |fi, i| try ctx.batched.put(gpa, fixtures[lo + fi].path, .{ .bin = bin, .index = i });
+    }
+}
+
+fn checkAcceptReject(
+    _: *anyopaque,
+    gpa: std.mem.Allocator,
+    _: Io,
+    _: std.mem.Allocator,
+    f: Fixture,
+    source: []const u8,
+    d: tb.Spec,
+    w: *Io.Writer,
+) anyerror!Result {
+    var outcome = try compileFixture(gpa, f, source, d);
+    defer outcome.deinit(gpa);
+    const must_reject = d.harness.reject.len != 0;
+    if ((outcome == .accepted) == !must_reject) return .met;
+    if (must_reject) {
+        try w.print("FAIL {s}: the LRM says this must not compile, and vera accepted it.\n", .{f.path});
+    } else {
+        try w.print("FAIL {s}: must compile, and vera refused it: {s}\n", .{ f.path, outcome.refused.error_name });
+    }
+    return .unmet;
+}
+
+fn check(
+    ctx: *anyopaque,
+    gpa: std.mem.Allocator,
+    io: Io,
+    arena: std.mem.Allocator,
+    f: Fixture,
+    source: []const u8,
+    d: tb.Spec,
+    w: *Io.Writer,
+) anyerror!Result {
+    const c: *const Ctx = @ptrCast(@alignCast(ctx));
+    if (d.harness.reject.len != 0) return verifyRejected(gpa, f, source, d, w);
+    return runAndCheck(gpa, io, arena, c, f, source, d, w, null);
+}
 
 // ---------------------------------------------------------------------------
 // The reject half: the expected behavior is a diagnostic
@@ -702,22 +787,6 @@ fn directiveCheck(line: []const u8) bool {
     return false;
 }
 
-test "a perturbed run judges the fixture's checks, not the runner's directive tables" {
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    const f: Fixture = .{ .path = "x.va", .root = ".", .slug = "x" };
-    // Every own check flipped; a directive check still ok=1 is not LOOSE.
-    try std.testing.expectEqual(Result.met, try perturbed(f, "own got=1 want=1.001 ok=0\nnoise[0] got=a want=a ok=1\n", &aw.writer));
-    // Only directive checks: the runner's comparisons are what can fail.
-    try std.testing.expectEqual(Result.met, try perturbed(f, "limit[0].g got=1 want=1 ok=1\n", &aw.writer));
-    try std.testing.expectEqual(Result.unasserted, try perturbed(f, "nothing\n", &aw.writer));
-    // An own check that survives is LOOSE, by name.
-    try std.testing.expectEqual(Result.unmet, try perturbed(f, "loose got=1 want=1.001 ok=1\n", &aw.writer));
-    try std.testing.expect(std.mem.find(u8, aw.written(), "LOOSE x.va: loose") != null);
-}
-
-const Tally = struct { total: usize, failed: usize };
-
 /// Count the `ok=` verdicts a transcript carries. `ok=1` passes, anything else
 /// fails — a malformed verdict is not a pass.
 fn countVerdicts(text: []const u8) Tally {
@@ -783,78 +852,20 @@ fn capture(gpa: std.mem.Allocator, io: Io, bin: []const u8, work: []const u8, ex
 comptime {
     if (@import("builtin").os.tag != .windows) _ = posix;
 }
-const posix = struct {
-    test "a batch runs each member by argv[0]; one member that does not compile fails the batch" {
-        const gpa = std.testing.allocator;
-        const io = std.testing.io;
-        var arena_state: std.heap.ArenaAllocator = .init(gpa);
-        defer arena_state.deinit();
-        const arena = arena_state.allocator();
-        const work = options.work_root ++ "/batch-selftest";
-        // Prints its device's tag and the plusargs it was handed.
-        const runner =
-            \\const std = @import("std");
-            \\const device = @import("device");
-            \\pub fn main(init: std.process.Init.Minimal) void {
-            \\    const argv = init.args.toSlice(std.heap.page_allocator) catch return;
-            \\    std.debug.print("{s}", .{device.tag});
-            \\    for (argv[1..]) |a| std.debug.print(" {s}", .{a});
-            \\    std.debug.print("\n", .{});
-            \\}
-            \\
-        ;
-        const tags = [_][]const u8{ "a", "b", "broken" };
-        var staged: [tags.len]zigbuild.Staged = undefined;
-        var dirs: [tags.len][]const u8 = undefined;
-        for (&staged, &dirs, tags) |*s, *dir, tag| {
-            dir.* = try std.fs.path.join(arena, &.{ work, tag });
-            const device = if (std.mem.eql(u8, tag, "broken")) "pub const tag = 1 +;\n" else try arena.print("pub const tag = \"{s}\";\n", .{tag});
-            s.* = try zigbuild.stage(arena, io, device, runner, .{ .work_dir = dir.*, .contract = options.contract, .name = tag, .zig_exe = options.zig_exe });
-        }
-        const opts: zigbuild.BuildOptions = .{ .work_dir = work ++ "/batch", .contract = options.contract, .name = "batch", .zig_exe = options.zig_exe, .strip = true };
 
-        const built = try zigbuild.buildBatch(gpa, io, staged[0..2], opts);
-        defer built.deinit(gpa);
-        const bin = switch (built) {
-            .ok => |p| p,
-            .failed => |text| {
-                std.debug.print("{s}\n", .{text});
-                return error.TestUnexpectedResult;
-            },
-        };
-        for (0..2) |i| {
-            const link = try linkBatched(gpa, io, arena, dirs[i], .{ .bin = bin, .index = i });
-            defer link.deinit(gpa);
-            const got = try capture(gpa, io, link.ok, dirs[i], 0, &.{ "+x=1", "+y" });
-            defer gpa.free(got);
-            try std.testing.expectEqualStrings(try arena.print("{s} +x=1 +y\n", .{tags[i]}), got);
-        }
-
-        const bad = try zigbuild.buildBatch(gpa, io, &staged, opts);
-        defer bad.deinit(gpa);
-        try std.testing.expect(bad == .failed);
-    }
-
-    test "capture forwards runtime argv without expansion and preserves order" {
-        // Independent POSIX argv probe, not a generated model: the model's current
-        // plusarg stub cannot distinguish missing runner plumbing from its own bug.
-        // Only this fixed script is interpreted; fixture bytes stay positional
-        // arguments, quoted by the probe and never inserted into its source.
-        const got = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{
-            "-c",      "for arg do printf '%s\\n' \"$arg\" >&2; done", "argv-probe",
-            "+gain=7", "+gain=8",                                      "+gain=7",
-            "+empty=", "+literal=$HOME;*",                             "+literal=$(printf_EXPANDED)",
-        });
-        defer std.testing.allocator.free(got);
-        try std.testing.expectEqualStrings(
-            "+gain=7\n+gain=8\n+gain=7\n+empty=\n+literal=$HOME;*\n+literal=$(printf_EXPANDED)\n",
-            got,
-        );
-        const absent = try capture(std.testing.allocator, std.testing.io, "/bin/sh", "/bin", 0, &.{});
-        defer std.testing.allocator.free(absent);
-        try std.testing.expectEqualStrings("", absent);
-    }
-};
+test "a perturbed run judges the fixture's checks, not the runner's directive tables" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const f: Fixture = .{ .path = "x.va", .root = ".", .slug = "x" };
+    // Every own check flipped; a directive check still ok=1 is not LOOSE.
+    try std.testing.expectEqual(Result.met, try perturbed(f, "own got=1 want=1.001 ok=0\nnoise[0] got=a want=a ok=1\n", &aw.writer));
+    // Only directive checks: the runner's comparisons are what can fail.
+    try std.testing.expectEqual(Result.met, try perturbed(f, "limit[0].g got=1 want=1 ok=1\n", &aw.writer));
+    try std.testing.expectEqual(Result.unasserted, try perturbed(f, "nothing\n", &aw.writer));
+    // An own check that survives is LOOSE, by name.
+    try std.testing.expectEqual(Result.unmet, try perturbed(f, "loose got=1 want=1.001 ok=1\n", &aw.writer));
+    try std.testing.expect(std.mem.find(u8, aw.written(), "LOOSE x.va: loose") != null);
+}
 
 test "verdicts are counted, and a malformed one is not a pass" {
     try std.testing.expectEqual(Tally{ .total = 0, .failed = 0 }, countVerdicts("no verdicts here"));

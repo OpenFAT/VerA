@@ -7,6 +7,12 @@
 //! and MIR sizes of every generated shape, asserted under `zig build test`
 //! (two agents moving these sizes regenerate the table, they do not pick
 //! a side).
+//!
+//! Contents:
+//! - `pub const mode`
+//! - `pub const Axis = enum`
+//! - `pub fn elapsed(io: Io, t0: Io.Timestamp) u64`
+//! - `pub fn report(gpa: Allocator, io: Io, arena: Allocator, w: *Io.Writer) !u8`
 
 const std = @import("std");
 const vera = @import("vera");
@@ -17,6 +23,20 @@ const options = @import("suite_options");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
+/// The mode the engine was compiled in, printed on every row because only a
+/// ReleaseFast time is the shipping number (Debug is several times slower).
+/// `builtin.mode` is this module's `-O`, which `build.zig` keeps equal to the
+/// `vera` module's.
+pub const mode = @tagName(@import("builtin").mode);
+
+/// The sweep. Powers of eight, so a doubling and a squaring are visibly
+/// different shapes across four steps rather than two.
+pub const sweep = [_]u32{ 1, 8, 64, 512, 4096 };
+
+/// The generated cases. Each pins the other two axes at 1, so a bend in one
+/// column is attributable to one axis.
+pub const Axis = enum { contrib, vals, inst };
+
 /// `root.zig` does not export `Mir`; the type is reached through the result
 /// that carries it, the seam an embedder already has.
 const Mir = @typeInfo(@FieldType(vera.Result, "mir")).pointer.child;
@@ -26,11 +46,93 @@ const Mir = @typeInfo(@FieldType(vera.Result, "mir")).pointer.child;
 /// sample to the code's cost, where a mean measures the machine's load.
 const reps = 25;
 
-/// The mode the engine was compiled in, printed on every row because only a
-/// ReleaseFast time is the shipping number (Debug is several times slower).
-/// `builtin.mode` is this module's `-O`, which `build.zig` keeps equal to the
-/// `vera` module's.
-pub const mode = @tagName(@import("builtin").mode);
+/// `device.text.len`, `mir.defs.len` and `mir.insts.len` for every generated
+/// shape, in `sweep` order, measured by this sweep. Pure functions of the
+/// source, so the same on every machine and optimize mode: a change here is a
+/// change in what VerA emits, and the commit that moves it explains it.
+const Shape = struct { device: usize, defs: usize, insts: usize };
+const expected = std.enums.directEnumArrayDefault(Axis, [sweep.len]Shape, null, 0, .{
+    .contrib = .{
+        .{ .device = 38168, .defs = 8, .insts = 5 },
+        .{ .device = 38523, .defs = 35, .insts = 26 },
+        .{ .device = 41266, .defs = 258, .insts = 194 },
+        .{ .device = 63669, .defs = 2050, .insts = 1538 },
+        .{ .device = 246249, .defs = 16386, .insts = 12290 },
+    },
+    .vals = .{
+        .{ .device = 38168, .defs = 8, .insts = 5 },
+        .{ .device = 38350, .defs = 24, .insts = 19 },
+        .{ .device = 39806, .defs = 136, .insts = 131 },
+        .{ .device = 51511, .defs = 1032, .insts = 1027 },
+        .{ .device = 145272, .defs = 8200, .insts = 8195 },
+    },
+    // Parallel instances share one (p, n) row; the MIR also carries each
+    // instance's share of it (`lower_contrib.unitAccum`), dead in the device.
+    .inst = .{
+        .{ .device = 38168, .defs = 8, .insts = 5 },
+        .{ .device = 39372, .defs = 57, .insts = 47 },
+        .{ .device = 49220, .defs = 449, .insts = 383 },
+        .{ .device = 129754, .defs = 3585, .insts = 3071 },
+        .{ .device = 787539, .defs = 28673, .insts = 24575 },
+    },
+});
+
+/// What one compilation's MIR costs in bytes, by column. A `MultiArrayList` row
+/// costs the sum of its field sizes, not `@sizeOf(Row)`. A constant row's bits
+/// live in `Mir.consts`, so `bytes` counts that pool too. The dedup maps and the
+/// interner are excluded: they are build-time scratch that `deinit` drops.
+const Footprint = struct {
+    insts: u64 = 0,
+    defs: u64 = 0,
+    blocks: u64 = 0,
+    extra: u64 = 0,
+    consts: u64 = 0,
+
+    // ponytail: ask the SoA container for its row size; this still excludes spare capacity.
+    const inst_b: u64 = std.MultiArrayList(Mir.InstRow).capacityInBytes(1);
+    const def_b: u64 = std.MultiArrayList(Mir.ValueRow).capacityInBytes(1) + @sizeOf(Mir.Value); // + alias slot
+    const block_b: u64 = std.MultiArrayList(Mir.BlockRow).capacityInBytes(1);
+
+    fn of(m: *const Mir) Footprint {
+        return .{
+            .insts = m.insts.len,
+            .defs = m.defs.len,
+            .blocks = m.blocks.len,
+            .extra = m.extra.items.len,
+            .consts = m.consts.items.len,
+        };
+    }
+
+    fn bytes(self: Footprint) u64 {
+        return self.insts * inst_b + self.defs * def_b +
+            self.blocks * block_b + self.extra * @sizeOf(u32) + self.consts * @sizeOf(u64);
+    }
+};
+
+/// The sweep's phases, each a prefix of the next (there is no seam that resumes
+/// a compilation midway), so a stage's own cost is a subtraction: `lint - pp`
+/// is lex+parse+lower+prove, `codegen - lint` is codegen.
+///   pp        `preprocessor.process`                          text -> text
+///   lint      `vera.analyze(gpa, src, .{}, null)`             text -> MIR
+///   codegen   `result.generate(gpa, .{}, null)`               MIR -> device.zig
+///   rewrite   `zigbuild.writeTree` a second time              device.zig -> 0 bytes
+const Phase = enum { pp, lint, codegen, rewrite };
+
+/// `bytes` is what the phase handled: preprocessed text out of `pp`, the same
+/// text in for `lint`, device text out of `codegen`, bytes written to disk for
+/// `rewrite` (asserted 0 by a test, not here).
+const Sample = struct { min_ns: u64, bytes: u64 };
+
+/// One timed compilation, freed after the clock is read.
+const Kept = struct {
+    result: vera.Result,
+    device: ?vera.Device = null,
+
+    fn deinit(k: *Kept, gpa: Allocator) void {
+        if (k.device) |*d| d.deinit(gpa);
+        k.result.deinit(gpa);
+    }
+};
 
 /// Nanoseconds since `t0` on the monotonic (`.awake`) clock.
 pub fn elapsed(io: Io, t0: Io.Timestamp) u64 {
@@ -38,13 +140,37 @@ pub fn elapsed(io: Io, t0: Io.Timestamp) u64 {
     return @intCast(@max(ns, 0));
 }
 
-/// The sweep. Powers of eight, so a doubling and a squaring are visibly
-/// different shapes across four steps rather than two.
-pub const sweep = [_]u32{ 1, 8, 64, 512, 4096 };
+/// `--sweep`: the footprint table, then the timing table, on `w`; returns exit
+/// code 0. A shape that departs from `expected` is an error, not a row.
+/// `arena` holds the generated sources until the caller frees it.
+pub fn report(gpa: Allocator, io: Io, arena: Allocator, w: *Io.Writer) !u8 {
+    // The footprint table is its own pass, one compile per shape outside every
+    // timer: the timing table's `bytes` is a different quantity.
+    try w.writeAll("case\tn\tinsts\tdefs\tblocks\textra\tmir_bytes\n");
+    for (std.enums.values(Axis)) |axis| {
+        for (sweep, 0..) |n, i| try emitFootprint(w, @tagName(axis), n, try checkShape(gpa, axis, i));
+    }
+    try w.flush();
 
-/// The generated cases. Each pins the other two axes at 1, so a bend in one
-/// column is attributable to one axis.
-pub const Axis = enum { contrib, vals, inst };
+    try w.writeAll("\nmode\tcase\tn\tphase\tmin_ns\tbytes\n");
+    if (@import("builtin").mode != .fast) try w.print(
+        "# {s}: NOT the shipping number (~8x slow). Re-run with -Doptimize=ReleaseFast.\n",
+        .{mode},
+    );
+    for (std.enums.values(Axis)) |axis| {
+        for (sweep) |n| {
+            const src = try genSource(arena, axis, n);
+            for (std.enums.values(Phase)) |p| {
+                const s = try measure(gpa, io, p, src, options.work_root ++ "/benchmark/gen");
+                try emit(w, @tagName(axis), n, p, s);
+            }
+            try w.flush();
+        }
+    }
+    return 0;
+}
+
+// ---- private ----
 
 // ---------------------------------------------------------------------------
 // The generator
@@ -100,37 +226,6 @@ fn genSource(gpa: Allocator, axis: Axis, n: u32) ![]const u8 {
 // The assertions — the half of this file that can fail
 // ---------------------------------------------------------------------------
 
-/// `device.text.len`, `mir.defs.len` and `mir.insts.len` for every generated
-/// shape, in `sweep` order, measured by this sweep. Pure functions of the
-/// source, so the same on every machine and optimize mode: a change here is a
-/// change in what VerA emits, and the commit that moves it explains it.
-const Shape = struct { device: usize, defs: usize, insts: usize };
-const expected = std.enums.directEnumArrayDefault(Axis, [sweep.len]Shape, null, 0, .{
-    .contrib = .{
-        .{ .device = 38168, .defs = 8, .insts = 5 },
-        .{ .device = 38523, .defs = 35, .insts = 26 },
-        .{ .device = 41266, .defs = 258, .insts = 194 },
-        .{ .device = 63669, .defs = 2050, .insts = 1538 },
-        .{ .device = 246249, .defs = 16386, .insts = 12290 },
-    },
-    .vals = .{
-        .{ .device = 38168, .defs = 8, .insts = 5 },
-        .{ .device = 38350, .defs = 24, .insts = 19 },
-        .{ .device = 39806, .defs = 136, .insts = 131 },
-        .{ .device = 51511, .defs = 1032, .insts = 1027 },
-        .{ .device = 145272, .defs = 8200, .insts = 8195 },
-    },
-    // Parallel instances share one (p, n) row; the MIR also carries each
-    // instance's share of it (`lower_contrib.unitAccum`), dead in the device.
-    .inst = .{
-        .{ .device = 38168, .defs = 8, .insts = 5 },
-        .{ .device = 39372, .defs = 57, .insts = 47 },
-        .{ .device = 49220, .defs = 449, .insts = 383 },
-        .{ .device = 129754, .defs = 3585, .insts = 3071 },
-        .{ .device = 787539, .defs = 28673, .insts = 24575 },
-    },
-});
-
 /// Compile one generated shape and hold it to `expected`. Shared by the bench
 /// run (every point of the sweep) and by the unit test below (the two cheap
 /// points), so the assertion has exactly one spelling.
@@ -154,38 +249,6 @@ fn checkShape(gpa: Allocator, axis: Axis, i: usize) !Footprint {
 // The MIR footprint — the other half of a size regression
 // ---------------------------------------------------------------------------
 
-/// What one compilation's MIR costs in bytes, by column. A `MultiArrayList` row
-/// costs the sum of its field sizes, not `@sizeOf(Row)`. A constant row's bits
-/// live in `Mir.consts`, so `bytes` counts that pool too. The dedup maps and the
-/// interner are excluded: they are build-time scratch that `deinit` drops.
-const Footprint = struct {
-    insts: u64 = 0,
-    defs: u64 = 0,
-    blocks: u64 = 0,
-    extra: u64 = 0,
-    consts: u64 = 0,
-
-    // ponytail: ask the SoA container for its row size; this still excludes spare capacity.
-    const inst_b: u64 = std.MultiArrayList(Mir.InstRow).capacityInBytes(1);
-    const def_b: u64 = std.MultiArrayList(Mir.ValueRow).capacityInBytes(1) + @sizeOf(Mir.Value); // + alias slot
-    const block_b: u64 = std.MultiArrayList(Mir.BlockRow).capacityInBytes(1);
-
-    fn of(m: *const Mir) Footprint {
-        return .{
-            .insts = m.insts.len,
-            .defs = m.defs.len,
-            .blocks = m.blocks.len,
-            .extra = m.extra.items.len,
-            .consts = m.consts.items.len,
-        };
-    }
-
-    fn bytes(self: Footprint) u64 {
-        return self.insts * inst_b + self.defs * def_b +
-            self.blocks * block_b + self.extra * @sizeOf(u32) + self.consts * @sizeOf(u64);
-    }
-};
-
 fn emitFootprint(w: *Io.Writer, case: []const u8, n: u32, f: Footprint) !void {
     try w.print("{s}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\n", .{
         case, n, f.insts, f.defs, f.blocks, f.extra, f.bytes(),
@@ -195,31 +258,6 @@ fn emitFootprint(w: *Io.Writer, case: []const u8, n: u32, f: Footprint) !void {
 // ---------------------------------------------------------------------------
 // The phases
 // ---------------------------------------------------------------------------
-
-/// The sweep's phases, each a prefix of the next (there is no seam that resumes
-/// a compilation midway), so a stage's own cost is a subtraction: `lint - pp`
-/// is lex+parse+lower+prove, `codegen - lint` is codegen.
-///   pp        `preprocessor.process`                          text -> text
-///   lint      `vera.analyze(gpa, src, .{}, null)`             text -> MIR
-///   codegen   `result.generate(gpa, .{}, null)`               MIR -> device.zig
-///   rewrite   `zigbuild.writeTree` a second time              device.zig -> 0 bytes
-const Phase = enum { pp, lint, codegen, rewrite };
-
-/// `bytes` is what the phase handled: preprocessed text out of `pp`, the same
-/// text in for `lint`, device text out of `codegen`, bytes written to disk for
-/// `rewrite` (asserted 0 by a test, not here).
-const Sample = struct { min_ns: u64, bytes: u64 };
-
-/// One timed compilation, freed after the clock is read.
-const Kept = struct {
-    result: vera.Result,
-    device: ?vera.Device = null,
-
-    fn deinit(k: *Kept, gpa: Allocator) void {
-        if (k.device) |*d| d.deinit(gpa);
-        k.result.deinit(gpa);
-    }
-};
 
 /// Run `phase` over one generated source and return the bytes it handled.
 ///
@@ -294,36 +332,6 @@ fn measure(
 
 fn emit(w: *Io.Writer, case: []const u8, n: u32, phase: Phase, s: Sample) !void {
     try w.print("{s}\t{s}\t{d}\t{t}\t{d}\t{d}\n", .{ mode, case, n, phase, s.min_ns, s.bytes });
-}
-
-/// `--sweep`: the footprint table, then the timing table, on `w`; returns exit
-/// code 0. A shape that departs from `expected` is an error, not a row.
-/// `arena` holds the generated sources until the caller frees it.
-pub fn report(gpa: Allocator, io: Io, arena: Allocator, w: *Io.Writer) !u8 {
-    // The footprint table is its own pass, one compile per shape outside every
-    // timer: the timing table's `bytes` is a different quantity.
-    try w.writeAll("case\tn\tinsts\tdefs\tblocks\textra\tmir_bytes\n");
-    for (std.enums.values(Axis)) |axis| {
-        for (sweep, 0..) |n, i| try emitFootprint(w, @tagName(axis), n, try checkShape(gpa, axis, i));
-    }
-    try w.flush();
-
-    try w.writeAll("\nmode\tcase\tn\tphase\tmin_ns\tbytes\n");
-    if (@import("builtin").mode != .fast) try w.print(
-        "# {s}: NOT the shipping number (~8x slow). Re-run with -Doptimize=ReleaseFast.\n",
-        .{mode},
-    );
-    for (std.enums.values(Axis)) |axis| {
-        for (sweep) |n| {
-            const src = try genSource(arena, axis, n);
-            for (std.enums.values(Phase)) |p| {
-                const s = try measure(gpa, io, p, src, options.work_root ++ "/benchmark/gen");
-                try emit(w, @tagName(axis), n, p, s);
-            }
-            try w.flush();
-        }
-    }
-    return 0;
 }
 
 // zigbuild's tree.zig claim: writing a tree already on disk touches nothing.

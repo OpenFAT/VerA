@@ -14,24 +14,33 @@
 //!   zig build test-spice -Despice=PATH                    # an espice built elsewhere
 //!   zig build test-spice -Despice=PATH -- timer           # the decks whose name contains timer
 //!   zig build test-spice -Despice=PATH -- --backend=cuda  # forwarded to espice
+//!
+//! Contents:
+//! - `pub fn run(init: std.process.Init, vera_exe: []const u8, args: *Args) !u8`
 
 const Fixtures = @import("Fixtures.zig");
 const Child = @import("Child.zig");
 const std = @import("std");
 const options = @import("suite_options");
-const harness = Fixtures;
-const child = Child;
-
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Args = std.process.Args.Iterator;
 
-/// `.hdl` paths are relative to the deck, exactly as written.
-fn resolveModel(arena: Allocator, io: Io, dir_path: []const u8, ref: []const u8) !?[]const u8 {
-    const literal = try std.fs.path.join(arena, &.{ dir_path, ref });
-    if (Io.Dir.cwd().access(io, literal, .{})) |_| return literal else |_| {}
-    return null;
-}
+const harness = Fixtures;
+const child = Child;
+
+const Verdict = union(enum) {
+    /// What was checked.
+    pass: []const u8,
+    fail: []const u8,
+};
+
+/// One plot of espice's CSV: `names[i]` heads `cols[i]`, and column 0 is the
+/// axis (`time`, `frequency`).
+const Table = struct {
+    names: []const []const u8,
+    cols: []const []const f64,
+};
 
 /// The `spice` mode: checks, then runs on espice, each `.sp` deck matching
 /// the filter in `args`, printing one PASS/FAIL line per deck and a census to
@@ -199,6 +208,15 @@ pub fn run(init: std.process.Init, vera_exe: []const u8, args: *Args) !u8 {
     return if (failed == 0) 0 else 1;
 }
 
+// ---- private ----
+
+/// `.hdl` paths are relative to the deck, exactly as written.
+fn resolveModel(arena: Allocator, io: Io, dir_path: []const u8, ref: []const u8) !?[]const u8 {
+    const literal = try std.fs.path.join(arena, &.{ dir_path, ref });
+    if (Io.Dir.cwd().access(io, literal, .{})) |_| return literal else |_| {}
+    return null;
+}
+
 /// The deck's analysis as the oracle's `analysis` names it: its first
 /// `.tran`, `.noise`, `.ac`, `.dc` or `.op` card without the dot. SPICE cards
 /// are case-insensitive. Null when the deck has none.
@@ -214,12 +232,6 @@ fn analysisOf(source: []const u8) ?[]const u8 {
     }
     return null;
 }
-
-const Verdict = union(enum) {
-    /// What was checked.
-    pass: []const u8,
-    fail: []const u8,
-};
 
 /// Runs `deck` on espice, its CSV in a fresh `<work_root>/spice/<stem>/`, and
 /// grades what it wrote against `oracle_text`.
@@ -250,13 +262,6 @@ fn execute(
     if (r.exit != 0) return .{ .fail = try arena.print("espice exited {d}:\n{s}", .{ r.exit, r.stderr }) };
     return grade(arena, io, analysis, out, oracle_text);
 }
-
-/// One plot of espice's CSV: `names[i]` heads `cols[i]`, and column 0 is the
-/// axis (`time`, `frequency`).
-const Table = struct {
-    names: []const []const u8,
-    cols: []const []const f64,
-};
 
 /// Reads `text` as espice's `--format=csv` writes it: a header of names, then
 /// one row of numbers per point. A name holding `,` or `"` is quoted with its

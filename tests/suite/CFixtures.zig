@@ -9,11 +9,11 @@ const Fixtures = @import("Fixtures.zig");
 const Child = @import("Child.zig");
 const std = @import("std");
 const options = @import("suite_options");
-const harness = Fixtures;
-const child = Child;
-
 const Io = std.Io;
 const Args = std.process.Args.Iterator;
+
+const harness = Fixtures;
+const child = Child;
 
 /// Directories under the fixture root holding `.c` fixtures. Some groups
 /// share a header beside them (`p02_check.h`, `p03_vpi_analog.h`,
@@ -97,6 +97,8 @@ pub fn run(init: std.process.Init, args: *Args) !u8 {
     try w.print("vpi: {d}/{d} fixtures compile against src/vpi/vpi_user.h\n", .{ ran - failed, ran });
     return if (failed == 0) 0 else 1;
 }
+
+// ---- private ----
 
 /// The compiler's first `error:` line, or its first line if it never said one.
 fn firstErrorLine(stderr: []const u8) []const u8 {

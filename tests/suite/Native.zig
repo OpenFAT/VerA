@@ -21,6 +21,9 @@
 //! `--two-state` makes every x or z 0, so its transcript is not the golden.
 //! A case passes when each line that differs shows an x or z digit in the
 //! golden; FALLBACK is then every case `--two-state` refuses (E1101).
+//!
+//! Contents:
+//! - `pub fn vcdDiff(arena: Allocator, io: Io, w: *Io.Writer, case: []const u8, work: []const u8, v: digital.VcdExpect, two_state: bool) !bool`
 
 const Fixtures = @import("Fixtures.zig");
 const Child = @import("Child.zig");
@@ -28,13 +31,13 @@ const Devices = @import("Devices.zig");
 const Digital = @import("Digital.zig");
 const std = @import("std");
 const options = @import("suite_options");
+const Io = std.Io;
+const Allocator = std.mem.Allocator;
+
 const harness = Fixtures;
 const devices = Devices;
 const digital = Digital;
 const child = Child;
-
-const Io = std.Io;
-const Allocator = std.mem.Allocator;
 
 const NativeJob = struct {
     gpa: Allocator,
@@ -68,21 +71,6 @@ const NativeJob = struct {
     }
 };
 
-/// Once case `case` is judged, its work directory (`nativeCase`: the
-/// executable, its source tree, its build's cache and what it wrote, about
-/// 25 MB) goes, unless the case failed: then it stays for diagnosis and its
-/// path is printed. A full run otherwise held every case's, 30 GB, past a CI
-/// runner's disk.
-fn settle(arena: Allocator, io: Io, case: []const u8, v: NativeVerdict, w: *Io.Writer) void {
-    const work = arena.print("native/{s}", .{case}) catch return;
-    if (!v.pass and !v.xfail) {
-        const at = Io.Dir.cwd().realPathFileAlloc(io, work, arena) catch work;
-        w.print("  kept {s}\n", .{at}) catch {};
-        return;
-    }
-    Io.Dir.cwd().deleteTree(io, work) catch |e| w.print("  could not delete {s}: {t}\n", .{ work, e }) catch {};
-}
-
 /// `fallback` is the executable's reason for embedding the interpreter;
 /// `refused` is a case the shared elaboration rejected, so no executable
 /// was built at all; `xfail` is an unmet `//! xfail` case, which does not
@@ -92,27 +80,6 @@ fn settle(arena: Allocator, io: Io, case: []const u8, v: NativeVerdict, w: *Io.W
 /// start, or that and then a 4-state rerun.
 const NativeVerdict = struct { pass: bool, fallback: ?[]const u8, refused: bool = false, xfail: bool = false, state: RunState = .four };
 const RunState = enum { four, two, rerun };
-
-/// `nativeCase` under `//! xfail` or an xfail list row, with `digitalVerdict`'s algebra.
-fn nativeVerdict(arena: Allocator, io: Io, vera_exe: []const u8, flags: []const []const u8, snapshot: bool, case: []const u8, w: *Io.Writer) !NativeVerdict {
-    const xfail = try devices.xfailOf(arena, io, case) orelse
-        return nativeCase(arena, io, vera_exe, flags, snapshot, case, w);
-    if (xfail.len == 0) {
-        try w.print("FAIL {s}: `//! xfail` names no reason\n", .{case});
-        return .{ .pass = false, .fallback = null };
-    }
-    var detail: Io.Writer.Allocating = .init(arena);
-    var v = try nativeCase(arena, io, vera_exe, flags, snapshot, case, &detail.writer);
-    if (v.pass) {
-        try w.print("FAIL {s}: XPASS — marked xfail, but VerA now does what the fixture says.\n" ++
-            "  Delete its `//! xfail` line or its row in {s}.\n", .{ case, harness.xfail_list });
-        v.pass = false;
-        return v;
-    }
-    try w.print("XFAIL {s}: known: {s}\n", .{ case, xfail });
-    v.xfail = true;
-    return v;
-}
 const NativeSlot = struct { verdict: NativeVerdict = .{ .pass = false, .fallback = null }, output: []const u8 = "" };
 
 /// `--native`: every case in `all` matching `filter`, judged on `harness.defaultJobs()`
@@ -174,6 +141,68 @@ pub fn run(gpa: Allocator, io: Io, exe: []const u8, flags: []const []const u8, s
         if (s.verdict.fallback) |why| gpa.free(why);
     }
     return if (failed == 0) 0 else 1;
+}
+
+/// A `//! expect vcd` case: the file the executable wrote in `work` against
+/// the golden beside the fixture, both normalised (`digital.vcdTokens`).
+/// Under `--two-state` a token may differ where the golden's shows an x or z
+/// digit, `twoStateDiff`'s rule.
+pub fn vcdDiff(arena: Allocator, io: Io, w: *Io.Writer, case: []const u8, work: []const u8, v: digital.VcdExpect, two_state: bool) !bool {
+    const got_text = Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ work, v.produced }), arena, .limited(1 << 24)) catch {
+        try w.print("FAIL {s}: the executable wrote no `{s}`\n", .{ case, v.produced });
+        return false;
+    };
+    const dir = std.fs.path.dirname(try arena.print("{s}/{s}.v", .{ options.fixture_root, case })).?;
+    const want_text = try Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ dir, v.golden }), arena, .limited(1 << 24));
+    const got = try digital.vcdTokens(arena, got_text);
+    const want = try digital.vcdTokens(arena, want_text);
+    for (0..@max(got.len, want.len)) |i| {
+        const g = if (i < got.len) got[i] else "<end of file>";
+        const e = if (i < want.len) want[i] else "<end of file>";
+        if (std.mem.eql(u8, g, e)) continue;
+        if (two_state and std.mem.findAny(u8, e, "xXzZ") != null) continue;
+        try w.print("FAIL {s}: VCD token {d} is `{s}`, the golden has `{s}`\n", .{ case, i, g, e });
+        return false;
+    }
+    return true;
+}
+
+// ---- private ----
+
+/// Once case `case` is judged, its work directory (`nativeCase`: the
+/// executable, its source tree, its build's cache and what it wrote, about
+/// 25 MB) goes, unless the case failed: then it stays for diagnosis and its
+/// path is printed. A full run otherwise held every case's, 30 GB, past a CI
+/// runner's disk.
+fn settle(arena: Allocator, io: Io, case: []const u8, v: NativeVerdict, w: *Io.Writer) void {
+    const work = arena.print("native/{s}", .{case}) catch return;
+    if (!v.pass and !v.xfail) {
+        const at = Io.Dir.cwd().realPathFileAlloc(io, work, arena) catch work;
+        w.print("  kept {s}\n", .{at}) catch {};
+        return;
+    }
+    Io.Dir.cwd().deleteTree(io, work) catch |e| w.print("  could not delete {s}: {t}\n", .{ work, e }) catch {};
+}
+
+/// `nativeCase` under `//! xfail` or an xfail list row, with `digitalVerdict`'s algebra.
+fn nativeVerdict(arena: Allocator, io: Io, vera_exe: []const u8, flags: []const []const u8, snapshot: bool, case: []const u8, w: *Io.Writer) !NativeVerdict {
+    const xfail = try devices.xfailOf(arena, io, case) orelse
+        return nativeCase(arena, io, vera_exe, flags, snapshot, case, w);
+    if (xfail.len == 0) {
+        try w.print("FAIL {s}: `//! xfail` names no reason\n", .{case});
+        return .{ .pass = false, .fallback = null };
+    }
+    var detail: Io.Writer.Allocating = .init(arena);
+    var v = try nativeCase(arena, io, vera_exe, flags, snapshot, case, &detail.writer);
+    if (v.pass) {
+        try w.print("FAIL {s}: XPASS — marked xfail, but VerA now does what the fixture says.\n" ++
+            "  Delete its `//! xfail` line or its row in {s}.\n", .{ case, harness.xfail_list });
+        v.pass = false;
+        return v;
+    }
+    try w.print("XFAIL {s}: known: {s}\n", .{ case, xfail });
+    v.xfail = true;
+    return v;
 }
 
 /// `digitalCase` through the executable. A rejection may come from `vera
@@ -277,30 +306,6 @@ fn pinnedState(source: []const u8) ?RunState {
         if (std.mem.eql(u8, word, "rerun")) return .rerun;
     }
     return null;
-}
-
-/// A `//! expect vcd` case: the file the executable wrote in `work` against
-/// the golden beside the fixture, both normalised (`digital.vcdTokens`).
-/// Under `--two-state` a token may differ where the golden's shows an x or z
-/// digit, `twoStateDiff`'s rule.
-pub fn vcdDiff(arena: Allocator, io: Io, w: *Io.Writer, case: []const u8, work: []const u8, v: digital.VcdExpect, two_state: bool) !bool {
-    const got_text = Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ work, v.produced }), arena, .limited(1 << 24)) catch {
-        try w.print("FAIL {s}: the executable wrote no `{s}`\n", .{ case, v.produced });
-        return false;
-    };
-    const dir = std.fs.path.dirname(try arena.print("{s}/{s}.v", .{ options.fixture_root, case })).?;
-    const want_text = try Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(arena, &.{ dir, v.golden }), arena, .limited(1 << 24));
-    const got = try digital.vcdTokens(arena, got_text);
-    const want = try digital.vcdTokens(arena, want_text);
-    for (0..@max(got.len, want.len)) |i| {
-        const g = if (i < got.len) got[i] else "<end of file>";
-        const e = if (i < want.len) want[i] else "<end of file>";
-        if (std.mem.eql(u8, g, e)) continue;
-        if (two_state and std.mem.findAny(u8, e, "xXzZ") != null) continue;
-        try w.print("FAIL {s}: VCD token {d} is `{s}`, the golden has `{s}`\n", .{ case, i, g, e });
-        return false;
-    }
-    return true;
 }
 
 /// `--native=two-state`'s judgement: every line of `got` that differs from

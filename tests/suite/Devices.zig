@@ -7,6 +7,12 @@
 //! Cases come from the suite's `verilog-ams/digital/` and `verilog/`, sorted,
 //! so a FAIL name list diffs between two runs. `--native` hands the same
 //! cases to `Native` and `--fuzz` goes to `Fuzz`.
+//!
+//! Contents:
+//! - `pub const digital_dirs`
+//! - `pub const ieee1364_dir`
+//! - `pub fn diff(w: *Io.Writer, what: []const u8, want: []const u8, got: []const u8) !bool`
+//! - `pub fn xfailOf(arena: Allocator, io: Io, case: []const u8) !?[]const u8`
 
 const Fixtures = @import("Fixtures.zig");
 const Child = @import("Child.zig");
@@ -15,12 +21,6 @@ const Fuzz = @import("Fuzz.zig");
 const Native = @import("Native.zig");
 const std = @import("std");
 const options = @import("suite_options");
-const harness = Fixtures;
-const native = Native;
-const fuzz = Fuzz;
-const digital = Digital;
-const child = Child;
-
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Args = std.process.Args.Iterator;
@@ -44,6 +44,12 @@ pub const digital_dirs = [_][]const u8{ "verilog-ams/digital", ieee1364_dir };
 /// The IEEE 1364-2005 transcript tree under the fixture root, which `zig
 /// build suite -- ieee1364` runs alone.
 pub const ieee1364_dir = "verilog";
+
+const harness = Fixtures;
+const native = Native;
+const fuzz = Fuzz;
+const digital = Digital;
+const child = Child;
 
 /// The `devices` and `ieee1364` modes over the cases under `dirs`: the
 /// verdicts and a census on stderr, exit 1 on any FAIL or when nothing
@@ -149,6 +155,17 @@ pub fn diff(w: *Io.Writer, what: []const u8, want: []const u8, got: []const u8) 
     return false;
 }
 
+/// A case's xfail reason: its own `//! xfail` line, else its
+/// `harness.xfail_list` row; null when it has neither.
+pub fn xfailOf(arena: Allocator, io: Io, case: []const u8) !?[]const u8 {
+    const src = try arena.print("{s}/{s}.v", .{ options.fixture_root, case });
+    const source = try Io.Dir.cwd().readFileAlloc(io, src, arena, .limited(1 << 20));
+    if (digital.xfailReason(source)) |why| return why;
+    return harness.listedXfail(arena, io, options.fixture_root, src);
+}
+
+// ---- private ----
+
 /// Digital transcript cases, diagnostic cases and `//! expect vcd` dump cases,
 /// sorted so two runs report in the same order. Support files are not cases.
 /// Case names are fixture-root-relative stems, `verilog/05_expressions/control`.
@@ -203,15 +220,6 @@ fn digitalVerdict(arena: Allocator, io: Io, vera_exe: []const u8, case: []const 
     }
     try w.print("XFAIL {s}: known: {s}\n", .{ case, xfail });
     return .xfail;
-}
-
-/// A case's xfail reason: its own `//! xfail` line, else its
-/// `harness.xfail_list` row; null when it has neither.
-pub fn xfailOf(arena: Allocator, io: Io, case: []const u8) !?[]const u8 {
-    const src = try arena.print("{s}/{s}.v", .{ options.fixture_root, case });
-    const source = try Io.Dir.cwd().readFileAlloc(io, src, arena, .limited(1 << 20));
-    if (digital.xfailReason(source)) |why| return why;
-    return harness.listedXfail(arena, io, options.fixture_root, src);
 }
 
 fn digitalCase(arena: Allocator, io: Io, vera_exe: []const u8, case: []const u8, w: *Io.Writer) !bool {

@@ -1,6 +1,10 @@
 //! A child process run to completion: argv -> everything it printed and its
 //! exit code. The digital, `--native`, `--fuzz`, `vpi` and `spice` modes each
 //! judge a `vera` (or `zig cc`) run by its two streams, so they share this.
+//!
+//! Contents:
+//! - `pub fn capture(arena: Allocator, io: Io, argv: []const []const u8) !Captured`
+//! - `pub fn captureIn(arena: Allocator, io: Io, argv: []const []const u8, cwd: ?[]const u8) !Captured`
 
 const std = @import("std");
 

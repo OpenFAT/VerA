@@ -7,6 +7,9 @@
 //! LRM clauses: §10.3 (what counts as a macro call), §2.5.1 and §2.6 (how a
 //! literal and a scale factor are spelled), §4.5.3 (why a want may be
 //! piecewise in time).
+//!
+//! Contents:
+//! - `pub fn checkAssertions(source: []const u8) AssertionCheck`
 
 const std = @import("std");
 
@@ -21,46 +24,6 @@ const AssertionCheck = union(enum) {
     /// The want is not a numeric literal, so it may be the compiler's own output.
     computed_want: []const u8,
 };
-
-/// Lints the `CHECK*` calls in raw source: every want must be a literal a
-/// human typed, never an expression the compiler under test evaluates.
-/// `CHECK("sin", sin(0.5), sin(0.5), 1e-15)` passes in any compiler; this
-/// rejects it. Whether the literal is right is the reviewer's job.
-pub fn checkAssertions(source: []const u8) AssertionCheck {
-    var found = false;
-    var scan: MacroScan = .{ .src = source };
-    while (scan.next()) |call| {
-        const rest = source[call.at..];
-        const open = call.open - call.at;
-        // An unbalanced `(` is a syntax error the compile will report; it is not
-        // this lint's business, and it must not abandon the CHECKs after it.
-        const close = matchParen(rest, open) orelse continue;
-        const site = trimLine(rest[0..@min(close + 1, rest.len)]);
-
-        // `CHECKEQ` is the marked relational form: its want is another
-        // expression on purpose, so the literal rule does not apply to it.
-        const relational = std.mem.eql(u8, call.name, "CHECKEQ");
-
-        var args: [8][]const u8 = undefined;
-        const n = splitArgs(rest[open + 1 .. close], &args);
-        // NAME, GOT, WANT[, TOL] — every CHECK* form puts the want third.
-        if (n < 3) continue;
-        found = true;
-
-        const got = stripParens(std.mem.trim(u8, args[1], " \t\r\n\\"));
-        const want = stripParens(std.mem.trim(u8, args[2], " \t\r\n\\"));
-        if (std.mem.eql(u8, got, want)) {
-            // Two identical LITERALS are a round-trip check on the lexer
-            // (`CHECKI("unary minus", -7, -7)`) — weak, but it can fail if a
-            // literal is mangled on one side. Two identical EXPRESSIONS cannot
-            // fail at all, whatever the compiler does.
-            if (!isNumericLiteral(got)) return .{ .tautology = site };
-        } else if (!relational and !isNumericLiteral(want) and !isTimePiecewiseWant(want)) {
-            return .{ .computed_want = site };
-        }
-    }
-    return if (found) .ok else .none;
-}
 
 /// Finds each `CHECK*` macro call outside comments and string literals. A call
 /// is §10.3's `` `identifier `` followed by `(` with at most horizontal white
@@ -126,6 +89,48 @@ const MacroScan = struct {
         return null;
     }
 };
+
+/// Lints the `CHECK*` calls in raw source: every want must be a literal a
+/// human typed, never an expression the compiler under test evaluates.
+/// `CHECK("sin", sin(0.5), sin(0.5), 1e-15)` passes in any compiler; this
+/// rejects it. Whether the literal is right is the reviewer's job.
+pub fn checkAssertions(source: []const u8) AssertionCheck {
+    var found = false;
+    var scan: MacroScan = .{ .src = source };
+    while (scan.next()) |call| {
+        const rest = source[call.at..];
+        const open = call.open - call.at;
+        // An unbalanced `(` is a syntax error the compile will report; it is not
+        // this lint's business, and it must not abandon the CHECKs after it.
+        const close = matchParen(rest, open) orelse continue;
+        const site = trimLine(rest[0..@min(close + 1, rest.len)]);
+
+        // `CHECKEQ` is the marked relational form: its want is another
+        // expression on purpose, so the literal rule does not apply to it.
+        const relational = std.mem.eql(u8, call.name, "CHECKEQ");
+
+        var args: [8][]const u8 = undefined;
+        const n = splitArgs(rest[open + 1 .. close], &args);
+        // NAME, GOT, WANT[, TOL] — every CHECK* form puts the want third.
+        if (n < 3) continue;
+        found = true;
+
+        const got = stripParens(std.mem.trim(u8, args[1], " \t\r\n\\"));
+        const want = stripParens(std.mem.trim(u8, args[2], " \t\r\n\\"));
+        if (std.mem.eql(u8, got, want)) {
+            // Two identical LITERALS are a round-trip check on the lexer
+            // (`CHECKI("unary minus", -7, -7)`) — weak, but it can fail if a
+            // literal is mangled on one side. Two identical EXPRESSIONS cannot
+            // fail at all, whatever the compiler does.
+            if (!isNumericLiteral(got)) return .{ .tautology = site };
+        } else if (!relational and !isNumericLiteral(want) and !isTimePiecewiseWant(want)) {
+            return .{ .computed_want = site };
+        }
+    }
+    return if (found) .ok else .none;
+}
+
+// ---- private ----
 
 fn isIdentChar(c: u8) bool {
     return c == '_' or c == '$' or std.ascii.isAlphanumeric(c);

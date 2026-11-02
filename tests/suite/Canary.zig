@@ -14,11 +14,10 @@ const Fixtures = @import("Fixtures.zig");
 const Analog = @import("Analog.zig");
 const std = @import("std");
 const options = @import("suite_options");
-const harness = Fixtures;
-const torture = Analog;
-
 const Io = std.Io;
 
+const harness = Fixtures;
+const torture = Analog;
 const Row = struct { file: []const u8, perturb: bool, want: []const u8 };
 
 /// Judges every canary and compares each verdict and its text with its row.
@@ -84,6 +83,8 @@ pub fn run(init: std.process.Init) !u8 {
     try w.print("\ncanary: {d}/{d} answered as expected\n", .{ fixtures.len - @min(bad, fixtures.len), fixtures.len });
     return if (bad == 0 and fixtures.len != 0) 0 else 1;
 }
+
+// ---- private ----
 
 fn parse(arena: std.mem.Allocator, table: []const u8) ![]const Row {
     var rows: std.ArrayList(Row) = .empty;
