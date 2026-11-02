@@ -27,6 +27,22 @@ runs `zig` on the code it emits.
 3. `nix develop -c zig build test` passes locally.
 4. One line in `CHANGELOG.md`, citing the issue; numbers measured, not typed.
 
+## A release
+
+1. On a branch: `nix develop .#external -c python3 tools/conformance.py --changelog vX.Y.Z`
+   bumps `build.zig.zon` and `contract.vera_version` together, measures the
+   VAMS Conformance Suite and dates the `## Unreleased` section. Re-bless the
+   one doc transcript that prints the version (`tools/doctest.py --update`).
+2. A pull request with that commit; merge it once its required checks pass.
+3. Tag `vX.Y.Z` on the merge commit and push the tag. `publish.yaml` re-checks
+   the CHANGELOG score, builds every target, publishes the assets and opens
+   `nix: sources.json for vX.Y.Z` as `github-actions[bot]`.
+4. That pull request waits for a maintainer, twice: approve its workflow runs
+   (they start `action_required`, being a bot's), then approve the pull request
+   (the "main is green" ruleset requires a review of a bot's changes). It
+   auto-merges when its checks pass; the flake's `#latest` and
+   `tools/install.sh` follow it.
+
 ## Reporting a bug
 
 The input that triggers it, the exact command, what `vera` printed, and
