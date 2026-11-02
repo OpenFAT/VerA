@@ -6,8 +6,8 @@
 //! Spine, in `lowerModule`'s order: `declarePorts`, `declareNets`,
 //! `bindPortConnections`, `resolveDisciplines`, `declareBranches`. After them,
 //! rows are only appended (implicit nets, §5.4.2 flow unknowns, §4.5.2 operator
-//! states), so a row index, once handed out, is stable. A row is a `u32`;
-//! past its index space (`max_nodes`), E1015.
+//! states), so a row index, once handed out, is stable. A row is a `NodeId`
+//! (a `u32` underneath); past its index space (`max_nodes`), E1015.
 //!
 //! Cites: §1.3.1.1, §1.3.4.1, §1.3.4.2, A.2.2.1, §2.7, §2.8.1, §3.4, §3.4.4,
 //! §3.6.1.2, §3.6.2.2, §3.6.3, §3.6.3.2, §3.6.4, §3.6.5, §3.9, §3.12.1, §4.4,
@@ -66,7 +66,7 @@ pub const State = struct {
     full: bool = false,
 };
 
-/// The most rows `nodes` holds: a row is a u32 below `ground`. Not a design
+/// The most rows `nodes` holds: a row is a `NodeId` below `ground`. Not a design
 /// limit: a row costs tens of bytes of lowering state alone, so a module
 /// reaching it has run out of memory first (#29).
 pub const max_nodes: u32 = @backingInt(ground);
