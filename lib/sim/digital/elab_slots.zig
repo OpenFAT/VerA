@@ -155,8 +155,11 @@ pub fn usesReal(t: *const Ast.Subroutine) bool {
     return false;
 }
 
-/// A fresh frame for `t` inside instance `inst`: its static one in pass one,
-/// an automatic task's per-call-site one in pass two.
+/// A fresh frame for `t` inside instance `inst`. Pass one gives every task
+/// and function its static one (`declareBody`, `generate`), or `earlyFrame`
+/// does for a constant function called before that. Pass two gives a timed
+/// automatic task one more per call site it inlines at
+/// (`compile.compileEnable`) and one for its out-of-line body (`outOfLine`).
 pub fn frame(r: *Run, t: *const Ast.Subroutine, inst: u32) Error!Frame {
     const g = r.growing.?;
     assert(inst < r.hier.scopes.items.len);
