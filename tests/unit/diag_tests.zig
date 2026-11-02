@@ -1614,7 +1614,7 @@ test "every code an explanation cites exists" {
             if (!std.ascii.isDigit(word[1]) or !std.ascii.isDigit(word[4])) continue;
             if (k + 5 < text.len and std.ascii.isAlphanumeric(text[k + 5])) continue;
             if (std.meta.stringToEnum(diag.Code, word) == null) {
-                std.debug.print("{s} cites {s}\n", .{ diag.Code.name(@fromBackingInt(@intCast(i))), word });
+                std.debug.print("{s} cites {s}\n", .{ @tagName(@as(diag.Code, @fromBackingInt(@intCast(i)))), word });
                 return error.TestUnexpectedResult;
             }
         }

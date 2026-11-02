@@ -141,7 +141,7 @@ pub fn render(bag: *Bag, w: *Writer, opts: RenderOptions) RenderError!void {
         if (opts.explain_hint and !explained.contains(e.code)) {
             explained.insert(e.code);
             try w.print("{s}{s} ={s} {s}help{s}: run `vera --explain {s}` for a detailed explanation\n", .{
-                spaces(gutter), pass.p.gutter, pass.p.reset, pass.p.help, pass.p.reset, e.code.name(),
+                spaces(gutter), pass.p.gutter, pass.p.reset, pass.p.help, pass.p.reset, @tagName(e.code),
             });
         }
         try w.writeByte('\n');
@@ -156,7 +156,7 @@ pub fn explain(c: Code, w: *Writer, palette: Palette) Writer.Error!void {
     assert(meta.title.len > 0);
     assert(meta.explain.len > 0);
     try w.print("{s}{s}{s}: {s}{s}{s}\n", .{
-        palette.bold, c.name(), palette.reset, palette.bold, meta.title, palette.reset,
+        palette.bold, @tagName(c), palette.reset, palette.bold, meta.title, palette.reset,
     });
     if (meta.lrm.len != 0) {
         try w.print("{s}LRM {s}{s}{s}\n", .{ palette.note, meta.annexPrefix(), meta.lrm, palette.reset });
@@ -176,7 +176,7 @@ fn renderOne(pass: Pass, e: entry.Entry) RenderError!u32 {
 
     // `error[E0313]: unknown variable: <message>`
     try w.print("{s}{s}[{s}]{s}{s}: {s}{s}", .{
-        p.forSeverity(e.severity), e.severity.word(), e.code.name(), p.reset,
+        p.forSeverity(e.severity), e.severity.word(), @tagName(e.code), p.reset,
         p.bold,                    meta.title,        p.reset,
     });
     if (e.message.len != 0) try w.print(": {s}", .{e.message});

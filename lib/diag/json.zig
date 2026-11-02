@@ -61,7 +61,7 @@ pub fn renderJson(bag: *Bag, w: *Writer) RenderError!void {
         const e = bag.at(row);
         const meta = code.info(e.code);
         try w.writeAll("{\"code\":\"");
-        try w.writeAll(e.code.name());
+        try w.writeAll(@tagName(e.code));
         try w.print("\",\"level\":\"{s}\",\"stage\":\"{s}\",\"lrm\":", .{ e.severity.word(), @tagName(e.stage) });
         try writeString(w, meta.lrm);
         try w.writeAll(",\"title\":");
