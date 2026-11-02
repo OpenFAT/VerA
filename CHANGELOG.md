@@ -147,6 +147,15 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2448/2452, Verilog 3611/3611, Veri
   formula; the AUR and the `OmarSiwy/homebrew-vera` tap are updated when
   their secrets are set.
 
+- **The `vera` Zig module's API changed** (#110), for a package that imports
+  it: `compileSourceOpts(gpa, src, target, opts)` is
+  `analyze(gpa, src, settings, bag)` (no `target`; the bag is a parameter),
+  `Options` is `Settings`, `CompileResult` is `Result` with `deinit(gpa)`, and
+  `generateDevice()`/`generateOutput()` are `Result.generate(gpa, codegen, bag)`,
+  returning a `Device` whose `refused` replaces `device_has_compile_error`.
+  `vera.tb`, `orchestrator`, `Preprocessor`, `libmap`, `codegen` and
+  `Elaborate` are no longer re-exported. (Added after the release: the v0.21.0
+  notes covered the CLI and the device contract only.)
 - **The device contract is a directory** (#98): `lib/contract.zig` is a
   root importing `lib/contract/`, one transformation per file. A host that
   copies the single file must ship `share/vera/contract/` beside it; the
