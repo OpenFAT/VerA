@@ -791,7 +791,7 @@ class FixtureLayoutTests(unittest.TestCase):
     def test_host_and_vpi_designs_exist(self):
         # A host's `//! device` is relative to the suite root, or to the
         # repository's for a `tests/host/...` device only VerA's host judges
-        # (build.zig `hostTests`); a `.c`'s `//! design` to the `.c`'s own
+        # (build/devices.zig `hostTests`); a `.c`'s `//! design` to the `.c`'s own
         # directory.
         missing = []
         for path in sorted((ROOT / "tests/host").glob("*.zig")) + fixture_files("*.c"):
