@@ -37,6 +37,8 @@ const Run = struct {
     reverted: struct { D.Instance, D.State } = undefined,
 };
 
+// ---- private ----
+
 fn run(rejects: usize) Run {
     const model: D.Model = .{};
     var out: Run = .{};

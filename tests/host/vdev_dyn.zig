@@ -6,6 +6,9 @@
 //! The transient takes `steps` points 1 ns apart, every input a 0/5 V
 //! square wave of period 20 ns, runs `updateState` and commits each, and
 //! hashes every output level, ramp end and next event the device keeps.
+//!
+//! Contents:
+//! - `pub fn run(steps: u64) callconv(.c) u64`
 const contract = @import("contract");
 
 /// The `--dyn` hook `vera --emit-so` calls: exports `Run(D).run` as the C

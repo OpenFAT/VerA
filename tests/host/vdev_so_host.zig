@@ -5,9 +5,12 @@
 //! outputs move on its own clock, v_a2d's on input crossings; v_buf's on
 //! every input edge. A device that loaded nothing or ran no point would
 //! hash the start value, so that is refused too.
+
 const std = @import("std");
 const options = @import("vdev_so_options");
 const vdyn = @import("vdev_dyn");
+
+// ---- private ----
 
 fn same(comptime name: []const u8, comptime D: type) !void {
     var lib = try @import("dynlib").DynLib.open(@field(options, name));

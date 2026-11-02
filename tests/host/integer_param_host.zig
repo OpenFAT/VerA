@@ -10,6 +10,8 @@ const D = @import("device");
 const n_u = @typeInfo(D.U).@"enum".field_names.len;
 const S = contract.RefFamily(f64, &@as([n_u]u8, @splat(contract.no_lane)), .{});
 
+// ---- private ----
+
 fn current(word: i64) f64 {
     var model: D.Model = .{};
     model.word = word;

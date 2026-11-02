@@ -11,7 +11,15 @@
 //!   python3 tools/asm_probe.py tests/codegen_probe.zig k.s
 //!
 //! No LRM clause: these check VerA's own code.
+
 const std = @import("std");
+const limit = @import("kernels").limit_kernels;
+
+/// Words per probed `lib/sim/rt/logic.zig` value; `top` masks the last one.
+const N = 4;
+const top: u64 = (1 << 56) - 1;
+
+// ---- private ----
 
 // ---------------------------------------------------------------------------
 // src/codegen/device/
@@ -139,8 +147,6 @@ export fn find_stop(p: [*]const u8, n: usize, i: usize) usize {
 // expect: cond_plain vector>=8
 // expect: not_vector vector>=5
 // expect: orx_vector vector>=4
-const N = 4;
-const top: u64 = (1 << 56) - 1;
 
 /// `logic.anyX`: any unknown bit in the value.
 export fn anyx_plain(x: [*]const u64, len: usize) bool {
@@ -200,7 +206,6 @@ export fn orx_vector(ov: [*]u64, ox: [*]u64, r: [*]const u64, unk: bool, len: us
 // expect: limit_kernels.zPnjlimClamp branches==0
 // expect: limit_kernels.zFetlimClamp branches==0
 // expect: limit_kernels.zLimvdsClamp branches==0
-const limit = @import("kernels").limit_kernels;
 
 /// `DEVpnjlim`: emits `zPnjlimClamp` out of line.
 export fn pnjlim(vnew: f64, vold: f64, vt: f64, vcrit: f64) f64 {

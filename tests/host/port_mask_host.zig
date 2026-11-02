@@ -9,6 +9,8 @@ const D = @import("device");
 const n_u = contract.nU(D);
 const S0 = contract.RefFamily(f64, &@as([n_u]u8, @splat(contract.no_lane)), .{});
 
+// ---- private ----
+
 fn gds(m: *D.Model) f64 {
     if (@hasDecl(D, "setup")) D.setup(S0, m);
     var inst: D.Instance = .{};

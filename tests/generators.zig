@@ -10,19 +10,10 @@
 //!
 //! One file: a nested namespace may not redeclare a name of the file scope,
 //! so the file scope declares only `main`, the namespaces and the test below.
-
-/// `vera-generators DIR`: every table's rows, each in its own child.
-/// `vera-generators DIR <generator> A B`: one row, here.
-pub fn main(init: @import("std").process.Init) !u8 {
-    return table.main(init);
-}
-
-test {
-    _ = table;
-    _ = wide;
-    _ = escaped;
-    _ = files;
-}
+//!
+//! Contents:
+//! - `pub const table.Known = struct`
+//! - `pub const table.Row = struct`
 
 const table = struct {
     //! The driver: each generator's rows as argv lines of this executable,
@@ -666,3 +657,16 @@ const files = struct {
         try std.testing.expect(!hasCode(&ok, .E0154));
     }
 };
+
+/// `vera-generators DIR`: every table's rows, each in its own child.
+/// `vera-generators DIR <generator> A B`: one row, here.
+pub fn main(init: @import("std").process.Init) !u8 {
+    return table.main(init);
+}
+
+test {
+    _ = table;
+    _ = wide;
+    _ = escaped;
+    _ = files;
+}

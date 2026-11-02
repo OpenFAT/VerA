@@ -60,12 +60,15 @@
 //! holds a step's text until the host commits it: the step that runs the
 //! 5.5 ns edge holds "edge\n", a revert drops it, and the retried step that
 //! is committed prints it (to stderr) and holds nothing after.
+
 const std = @import("std");
 const contract = @import("contract");
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 
 const Link = struct { a: usize, b: usize, g: f64 };
+
+// ---- private ----
 
 fn Circuit(comptime D: type) type {
     const n = @typeInfo(D.U).@"enum".field_names.len;
@@ -243,6 +246,39 @@ fn volts(comptime v: f64) *const fn (f64) f64 {
     }.f;
 }
 
+/// PULSE(0 5 5n 1n 1n 4n 10n): 2.5 V is crossed rising at 5.5 + 10k ns and
+/// falling at 10.5 + 10k ns.
+fn pulse(t: f64) f64 {
+    if (t < 5e-9) return 0;
+    const u = @mod(t - 5e-9, 10e-9);
+    if (u < 1e-9) return 5 * u / 1e-9;
+    if (u < 5e-9) return 5;
+    if (u < 6e-9) return 5 - 5 * (u - 5e-9) / 1e-9;
+    return 0;
+}
+
+/// q of a 2-bit counter from its output levels (q[1] is output 0).
+fn count(inst: anytype) u2 {
+    return @as(u2, @intFromBool(inst.lvl_to[0] == 5)) << 1 | @intFromBool(inst.lvl_to[1] == 5);
+}
+
+/// A 2-bit counter on `pulse` through the rising crossing (to 8 ns) and the
+/// falling one (to 13 ns): q after the operating point and after each, and
+/// the steps each span shrank.
+fn clockEdges(comptime C: type, c: *C) !struct { q: [3]u2, shrunk: [2]u32 } {
+    c.src[C.pin("clk")] = pulse;
+    c.g_gnd[C.pin("q[1]")] = 1e-4;
+    c.g_gnd[C.pin("q[0]")] = 1e-4;
+    c.birth();
+    _ = try c.op();
+    const q0 = count(c.inst);
+    while (c.t < 8e-9) try c.step(1e-9, 5e-14);
+    const q1 = count(c.inst);
+    const rise = c.shrunk;
+    while (c.t < 13e-9) try c.step(1e-9, 5e-14);
+    return .{ .q = .{ q0, q1, count(c.inst) }, .shrunk = .{ rise, c.shrunk - rise } };
+}
+
 test "v_inv: the operating point is the digital fixed point after one flip" {
     const C = Circuit(@import("v_inv"));
     for ([2]f64{ 5, 0 }, [2]f64{ 0, 5.0 * 1e4 / (1e4 + 1) }) |a, y| {
@@ -348,39 +384,6 @@ test "v_a2d under uic: the first sample is the reference, not a crossing" {
     try expectEqual(@as(f64, 1e-9), c.t);
     try expectEqual(@as(f64, 5), c.inst.lvl_to[0]);
     try expectEqual(@as(f64, 5), c.inst.lvl_to[1]);
-}
-
-/// PULSE(0 5 5n 1n 1n 4n 10n): 2.5 V is crossed rising at 5.5 + 10k ns and
-/// falling at 10.5 + 10k ns.
-fn pulse(t: f64) f64 {
-    if (t < 5e-9) return 0;
-    const u = @mod(t - 5e-9, 10e-9);
-    if (u < 1e-9) return 5 * u / 1e-9;
-    if (u < 5e-9) return 5;
-    if (u < 6e-9) return 5 - 5 * (u - 5e-9) / 1e-9;
-    return 0;
-}
-
-/// q of a 2-bit counter from its output levels (q[1] is output 0).
-fn count(inst: anytype) u2 {
-    return @as(u2, @intFromBool(inst.lvl_to[0] == 5)) << 1 | @intFromBool(inst.lvl_to[1] == 5);
-}
-
-/// A 2-bit counter on `pulse` through the rising crossing (to 8 ns) and the
-/// falling one (to 13 ns): q after the operating point and after each, and
-/// the steps each span shrank.
-fn clockEdges(comptime C: type, c: *C) !struct { q: [3]u2, shrunk: [2]u32 } {
-    c.src[C.pin("clk")] = pulse;
-    c.g_gnd[C.pin("q[1]")] = 1e-4;
-    c.g_gnd[C.pin("q[0]")] = 1e-4;
-    c.birth();
-    _ = try c.op();
-    const q0 = count(c.inst);
-    while (c.t < 8e-9) try c.step(1e-9, 5e-14);
-    const q1 = count(c.inst);
-    const rise = c.shrunk;
-    while (c.t < 13e-9) try c.step(1e-9, 5e-14);
-    return .{ .q = .{ q0, q1, count(c.inst) }, .shrunk = .{ rise, c.shrunk - rise } };
 }
 
 test "v_edge and v_any: a crossing no process waits for is not located" {

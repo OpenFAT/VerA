@@ -17,11 +17,13 @@
 const std = @import("std");
 const contract = @import("contract");
 const D = @import("device");
+const C = std.math.Complex;
 
 const n_u = @typeInfo(D.U).@"enum".field_names.len;
 const Dual = contract.RefFamily(f64, &lanes, .{});
 const lanes: [n_u]u8 = std.simd.iota(u8, n_u);
-const C = std.math.Complex;
+
+// ---- private ----
 
 fn bias() [n_u]f64 {
     var x: [n_u]f64 = @splat(0.0);

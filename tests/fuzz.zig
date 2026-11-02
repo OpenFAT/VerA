@@ -19,6 +19,38 @@ const sim = @import("sim");
 
 const Smith = std.testing.Smith;
 
+/// The vocabulary `tokensOne` draws from: keywords, operators and literals of
+/// both languages, so a sequence reaches the parser's and lowering's arms.
+const vocabulary = [_][]const u8{
+    "module",      "endmodule", "analog",     "begin",    "end",                "if",           "else",     "case",
+    "endcase",     "default",   "for",        "while",    "repeat",             "inout",        "input",    "output",
+    "electrical",  "parameter", "localparam", "real",     "integer",            "genvar",       "branch",   "function",
+    "endfunction", "initial",   "always",     "assign",   "wire",               "reg",          "generate", "endgenerate",
+    "V",           "I",         "ddt",        "idt",      "exp",                "ln",           "sqrt",     "abs",
+    "pow",         "limexp",    "cross",      "timer",    "@",                  "posedge",      "negedge",  "from",
+    "exclude",     "inf",       "$strobe",    "$display", "$abstime",           "$temperature", "$limit",   "white_noise",
+    "(",           ")",         ";",          ",",        "<+",                 "=",            "<=",       "==",
+    "+",           "-",         "*",          "/",        "%",                  "**",           "?",        ":",
+    "[",           "]",         "{",          "}",        "#",                  "&&",           "||",       "!",
+    "~",           "&",         "|",          "^",        "<<",                 ">>",           "<",        ">",
+    "0",           "1",         "1.5",        "1e-3",     "1k",                 "4'b10x1",      "8'hff",    "\"s\"",
+    "a",           "b",         "p",          "n",        "x",                  "m",            "`define",  "`include",
+    "`ifdef",      "`endif",    "`M",         "\n",       "(* desc = \"d\" *)",
+};
+
+/// Real fixtures, so the replay starts from inputs that reach every stage.
+const corpus = [_][]const u8{
+    @embedFile("conformance/tests/verilog-a/ch05_analog_behavior/resistor.va"),
+    @embedFile("conformance/tests/verilog-a/ch05_analog_behavior/timer_negative_time_tol_rejected.va"),
+    @embedFile("conformance/tests/verilog-a/ch04_expressions/arithmetic_operators.va"),
+    @embedFile("conformance/tests/verilog-a/ch10_directives/compact_modeling_macro_implies_its_extensions.va"),
+    @embedFile("conformance/tests/verilog/09_behavioral_modeling/assignment_force_release.v"),
+    // #48: an attribute instance as the last token, inside an unclosed generate block.
+    @embedFile("conformance/tests/verilog-a/ch06_hierarchy/generate_block_attribute_then_end_of_file_rejected.va"),
+};
+
+// ---- private ----
+
 /// A compile's diagnostics must justify its verdict: a refusal has an error,
 /// every entry has a catalogue title, and the bag renders.
 fn checkDiagnostics(bag: *vera.diag.Bag, refused: bool) !void {
@@ -46,25 +78,6 @@ fn bytesOne(_: void, s: *Smith) anyerror!void {
     var buf: [4096]u8 = undefined;
     try lint(buf[0..s.slice(&buf)]);
 }
-
-/// The vocabulary `tokensOne` draws from: keywords, operators and literals of
-/// both languages, so a sequence reaches the parser's and lowering's arms.
-const vocabulary = [_][]const u8{
-    "module",      "endmodule", "analog",     "begin",    "end",                "if",           "else",     "case",
-    "endcase",     "default",   "for",        "while",    "repeat",             "inout",        "input",    "output",
-    "electrical",  "parameter", "localparam", "real",     "integer",            "genvar",       "branch",   "function",
-    "endfunction", "initial",   "always",     "assign",   "wire",               "reg",          "generate", "endgenerate",
-    "V",           "I",         "ddt",        "idt",      "exp",                "ln",           "sqrt",     "abs",
-    "pow",         "limexp",    "cross",      "timer",    "@",                  "posedge",      "negedge",  "from",
-    "exclude",     "inf",       "$strobe",    "$display", "$abstime",           "$temperature", "$limit",   "white_noise",
-    "(",           ")",         ";",          ",",        "<+",                 "=",            "<=",       "==",
-    "+",           "-",         "*",          "/",        "%",                  "**",           "?",        ":",
-    "[",           "]",         "{",          "}",        "#",                  "&&",           "||",       "!",
-    "~",           "&",         "|",          "^",        "<<",                 ">>",           "<",        ">",
-    "0",           "1",         "1.5",        "1e-3",     "1k",                 "4'b10x1",      "8'hff",    "\"s\"",
-    "a",           "b",         "p",          "n",        "x",                  "m",            "`define",  "`include",
-    "`ifdef",      "`endif",    "`M",         "\n",       "(* desc = \"d\" *)",
-};
 
 /// A module header the generated body sits in, so most sequences get past
 /// "no module" to the stages that do the work.
@@ -175,17 +188,6 @@ fn pick(w: *std.Io.Writer, t: []const u8, cw: u32) void {
         } else w.writeByte(t[i]) catch return;
     }
 }
-
-/// Real fixtures, so the replay starts from inputs that reach every stage.
-const corpus = [_][]const u8{
-    @embedFile("conformance/tests/verilog-a/ch05_analog_behavior/resistor.va"),
-    @embedFile("conformance/tests/verilog-a/ch05_analog_behavior/timer_negative_time_tol_rejected.va"),
-    @embedFile("conformance/tests/verilog-a/ch04_expressions/arithmetic_operators.va"),
-    @embedFile("conformance/tests/verilog-a/ch10_directives/compact_modeling_macro_implies_its_extensions.va"),
-    @embedFile("conformance/tests/verilog/09_behavioral_modeling/assignment_force_release.v"),
-    // #48: an attribute instance as the last token, inside an unclosed generate block.
-    @embedFile("conformance/tests/verilog-a/ch06_hierarchy/generate_block_attribute_then_end_of_file_rejected.va"),
-};
 
 test "fuzz: .lint over raw bytes never panics, and every refusal is diagnosed" {
     try std.testing.fuzz({}, bytesOne, .{ .corpus = &corpus });

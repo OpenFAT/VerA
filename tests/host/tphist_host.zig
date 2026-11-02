@@ -17,11 +17,27 @@ const n_u = @typeInfo(D.U).@"enum".field_names.len;
 const S = contract.RefFamily(f64, &.{ 0, 1 }, .{});
 const S0 = contract.RefFamily(f64, &@as([n_u]u8, @splat(contract.no_lane)), .{});
 
+// ---- private ----
+
 /// `I(p, n)` at V = 0 is `1u * s`, the cached sum of the history.
 fn sumAt(m: *const D.Model, inst: *D.Instance, sim: contract.SimState) f64 {
     const x: [n_u]f64 = @splat(0.0);
     const r = D.eval(S, &x, m, inst, sim);
     return @abs(r[@backingInt(D.U.p)].v) / 1e-6;
+}
+
+/// Largest `.local` depot of any function in `text` (PTX), in bytes.
+fn maxDepot(text: []const u8) usize {
+    var best: usize = 0;
+    var at: usize = 0;
+    const key = "__local_depot";
+    while (std.mem.findPos(u8, text, at, key)) |i| : (at = i + key.len) {
+        const open = std.mem.findScalarPos(u8, text, i, '[') orelse break;
+        const close = std.mem.findScalarPos(u8, text, open, ']') orelse break;
+        const n = std.fmt.parseInt(usize, text[open + 1 .. close], 10) catch continue;
+        best = @max(best, n);
+    }
+    return best;
 }
 
 test "§2.9 a cached statement's held history reads back through a miss and a hit" {
@@ -48,20 +64,6 @@ test "§2.9 a cached statement's held history reads back through a miss and a hi
         try std.testing.expect(D.updateState(S, &m, inst, x, st, sim) == .ok);
         _ = D.stateCtl(&m, inst, st, .commit);
     }
-}
-
-/// Largest `.local` depot of any function in `text` (PTX), in bytes.
-fn maxDepot(text: []const u8) usize {
-    var best: usize = 0;
-    var at: usize = 0;
-    const key = "__local_depot";
-    while (std.mem.findPos(u8, text, at, key)) |i| : (at = i + key.len) {
-        const open = std.mem.findScalarPos(u8, text, i, '[') orelse break;
-        const close = std.mem.findScalarPos(u8, text, open, ']') orelse break;
-        const n = std.fmt.parseInt(usize, text[open + 1 .. close], 10) catch continue;
-        best = @max(best, n);
-    }
-    return best;
 }
 
 test "#82 eval keeps no copy of a cached history on the GPU stack" {

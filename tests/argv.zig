@@ -69,6 +69,41 @@ const Flag = struct {
     form: enum { switch_, separate, inline_ },
 };
 
+/// One command line and, once run, why it broke the contract (null: it held).
+const Row = struct { argv: []const []const u8, name: []const u8, why: ?[]const u8 = null };
+
+/// The rows and their cursor: one row per take, any number of hands.
+const Pool = struct {
+    arena: Allocator,
+    io: Io,
+    dir: []const u8,
+    rows: []Row,
+    next: std.atomic.Value(usize) = .init(0),
+    /// A row that could not be run at all (spawn failed): the run's error.
+    failed: ?anyerror = null,
+    /// Set once a row has run past `timeout_s`; no hand takes another row.
+    hung: std.atomic.Value(bool) = .init(false),
+
+    fn work(pool: *Pool) void {
+        while (!pool.hung.load(.monotonic)) {
+            const i = pool.next.fetchAdd(1, .monotonic);
+            if (i >= pool.rows.len) return;
+            const row = &pool.rows[i];
+            row.why = judge(pool.arena, pool.io, row.argv, pool.dir) catch |e| switch (e) {
+                error.Timeout => {
+                    pool.hung.store(true, .monotonic);
+                    row.why = pool.arena.print("ran past {d} s", .{timeout_s}) catch "ran past the limit";
+                    continue;
+                },
+                else => {
+                    pool.failed = e;
+                    return;
+                },
+            };
+        }
+    }
+};
+
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
     var arena_state: std.heap.ArenaAllocator = .init(init.gpa);
@@ -162,40 +197,7 @@ pub fn main(init: std.process.Init) !u8 {
     return if (bad == 0) 0 else 1;
 }
 
-/// One command line and, once run, why it broke the contract (null: it held).
-const Row = struct { argv: []const []const u8, name: []const u8, why: ?[]const u8 = null };
-
-/// The rows and their cursor: one row per take, any number of hands.
-const Pool = struct {
-    arena: Allocator,
-    io: Io,
-    dir: []const u8,
-    rows: []Row,
-    next: std.atomic.Value(usize) = .init(0),
-    /// A row that could not be run at all (spawn failed): the run's error.
-    failed: ?anyerror = null,
-    /// Set once a row has run past `timeout_s`; no hand takes another row.
-    hung: std.atomic.Value(bool) = .init(false),
-
-    fn work(pool: *Pool) void {
-        while (!pool.hung.load(.monotonic)) {
-            const i = pool.next.fetchAdd(1, .monotonic);
-            if (i >= pool.rows.len) return;
-            const row = &pool.rows[i];
-            row.why = judge(pool.arena, pool.io, row.argv, pool.dir) catch |e| switch (e) {
-                error.Timeout => {
-                    pool.hung.store(true, .monotonic);
-                    row.why = pool.arena.print("ran past {d} s", .{timeout_s}) catch "ran past the limit";
-                    continue;
-                },
-                else => {
-                    pool.failed = e;
-                    return;
-                },
-            };
-        }
-    }
-};
+// ---- private ----
 
 /// Why the run of `argv` (in `cwd`) breaks the exit contract, or null.
 fn judge(arena: Allocator, io: Io, argv: []const []const u8, cwd: []const u8) !?[]const u8 {

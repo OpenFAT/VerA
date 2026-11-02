@@ -15,6 +15,8 @@ const S = contract.RefFamily(f64, &.{ 0, 1 }, .{});
 /// `setup`'s value-only family.
 const V = contract.RefFamily(f64, &@as([n_u]u8, @splat(contract.no_lane)), .{});
 
+// ---- private ----
+
 fn sayAt(v: f64, out: *contract.Say) void {
     var x: [n_u]f64 = @splat(0.0);
     x[@backingInt(D.U.p)] = v;

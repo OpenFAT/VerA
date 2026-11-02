@@ -65,6 +65,8 @@ const Inst = struct {
     }
 };
 
+// ---- private ----
+
 /// The path of `name` in `tmp`, relative to the cwd the device opens it in.
 fn tmpPath(buf: []u8, tmp: *const std.testing.TmpDir, name: []const u8) []const u8 {
     return std.fmt.bufPrint(buf, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path[0..], name }) catch unreachable;
