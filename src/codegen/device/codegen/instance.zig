@@ -277,11 +277,11 @@ pub fn emitInstance(self: *Gen) Error!void {
         // Why it is held (`HeldVar.Why`), so a reader of the device can tell
         // a latch from retention.
         const note = try self.arena.print("// §5.10 held across evaluations: {t}", .{h.why});
-        if (h.array != none_u32) {
+        if (h.array != .none) {
             try emitHeldArrayField(self, h, self.names.held_names[i], note);
-            if (dirtyTracked(self, h.array)) try self.w(
+            if (dirtyTracked(self, @backingInt(h.array))) try self.w(
                 "    {s}__dirty: [2]i64 = .{{ 0, {d} }}, // §5.10 elements written since the last stateCtl\n",
-                .{ self.names.held_names[i], self.lowered.mem_arrays.items[h.array].len - 1 },
+                .{ self.names.held_names[i], self.lowered.mem_arrays.items[@backingInt(h.array)].len - 1 },
             );
             continue;
         }
@@ -454,10 +454,10 @@ fn keepHist(self: *Gen, comptime fmt: []const u8, args: anytype) Error!void {
 /// defaulting element by element to the declared initializer (§3.2's zero
 /// where the pattern is silent), the spec default as for a held scalar.
 fn emitHeldArrayField(self: *Gen, h: Lowered.HeldVar, name: []const u8, comment: []const u8) Error!void {
-    assert(h.array != none_u32);
+    assert(h.array != .none);
     assert(name.len != 0);
-    assert(h.array < self.lowered.mem_arrays.items.len);
-    const m = self.lowered.mem_arrays.items[h.array];
+    assert(@backingInt(h.array) < self.lowered.mem_arrays.items.len);
+    const m = self.lowered.mem_arrays.items[@backingInt(h.array)];
     const ty: []const u8 = if (m.ty == .integer) "i64" else "f64";
     var all_zero = true;
     for (h.inits) |iv| {

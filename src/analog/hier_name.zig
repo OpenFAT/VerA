@@ -12,7 +12,7 @@
 //! - `pub const Runtime = struct`
 //! - `pub fn pushCond(self: *Lower, c: Cond) Oom!void`
 //! - `pub fn popCond(self: *Lower) void`
-//! - `pub fn aliasProbe(self: *Lower, idx: u32) Oom!Mir.Value`
+//! - `pub fn aliasProbe(self: *Lower, idx: NodeId) Oom!Mir.Value`
 //! - `pub fn refuseRuntime(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void`
 //! - `pub fn checkAliasCall(self: *Lower, e: Ast.ExprId, name: []const u8, args: []const Ast.ExprId) Oom!lower_limit.AliasResult`
 //! - `pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue`
@@ -33,6 +33,7 @@ const lower_expr_op = @import("expr_op.zig");
 const lower_sysfunc_args = @import("sysfunc_args.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
+const NodeId = Lower.NodeId;
 const TypedValue = Lower.TypedValue;
 const poison = Lower.poison;
 const astTy = Lower.astTy;
@@ -44,7 +45,7 @@ pub const State = struct {
     /// an analog_net_reference in another ... call", and the declared unknown keeps the
     /// port ban about the declaration, which `node_voltages` no longer shows once an
     /// alias has been applied.
-    alias_home: std.StringHashMapUnmanaged(u32) = .empty,
+    alias_home: std.StringHashMapUnmanaged(NodeId) = .empty,
     /// The conditions enclosing the analog-initial statement being lowered,
     /// outermost first (`pushCond`). An alias call under any of them is chosen
     /// by a parameter, so it goes to `runtime` instead of `node_voltages`.
@@ -52,7 +53,7 @@ pub const State = struct {
     /// §9.20 + §5.2.1 the aliases a parameter chooses, keyed by the declared
     /// unknown of their analog_net_reference, which is what `node_voltages`
     /// names while one exists and what `aliasProbe` dispatches on.
-    runtime: std.AutoHashMapUnmanaged(u32, Runtime) = .empty,
+    runtime: std.AutoHashMapUnmanaged(NodeId, Runtime) = .empty,
 };
 
 /// One enclosing `if`/`?:` condition (`labels` empty) or `case` arm (`e` the
@@ -70,14 +71,14 @@ pub const Cond = struct {
 /// declared unknown, or an unconditional alias before these), then each
 /// conditional call in source order, the last whose conditions hold winning.
 pub const Runtime = struct {
-    base: u32,
-    entries: std.ArrayList(struct { target: u32, conds: []const Cond }) = .empty,
+    base: NodeId,
+    entries: std.ArrayList(struct { target: NodeId, conds: []const Cond }) = .empty,
 };
 
 /// §9.20 one resolved `hierarchical_reference_string`: the unknown it names,
 /// and whether the name was a node of the flat design itself (`direct`) rather
 /// than a child port flattening bound to one.
-const AliasHit = struct { idx: u32, direct: bool };
+const AliasHit = struct { idx: NodeId, direct: bool };
 
 /// Enters an arm of a conditional inside `analog initial`; a no-op elsewhere,
 /// where no alias call can be.
@@ -96,7 +97,7 @@ pub fn popCond(self: *Lower) void {
 /// whose alias a parameter chooses (§9.20 re-evaluates per sweep point, §5.2.1
 /// re-executes `analog initial` on a parameter change), emits a select over the
 /// candidates, re-lowering their conditions (`Cond.pure` makes that the same value).
-pub fn aliasProbe(self: *Lower, idx: u32) Oom!Mir.Value {
+pub fn aliasProbe(self: *Lower, idx: NodeId) Oom!Mir.Value {
     assert(self.blockValid(self.cur));
     const set = self.hier_name_state.runtime.get(idx) orelse return lower_node.probe(self, idx);
     var v = try lower_node.probe(self, set.base);
@@ -116,7 +117,7 @@ pub fn aliasProbe(self: *Lower, idx: u32) Oom!Mir.Value {
 /// row or column chosen by the card as well.
 /// ponytail: refused rather than routed; route them through the same select
 /// the day a model needs one.
-pub fn refuseRuntime(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void {
+pub fn refuseRuntime(self: *Lower, tok: u32, hi: NodeId, lo: NodeId) Oom!void {
     assert(self.nodeValid(hi));
     assert(self.nodeValid(lo));
     const rt = &self.hier_name_state.runtime;
@@ -169,7 +170,7 @@ pub fn checkAliasCall(self: *Lower, e: Ast.ExprId, name: []const u8, args: []con
         return .refused;
     }
     // The analog_net_reference's own unknown, for the alias below.
-    var local: u32 = ground;
+    var local: NodeId = ground;
     // "either a scalar or vector continuous node": a whole vector is its
     // elements, each checked and aliased like a scalar (`aliasVector`).
     var vector: ?Lower.VecRange = null;
@@ -183,7 +184,7 @@ pub fn checkAliasCall(self: *Lower, e: Ast.ExprId, name: []const u8, args: []con
                     try self.err(self.file.exprs.mainTok(e), .E0812, "the analog_net_reference of `{s}` is not a continuous node declared in this module", .{name});
                     return .refused;
                 }
-                if (idx < self.out.num_ports) {
+                if (@backingInt(idx) < self.out.num_ports) {
                     try self.err(self.file.exprs.mainTok(e), .E0812, "§9.20 does not allow the analog_net_reference to be a port: `{s}`", .{rname});
                     return .refused;
                 }
@@ -202,7 +203,7 @@ pub fn checkAliasCall(self: *Lower, e: Ast.ExprId, name: []const u8, args: []con
             // or to be involved in port connections." A port is already bound to
             // whatever the instantiating netlist connected it to, and the alias
             // would bind the same matrix position a second time.
-            if (idx.? < self.out.num_ports) {
+            if (@backingInt(idx.?) < self.out.num_ports) {
                 try self.err(self.file.exprs.mainTok(e), .E0812, "§9.20 does not allow the analog_net_reference to be a port: `{s}`", .{rname});
                 return .refused;
             }
@@ -337,7 +338,7 @@ fn aliasVector(self: *Lower, fname: []const u8, ref_name: []const u8, r: Lower.V
 /// ponytail: a string parameter the model card overrides is frozen at its default,
 /// as §3.6.3.2's nodeset is. Upgrade: refuse a parameter-valued string whose default
 /// and override could resolve differently.
-fn bindAlias(self: *Lower, fname: []const u8, ref_name: []const u8, local: u32, target: []const u8) Oom!lower_limit.AliasResult {
+fn bindAlias(self: *Lower, fname: []const u8, ref_name: []const u8, local: NodeId, target: []const u8) Oom!lower_limit.AliasResult {
     const hit = resolveAliasNode(self, target) orelse return .unresolved;
     // §1.3.1.1 ground is not an unknown, but it IS a valid continuous node and
     // the clause's own example aliases to it ("node n1 will be aliased to
@@ -346,10 +347,10 @@ fn bindAlias(self: *Lower, fname: []const u8, ref_name: []const u8, local: u32, 
     if (hit.idx != ground) {
         if (lower_discipline.nodeDisciplineConflict(
             self,
-            self.out.nodes.items(.disc)[local],
-            self.out.nodes.items(.disc)[hit.idx],
+            self.out.nodes.items(.disc)[@backingInt(local)],
+            self.out.nodes.items(.disc)[@backingInt(hit.idx)],
         ) != null) return .unresolved;
-        if (self.out.disciplines.get(self.out.nodes.items(.disc)[hit.idx])) |info| {
+        if (self.out.disciplines.get(self.out.nodes.items(.disc)[@backingInt(hit.idx)])) |info| {
             if (info.is_discrete) return .unresolved;
         }
     }
@@ -361,7 +362,7 @@ fn bindAlias(self: *Lower, fname: []const u8, ref_name: []const u8, local: u32, 
         // returns 0. Flattening binds it to the parent net, whose flow every
         // instance on the net shares, so answering 1 would measure the wrong
         // quantity. Upgrade: a per-instance terminal flow unknown from elaboration.
-        if (!hit.direct or hit.idx == ground or hit.idx >= self.out.num_ports) return .unresolved;
+        if (!hit.direct or hit.idx == ground or @backingInt(hit.idx) >= self.out.num_ports) return .unresolved;
     }
     // A call under a parameter condition: `aliasProbe` chooses at run time, since
     // the model card may override the parameter. The net keeps its declared unknown.

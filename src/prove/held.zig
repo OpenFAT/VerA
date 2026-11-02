@@ -68,7 +68,7 @@ pub fn prune(arena: Allocator, mir: *Mir, lowered: *const Lowered) Error!?[]cons
         if (k) continue;
         // `.unless_invariant` is a scalar's reason only: `holdArray` rows are
         // `.event`, so no `mem_arrays` row is left pointing here.
-        assert(h.array == Lowered.none_u32);
+        assert(h.array == .none);
         const seed = an.rv(h.seed);
         const inst = mir.valueDef(seed).inst_result;
         mir.unlink(@fromBackingInt(an.def_block[@backingInt(seed)]), inst);
@@ -78,7 +78,7 @@ pub fn prune(arena: Allocator, mir: *Mir, lowered: *const Lowered) Error!?[]cons
     // kept rows. A held array's seed is its `anew`, which carries no row: its
     // `mem_arrays` entry does, and `Lower.dropHeld` renumbers that.
     for (held, keep, rows) |h, k, row| {
-        if (!k or h.array != Lowered.none_u32) continue;
+        if (!k or h.array != .none) continue;
         const inst = mir.valueDef(an.rv(h.seed)).inst_result;
         mir.extra.items[mir.insts.items(.b)[@backingInt(inst)] + 1] = @backingInt(row);
     }
@@ -139,7 +139,7 @@ fn rowArgs(arena: Allocator, mir: *Mir, held: []const Lowered.HeldVar, keep: []c
         row.* = .undef;
         if (!k) continue;
         defer i += 1;
-        if (h.array != Lowered.none_u32) continue;
+        if (h.array != .none) continue;
         row.* = try mir.addIntConst(arena, @intCast(i));
     }
     assert(i <= held.len);

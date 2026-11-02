@@ -181,7 +181,7 @@ pub fn lookupName(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!TypedValue 
     b.msg("`{s}`", .{name});
     const near = diag.didYouMeanMap(Lower.VarSlot, name, self.vars) orelse
         diag.didYouMeanMap(u32, name, self.param_index) orelse
-        diag.didYouMeanMap(u32, name, self.node_voltages) orelse
+        diag.didYouMeanMap(Lower.NodeId, name, self.node_voltages) orelse
         diag.didYouMeanMap(Lower.BranchInfo, name, self.branches);
     if (near) |s| b.suggestHere(s);
     try b.emit();

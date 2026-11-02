@@ -653,13 +653,13 @@ fn holdArray(self: *Lower, name: []const u8, ty: Ty, id: u32, inits: []const Mir
     assert(id < self.out.mem_arrays.items.len);
     const idx: u32 = @intCast(self.out.held_vars.items.len);
     const seed = try self.mir.emitAnew(self.arena, self.cur, id);
-    self.out.mem_arrays.items[id].held = idx;
+    self.out.mem_arrays.items[id].held = @fromBackingInt(idx);
     try self.out.held_vars.append(self.arena, .{
         .name = try uniqueHeld(self, name, idx),
         .ty = ty,
         .init = zeroOf(ty),
         .seed = seed,
-        .array = id,
+        .array = @fromBackingInt(id),
         .inits = inits,
         .d2a = d2a,
     });

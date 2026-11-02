@@ -254,7 +254,7 @@ fn judgeValue(self: *Lower, v0: Mir.Value) Oom!bool {
         // §3.2.2 a fresh local array is static; a held one is dynamic, as a
         // held variable is. An element is static when its version and its
         // index are, and a version when everything stored into it is.
-        .anew => |a| return self.out.mem_arrays.items[a.array].held == Lower.none_u32,
+        .anew => |a| return self.out.mem_arrays.items[a.array].held == .none,
         .load => |l| try work.appendSlice(self.arena, &.{ .{ .value = l.arr }, .{ .value = l.index } }),
         .store => |s| try work.appendSlice(self.arena, &.{ .{ .value = s.arr }, .{ .value = s.index }, .{ .value = s.value } }),
     }

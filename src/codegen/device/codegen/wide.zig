@@ -88,9 +88,9 @@ fn node(self: *Gen, ops: []const Mir.Value, i: u32) Error!void {
     const w = n.width;
     // `analog/wide.zig` appends a node after its operands, so every operand
     // index is below its parent's: the walk terminates and cannot cycle.
-    if (n.a != none_u32) assert(n.a < i);
-    if (n.b != none_u32) assert(n.b < i);
-    if (n.c != none_u32) assert(n.c < i);
+    if (@backingInt(n.a) != none_u32) assert(@backingInt(n.a) < i);
+    if (@backingInt(n.b) != none_u32) assert(@backingInt(n.b) < i);
+    if (@backingInt(n.c) != none_u32) assert(@backingInt(n.c) < i);
     const len_before = self.out.items.len;
     switch (n.op) {
         .leaf_int => {
@@ -132,72 +132,72 @@ fn node(self: *Gen, ops: []const Mir.Value, i: u32) Error!void {
             try self.b(" }})", .{});
         },
         .resize => {
-            try self.b("zwResize({d}, {d}, {}, ", .{ w, nodes[n.a].width, n.signed });
-            try node(self, ops, n.a);
+            try self.b("zwResize({d}, {d}, {}, ", .{ w, nodes[@backingInt(n.a)].width, n.signed });
+            try node(self, ops, @backingInt(n.a));
             try self.b(")", .{});
         },
         .to_real => {
             assert(w == 0);
-            try self.b("zwToReal({d}, {}, ", .{ nodes[n.a].width, nodes[n.a].signed });
-            try node(self, ops, n.a);
+            try self.b("zwToReal({d}, {}, ", .{ nodes[@backingInt(n.a)].width, nodes[@backingInt(n.a)].signed });
+            try node(self, ops, @backingInt(n.a));
             try self.b(")", .{});
         },
         .from_real => {
-            assert(nodes[n.a].width == 0);
+            assert(nodes[@backingInt(n.a)].width == 0);
             try self.b("zwFromReal({d}, ", .{w});
-            try node(self, ops, n.a);
+            try node(self, ops, @backingInt(n.a));
             try self.b(")", .{});
         },
-        .neg => if (w == 0) try unaryReal(self, ops, "-", n.a) else try call(self, ops, "zwNeg", n, &.{n.a}),
-        .not => try call(self, ops, "zwNot", n, &.{n.a}),
-        .add => if (w == 0) try binaryReal(self, ops, "+", n) else try call(self, ops, "zwAdd", n, &.{ n.a, n.b }),
-        .sub => if (w == 0) try binaryReal(self, ops, "-", n) else try call(self, ops, "zwSub", n, &.{ n.a, n.b }),
-        .mul => if (w == 0) try binaryReal(self, ops, "*", n) else try call(self, ops, "zwMul", n, &.{ n.a, n.b }),
+        .neg => if (w == 0) try unaryReal(self, ops, "-", @backingInt(n.a)) else try call(self, ops, "zwNeg", n, &.{@backingInt(n.a)}),
+        .not => try call(self, ops, "zwNot", n, &.{@backingInt(n.a)}),
+        .add => if (w == 0) try binaryReal(self, ops, "+", n) else try call(self, ops, "zwAdd", n, &.{ @backingInt(n.a), @backingInt(n.b) }),
+        .sub => if (w == 0) try binaryReal(self, ops, "-", n) else try call(self, ops, "zwSub", n, &.{ @backingInt(n.a), @backingInt(n.b) }),
+        .mul => if (w == 0) try binaryReal(self, ops, "*", n) else try call(self, ops, "zwMul", n, &.{ @backingInt(n.a), @backingInt(n.b) }),
         .div => if (w == 0) try binaryReal(self, ops, "/", n) else try signedCall(self, ops, "zwDiv", n),
         .rem => if (w == 0) try fnReal(self, ops, "@rem", n) else try signedCall(self, ops, "zwRem", n),
-        .@"and" => try call(self, ops, "zwAnd", n, &.{ n.a, n.b }),
-        .@"or" => try call(self, ops, "zwOr", n, &.{ n.a, n.b }),
-        .xor => try call(self, ops, "zwXor", n, &.{ n.a, n.b }),
-        .xnor => try call(self, ops, "zwXnor", n, &.{ n.a, n.b }),
+        .@"and" => try call(self, ops, "zwAnd", n, &.{ @backingInt(n.a), @backingInt(n.b) }),
+        .@"or" => try call(self, ops, "zwOr", n, &.{ @backingInt(n.a), @backingInt(n.b) }),
+        .xor => try call(self, ops, "zwXor", n, &.{ @backingInt(n.a), @backingInt(n.b) }),
+        .xnor => try call(self, ops, "zwXnor", n, &.{ @backingInt(n.a), @backingInt(n.b) }),
         .shl => {
             try self.b("zwShl({d}, ", .{w});
-            try node(self, ops, n.a);
-            try self.b(", {d}, ", .{nodes[n.b].width});
-            try node(self, ops, n.b);
+            try node(self, ops, @backingInt(n.a));
+            try self.b(", {d}, ", .{nodes[@backingInt(n.b)].width});
+            try node(self, ops, @backingInt(n.b));
             try self.b(")", .{});
         },
         .shr, .ashr => {
             // §5.1.12: `>>>` fills with the sign of a signed operand only.
             try self.b("zwShr({d}, {}, ", .{ w, n.op == .ashr and n.signed });
-            try node(self, ops, n.a);
-            try self.b(", {d}, ", .{nodes[n.b].width});
-            try node(self, ops, n.b);
+            try node(self, ops, @backingInt(n.a));
+            try self.b(", {d}, ", .{nodes[@backingInt(n.b)].width});
+            try node(self, ops, @backingInt(n.b));
             try self.b(")", .{});
         },
         .pow => if (w == 0) try fnReal(self, ops, "std.math.pow(f64, ", n) else {
             // A real exponent makes the operator real (`analog/wide.zig`).
-            const e = nodes[n.b];
+            const e = nodes[@backingInt(n.b)];
             try self.b("zwPow({d}, {}, ", .{ w, n.signed });
-            try node(self, ops, n.a);
+            try node(self, ops, @backingInt(n.a));
             try self.b(", {d}, {}, ", .{ e.width, e.signed });
-            try node(self, ops, n.b);
+            try node(self, ops, @backingInt(n.b));
             try self.b(")", .{});
         },
         .eq, .lt, .le => try compare(self, ops, n),
         .land, .lor => {
             try self.b("@as(u1, @intFromBool(", .{});
-            try truth(self, ops, n.a);
+            try truth(self, ops, @backingInt(n.a));
             try self.b(" {s} ", .{if (n.op == .land) "and" else "or"});
-            try truth(self, ops, n.b);
+            try truth(self, ops, @backingInt(n.b));
             try self.b("))", .{});
         },
         .lnot => {
             try self.b("@as(u1, @intFromBool(!", .{});
-            try truth(self, ops, n.a);
+            try truth(self, ops, @backingInt(n.a));
             try self.b("))", .{});
         },
         .red_and, .red_or, .red_xor => {
-            const a = nodes[n.a];
+            const a = nodes[@backingInt(n.a)];
             try self.b("@as(u1, @intFromBool({s}{s}({d}, ", .{
                 if (n.op == .red_or) "!" else "",
                 switch (n.op) {
@@ -208,16 +208,16 @@ fn node(self: *Gen, ops: []const Mir.Value, i: u32) Error!void {
                 },
                 a.width,
             });
-            try node(self, ops, n.a);
+            try node(self, ops, @backingInt(n.a));
             try self.b(")))", .{});
         },
         .cond => {
             try self.b("(if (", .{});
-            try truth(self, ops, n.a);
+            try truth(self, ops, @backingInt(n.a));
             try self.b(") ", .{});
-            try node(self, ops, n.b);
+            try node(self, ops, @backingInt(n.b));
             try self.b(" else ", .{});
-            try node(self, ops, n.c);
+            try node(self, ops, @backingInt(n.c));
             try self.b(")", .{});
         },
     }
@@ -228,28 +228,28 @@ fn node(self: *Gen, ops: []const Mir.Value, i: u32) Error!void {
 /// else `zwEq`/`zwLt` at the operands' width.
 fn compare(self: *Gen, ops: []const Mir.Value, n: Lowered.WideNode) Error!void {
     assert(n.op == .eq or n.op == .lt or n.op == .le);
-    assert(n.b != none_u32);
-    const a = self.lowered.wide_nodes.items[n.a];
+    assert(@backingInt(n.b) != none_u32);
+    const a = self.lowered.wide_nodes.items[@backingInt(n.a)];
     try self.b("@as(u1, @intFromBool(", .{});
     if (a.width == 0) {
         try self.b("(", .{});
-        try node(self, ops, n.a);
+        try node(self, ops, @backingInt(n.a));
         try self.b(") {s} (", .{switch (n.op) {
             .eq => "==",
             .lt => "<",
             .le => "<=",
             else => unreachable, // else: asserted on entry
         }});
-        try node(self, ops, n.b);
+        try node(self, ops, @backingInt(n.b));
         try self.b(")", .{});
     } else {
         // `le` is `!(b < a)`: an integer order is total.
         const swap = n.op == .le;
         try self.b("{s}{s}({d}, ", .{ if (swap) "!" else "", if (n.op == .eq) "zwEq" else "zwLt", a.width });
         if (n.op != .eq) try self.b("{}, ", .{a.signed});
-        try node(self, ops, if (swap) n.b else n.a);
+        try node(self, ops, if (swap) @backingInt(n.b) else @backingInt(n.a));
         try self.b(", ", .{});
-        try node(self, ops, if (swap) n.a else n.b);
+        try node(self, ops, if (swap) @backingInt(n.a) else @backingInt(n.b));
         try self.b(")", .{});
     }
     try self.b("))", .{});
@@ -285,11 +285,11 @@ fn call(self: *Gen, ops: []const Mir.Value, name: []const u8, n: Lowered.WideNod
 /// Writes `name(width, signed, a, b)`, for the operators that read a sign.
 fn signedCall(self: *Gen, ops: []const Mir.Value, name: []const u8, n: Lowered.WideNode) Error!void {
     assert(n.width != 0);
-    assert(n.b != none_u32);
+    assert(@backingInt(n.b) != none_u32);
     try self.b("{s}({d}, {}, ", .{ name, n.width, n.signed });
-    try node(self, ops, n.a);
+    try node(self, ops, @backingInt(n.a));
     try self.b(", ", .{});
-    try node(self, ops, n.b);
+    try node(self, ops, @backingInt(n.b));
     try self.b(")", .{});
 }
 
@@ -305,21 +305,21 @@ fn unaryReal(self: *Gen, ops: []const Mir.Value, op: []const u8, a: u32) Error!v
 /// Writes `((a) op (b))` over two reals.
 fn binaryReal(self: *Gen, ops: []const Mir.Value, op: []const u8, n: Lowered.WideNode) Error!void {
     assert(n.width == 0);
-    assert(n.b != none_u32);
+    assert(@backingInt(n.b) != none_u32);
     try self.b("((", .{});
-    try node(self, ops, n.a);
+    try node(self, ops, @backingInt(n.a));
     try self.b(") {s} (", .{op});
-    try node(self, ops, n.b);
+    try node(self, ops, @backingInt(n.b));
     try self.b("))", .{});
 }
 
 /// `f(a, b)` over two reals; `f` ends where its first operand begins.
 fn fnReal(self: *Gen, ops: []const Mir.Value, f: []const u8, n: Lowered.WideNode) Error!void {
     assert(n.width == 0);
-    assert(n.b != none_u32);
+    assert(@backingInt(n.b) != none_u32);
     try self.b("{s}{s}", .{ f, if (std.mem.endsWith(u8, f, " ")) "" else "(" });
-    try node(self, ops, n.a);
+    try node(self, ops, @backingInt(n.a));
     try self.b(", ", .{});
-    try node(self, ops, n.b);
+    try node(self, ops, @backingInt(n.b));
     try self.b(")", .{});
 }

@@ -27,7 +27,8 @@
 //!
 //! Contents:
 //! - `pub const Lowered`, `pub const Oom`, `pub const Error`
-//! - `pub const ParamInfo`, `unnamed_branch`, `ground`, `none_u32`, `NodeKind`,
+//! - `pub const ParamInfo`, `unnamed_branch`, `ground`, `none_u32`, the handles
+//!   (`NodeId`, `BranchId`, `ContribId`, `ParamId`, `HeldId`, `ArrayId`, `WideId`), `NodeKind`,
 //!   `DeclMeta`, `VecRange`, `DisciplineInfo`, `Access`, `Kind`, `NoiseKind`,
 //!   `NoiseSrc`, `ChargeSite`, `Ty`, `HeldVar`, `TpSlot`, `Const` (`Lowered`'s rows)
 //! - `pub const ParamOverride`, `pub const BranchInfo = struct`
@@ -57,7 +58,7 @@
 //! - `pub fn valueValid(self: *const Lower, v: Mir.Value) bool`
 //! - `pub fn stmtCount(self: *const Lower) usize`
 //! - `pub fn blockValid(self: *const Lower, b: Mir.Block) bool`
-//! - `pub fn nodeValid(self: *const Lower, n: u32) bool`
+//! - `pub fn nodeValid(self: *const Lower, n: NodeId) bool`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -143,6 +144,13 @@ pub const ParamInfo = Lowered.ParamInfo;
 pub const unnamed_branch = Lowered.unnamed_branch;
 pub const ground = Lowered.ground;
 pub const none_u32 = Lowered.none_u32;
+pub const NodeId = Lowered.NodeId;
+pub const BranchId = Lowered.BranchId;
+pub const ContribId = Lowered.ContribId;
+pub const ParamId = Lowered.ParamId;
+pub const HeldId = Lowered.HeldId;
+pub const ArrayId = Lowered.ArrayId;
+pub const WideId = Lowered.WideId;
 pub const NodeKind = Lowered.NodeKind;
 pub const DeclMeta = Lowered.DeclMeta;
 pub const VecRange = Lowered.VecRange;
@@ -164,14 +172,14 @@ pub const ParamOverride = elab.design.ParamOverride;
 
 /// A §3.12 named branch: a node pair carrying a flow and a potential.
 pub const BranchInfo = struct {
-    hi: u32, // `nodes` row
-    lo: u32, // `nodes` row (`ground` if implicit, §1.3.1.1)
+    hi: NodeId, // `nodes` row
+    lo: NodeId, // `nodes` row (`ground` if implicit, §1.3.1.1)
     /// §5.4.1 "There can be any number of named branches between any two
     /// signals", so the node pair does not identify the branch, and everything
     /// that retains a value per branch (§5.6.1.2/§5.6.1.3) has to key on this
     /// instead. One id per declared name, elements of a §3.12 branch array
     /// included: they are separate branches over one terminal pair.
-    id: u32,
+    id: BranchId,
 };
 
 /// A lowered expression: its Value plus the LRM type that governs which opcode
@@ -339,10 +347,10 @@ branches: std.StringHashMapUnmanaged(BranchInfo) = .empty, // §3.12 named branc
 /// §3.12.1 port branches: branch name → the port's `nodes` row. A table
 /// of its own, not a flag on `BranchInfo`, because a port branch is not a node
 /// pair: it is the §5.4.3 port flow under a second name.
-port_branches: std.StringHashMapUnmanaged(u32) = .empty,
+port_branches: std.StringHashMapUnmanaged(NodeId) = .empty,
 /// §1.3.1 net name → `nodes` row. Nets only: a §5.4.2/§5.4.3 flow unknown is
 /// not reachable by name (`flow_unknowns` and `port_probes` are its identity).
-node_voltages: std.StringHashMapUnmanaged(u32) = .empty,
+node_voltages: std.StringHashMapUnmanaged(NodeId) = .empty,
 
 // ---- internal lowering state (not part of the codegen contract) ----
 /// Sub-file-private state: each is read and written by that one file only.
@@ -596,7 +604,7 @@ stmt_depth: u32 = 0,
 const Lower = @This();
 
 /// §5.4.2.1 one access function read, kept for the end-of-module probe sweep.
-const BranchRead = struct { access: Access, hi: u32, lo: u32, tok: u32 };
+const BranchRead = struct { access: Access, hi: NodeId, lo: NodeId, tok: u32 };
 /// §5.9 one enclosing loop's `break` and `continue` targets.
 const LoopCtx = struct { brk: Mir.Block, cont: Mir.Block };
 /// §4.7.1 the function being inlined: its return slot and exit block.
@@ -810,8 +818,8 @@ pub fn blockValid(self: *const Lower, b: Mir.Block) bool {
 }
 
 /// Reports whether `n` is ground or a row of `out.nodes`.
-pub fn nodeValid(self: *const Lower, n: u32) bool {
-    return n == ground or n < self.out.nodes.len;
+pub fn nodeValid(self: *const Lower, n: NodeId) bool {
+    return n == ground or @backingInt(n) < self.out.nodes.len;
 }
 
 // ---- private ----

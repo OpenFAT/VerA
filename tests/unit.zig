@@ -7202,7 +7202,7 @@ pub const prove_oom_tests = struct {
         const ev = try mir.emit(a, e, .fmul, &.{ p, seed });
         _ = try mir.emitJump(a, e, j);
         const out = try mir.emitPhi(a, j, &.{ .{ .block = t, .value = tv }, .{ .block = e, .value = ev } });
-        try lw.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 0, .resist_val = out });
+        try lw.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(0), .resist_val = out });
 
         if (try held.prune(a, &mir, &lw)) |keep| std.debug.assert(keep.len == 1);
         _ = try ifconv.run(a, &mir, .pure, null);
@@ -8110,8 +8110,8 @@ pub const lower_tests = struct {
         try std.testing.expectEqual(@as(usize, 1), h.low.out.contributions.items.len);
         const c = h.low.out.contributions.items[0];
         try std.testing.expectEqual(Access.flow, c.access);
-        try std.testing.expectEqual(@as(u32, 0), c.hi);
-        try std.testing.expectEqual(@as(u32, 1), c.lo);
+        try std.testing.expectEqual(@as(u32, 0), @backingInt(c.hi));
+        try std.testing.expectEqual(@as(u32, 1), @backingInt(c.lo));
         // …and §5.6.1.2 splits them: the guarded g*V is resistive, ddt(c*V) is not.
         const resist = h.mir.resolveAlias(c.resist_val);
         const react = h.mir.resolveAlias(c.react_val);
@@ -8253,15 +8253,15 @@ pub const lower_tests = struct {
         try std.testing.expectEqual(@as(u32, 2), h.low.out.num_ports);
         try std.testing.expectEqual(@as(usize, 2), h.low.out.port_probes.items.len);
         // Deduped by port, in first-probe order, and never inside `num_ports`.
-        try std.testing.expectEqual(@as(u32, 0), h.low.out.port_probes.items[0].port);
-        try std.testing.expectEqual(@as(u32, 1), h.low.out.port_probes.items[1].port);
+        try std.testing.expectEqual(@as(u32, 0), @backingInt(h.low.out.port_probes.items[0].port));
+        try std.testing.expectEqual(@as(u32, 1), @backingInt(h.low.out.port_probes.items[1].port));
         for (h.low.out.port_probes.items) |pp| {
-            try std.testing.expect(pp.u >= h.low.out.num_ports);
+            try std.testing.expect(@backingInt(pp.u) >= h.low.out.num_ports);
             // The kind tag, which codegen's `isFlowUnknown` reads. Not the
             // `"flow(<"` spelling: §2.8.1 lets a net be declared `\flow(<p>)`.
             // The spelling the host sees is pinned by codegen.zig's "the `U` block
             // is the SPELLING contract" test.
-            try std.testing.expectEqual(pp.port, h.low.out.nodes.items(.kind)[pp.u].port_flow);
+            try std.testing.expectEqual(pp.port, h.low.out.nodes.items(.kind)[@backingInt(pp.u)].port_flow);
         }
         try std.testing.expectEqualStrings("flow(<a>)", Lower.nodeName(&h.low, h.low.out.port_probes.items[0].u));
     }
@@ -8324,7 +8324,7 @@ pub const lower_tests = struct {
             defer g.deinit();
             _ = try g.low.lowerFile();
             // `p` and `n` are `nodes` rows 0 and 1, so the branch is that pair.
-            try std.testing.expectEqual(c.unknown, g.low.out.flow_unknowns.contains(.{ .hi = 0, .lo = 1 }));
+            try std.testing.expectEqual(c.unknown, g.low.out.flow_unknowns.contains(.{ .hi = @fromBackingInt(0), .lo = @fromBackingInt(1) }));
         }
     }
 
@@ -18547,7 +18547,7 @@ pub const verilog_tests = struct {
     /// Appends the unconditional direct contribution `I(hi, lo) <+ resist +
     /// ddt(react)`.
     fn addFlow(f: *Fixture, hi: u32, lo: u32, resist: Mir.Value, react: Mir.Value) !void {
-        try f.lowered.contributions.append(f.alloc(), .{ .access = .flow, .hi = hi, .lo = lo, .resist_val = resist, .react_val = react, .wrote_val = .f_one });
+        try f.lowered.contributions.append(f.alloc(), .{ .access = .flow, .hi = @fromBackingInt(hi), .lo = @fromBackingInt(lo), .resist_val = resist, .react_val = react, .wrote_val = .f_one });
     }
 
     /// Builds `four` with `I(y, vss) <+ V(y) - V(a)`: y settles at V(a).
@@ -18831,7 +18831,7 @@ pub const verilog_tests = struct {
             defer f.deinit();
             try f.init(&four);
             f.lowered.num_ports = 4;
-            try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 1, .lo = 0, .wrote_val = .f_one });
+            try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(0), .wrote_val = .f_one });
             try expectRefused(&f, logic, "must be referred to a supply or ground");
         }
         {
@@ -18841,7 +18841,7 @@ pub const verilog_tests = struct {
             defer f.deinit();
             try f.init(&four);
             f.lowered.num_ports = 4;
-            try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 2, .lo = 1, .resist_val = try f.mir.addFloatConst(f.alloc(), 0.2), .wrote_val = .f_one });
+            try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = @fromBackingInt(2), .lo = @fromBackingInt(1), .resist_val = try f.mir.addFloatConst(f.alloc(), 0.2), .wrote_val = .f_one });
             try expectRefused(&f, logic, "drives its first node");
         }
         {
@@ -18906,7 +18906,7 @@ pub const verilog_tests = struct {
         defer g.deinit();
         try g.init(&four);
         g.lowered.num_ports = 4;
-        try g.lowered.contributions.append(g.alloc(), .{ .access = .potential, .hi = 1, .lo = 3, .wrote_val = .f_zero });
+        try g.lowered.contributions.append(g.alloc(), .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(3), .wrote_val = .f_zero });
         try addFlow(&g, 1, 3, try g.mir.emit(g.alloc(), .entry, .fsub, &.{ try g.probe(1), try g.probe(0) }), .f_zero);
         try std.testing.expectEqualStrings(want, try emitOk(&g, logic));
     }
@@ -18926,7 +18926,7 @@ pub const verilog_tests = struct {
         g.lowered.num_ports = 4;
         const b = g.alloc();
         const on = try g.mir.emit(b, .entry, .fgt, &.{ try g.probe(0), try g.mir.addFloatConst(b, 0.9) });
-        try g.lowered.contributions.append(b, .{ .access = .potential, .hi = 1, .lo = 3, .resist_val = try g.mir.addFloatConst(b, 1.8), .wrote_val = on });
+        try g.lowered.contributions.append(b, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(3), .resist_val = try g.mir.addFloatConst(b, 1.8), .wrote_val = on });
         try addFlow(&g, 1, 3, try g.probe(1), .f_zero);
         try std.testing.expectEqualStrings(want, try emitOk(&g, logic));
     }
@@ -19039,7 +19039,7 @@ pub const verilog_tests = struct {
         defer f.deinit();
         try buffer(&f);
         const want = try emitOk(&f, logic);
-        try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 2, .lo = 3, .resist_val = try f.mir.addFloatConst(f.alloc(), 1.8), .wrote_val = .f_one });
+        try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = @fromBackingInt(2), .lo = @fromBackingInt(3), .resist_val = try f.mir.addFloatConst(f.alloc(), 1.8), .wrote_val = .f_one });
         try std.testing.expectEqualStrings(want, try emitOk(&f, logic));
     }
 
@@ -19094,7 +19094,7 @@ pub const verilog_tests = struct {
             f.lowered.num_ports = 4;
             const b = f.alloc();
             const on = try f.mir.emit(b, .entry, .fgt, &.{ try f.probe(1), try f.mir.addFloatConst(b, 0.9) });
-            try f.lowered.contributions.append(b, .{ .access = .potential, .hi = 1, .lo = 3, .resist_val = try f.mir.addFloatConst(b, 1.8), .wrote_val = on });
+            try f.lowered.contributions.append(b, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(3), .resist_val = try f.mir.addFloatConst(b, 1.8), .wrote_val = on });
             try addFlow(&f, 1, 3, try f.probe(1), .f_zero);
             try expectRefused(&f, logic, "depends on its own value");
         }
@@ -19104,7 +19104,7 @@ pub const verilog_tests = struct {
             defer f.deinit();
             try f.init(&four);
             f.lowered.num_ports = 4;
-            try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 1, .lo = 3, .resist_val = try f.mir.addFloatConst(f.alloc(), std.math.inf(f64)), .wrote_val = .f_one });
+            try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(3), .resist_val = try f.mir.addFloatConst(f.alloc(), std.math.inf(f64)), .wrote_val = .f_one });
             try expectRefused(&f, logic, "its settled potential is not finite");
         }
         {

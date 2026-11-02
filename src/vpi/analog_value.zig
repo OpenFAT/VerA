@@ -14,7 +14,7 @@
 
 const std = @import("std");
 const Lowered = @import("ir").Lowered;
-const ground = @import("ir").Lowered.ground;
+const ground: u32 = @backingInt(@import("ir").Lowered.ground);
 const abi = @import("abi.zig");
 const analog = @import("analog.zig");
 const schema = @import("schema.zig");

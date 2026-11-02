@@ -53,7 +53,7 @@ const Oom = Lower.Oom;
 const VarSlot = Lower.VarSlot;
 const TypedValue = Lower.TypedValue;
 const WideNode = Lowered.WideNode;
-const none_u32 = Lower.none_u32;
+const WideId = Lower.WideId;
 
 /// An operand's IEEE 1364 type: `w` bits, signed or not; `w == 0` a real.
 const T = struct {
@@ -84,13 +84,13 @@ const Build = struct {
     sels: std.AutoHashMapUnmanaged(Ast.ExprId, Sel) = .empty,
     ok: bool = true,
 
-    fn node(b: *Build, n: WideNode) Oom!u32 {
+    fn node(b: *Build, n: WideNode) Oom!WideId {
         // Operands are built first, so a node only reads rows below its own,
         // which keeps the tree `codegen/wide.zig` recurses over acyclic.
         const len = b.l.out.wide_nodes.items.len;
-        for ([_]u32{ n.a, n.b, n.c }) |k| if (k != none_u32) std.debug.assert(k < len);
+        for ([_]WideId{ n.a, n.b, n.c }) |k| if (k != .none) std.debug.assert(@backingInt(k) < len);
         try b.l.out.wide_nodes.append(b.l.arena, n);
-        return @intCast(b.l.out.wide_nodes.items.len - 1);
+        return @fromBackingInt(@intCast(b.l.out.wide_nodes.items.len - 1));
     }
 
     fn arg(b: *Build, v: Mir.Value) Oom!u32 {
@@ -104,10 +104,10 @@ const Build = struct {
     }
 
     /// The call over the tree rooted at `root`.
-    fn finish(b: *Build, callee: []const u8, root: u32) Oom!Mir.Value {
-        std.debug.assert(root < b.l.out.wide_nodes.items.len);
+    fn finish(b: *Build, callee: []const u8, root: WideId) Oom!Mir.Value {
+        std.debug.assert(@backingInt(root) < b.l.out.wide_nodes.items.len);
         const all = try b.l.arena.alloc(Mir.Value, b.args.items.len + 1);
-        all[0] = try b.l.mir.addIntConst(b.l.arena, root);
+        all[0] = try b.l.mir.addIntConst(b.l.arena, @backingInt(root));
         @memcpy(all[1..], b.args.items);
         return b.l.call(callee, all);
     }
@@ -325,7 +325,7 @@ fn lowerOpaque(b: *Build, e: Ast.ExprId) Oom!TypedValue {
 
 /// `e` computed at integer type `ctx`: a context-determined operator at
 /// `ctx` itself, any other form at its own type and then converted (§5.5.2).
-fn at(b: *Build, e: Ast.ExprId, ctx: T) Oom!u32 {
+fn at(b: *Build, e: Ast.ExprId, ctx: T) Oom!WideId {
     const l = b.l;
     const ex = &l.file.exprs;
     const st = try selfType(b, e);
@@ -373,20 +373,20 @@ fn at(b: *Build, e: Ast.ExprId, ctx: T) Oom!u32 {
 }
 
 /// `e` at its own type (§5.5.2's self-determined operand); a real stays real.
-fn any(b: *Build, e: Ast.ExprId) Oom!u32 {
+fn any(b: *Build, e: Ast.ExprId) Oom!WideId {
     const st = try selfType(b, e);
     return if (st.isReal()) real(b, e) else at(b, e, st);
 }
 
 /// §5.5.2: converted to `to`, extended by `to`'s sign.
-fn resizeTo(b: *Build, n: u32, from: T, to: T) Oom!u32 {
+fn resizeTo(b: *Build, n: WideId, from: T, to: T) Oom!WideId {
     if (from.w == to.w) return n;
     return b.node(.{ .op = .resize, .width = to.w, .signed = to.s, .a = n });
 }
 
 /// `e`, a form with a self-determined result (a leaf, a select, a
 /// comparison, a logical or reduction operator), at its type `st`.
-fn leafOf(b: *Build, e: Ast.ExprId, st: T) Oom!u32 {
+fn leafOf(b: *Build, e: Ast.ExprId, st: T) Oom!WideId {
     const l = b.l;
     const ex = &l.file.exprs;
     switch (ex.tag(e)) {
@@ -424,7 +424,7 @@ fn reduction(u: Ast.UnaryOp) Lowered.WideOp {
 
 /// §5.1.7/§5.1.8: both operands at their common type (a real comparison
 /// when either is real); a one-bit unsigned result.
-fn comparison(b: *Build, o: Ast.BinaryOp, x: Ast.ExprId, y: Ast.ExprId) Oom!u32 {
+fn comparison(b: *Build, o: Ast.BinaryOp, x: Ast.ExprId, y: Ast.ExprId) Oom!WideId {
     const tx = try selfType(b, x);
     const ty = try selfType(b, y);
     const c = common(tx, ty);
@@ -443,7 +443,7 @@ fn comparison(b: *Build, o: Ast.BinaryOp, x: Ast.ExprId, y: Ast.ExprId) Oom!u32 
 
 /// `e` as a real: a real operator over real operands, or an integer operand
 /// computed at its own type and then converted (§5.5.2's first exception).
-fn real(b: *Build, e: Ast.ExprId) Oom!u32 {
+fn real(b: *Build, e: Ast.ExprId) Oom!WideId {
     const l = b.l;
     const ex = &l.file.exprs;
     const st = try selfType(b, e);
@@ -477,7 +477,7 @@ fn real(b: *Build, e: Ast.ExprId) Oom!u32 {
 }
 
 /// A name's node at its type `st`, or null for an analog operand (`opaque`).
-fn identNode(b: *Build, name: []const u8, st: T) Oom!?u32 {
+fn identNode(b: *Build, name: []const u8, st: T) Oom!?WideId {
     const l = b.l;
     if (l.in_d2a_body and l.out.discrete_snaps.contains(name)) return null;
     if (l.vars.get(name)) |slot| switch (slot.ty) {
@@ -497,14 +497,14 @@ fn identNode(b: *Build, name: []const u8, st: T) Oom!?u32 {
 }
 
 /// The whole `reg` `name` (a variable or a discrete input) at its own type.
-fn baseNode(b: *Build, name: []const u8) Oom!u32 {
+fn baseNode(b: *Build, name: []const u8) Oom!WideId {
     const rr = b.l.reg_ranges.get(name).?;
     return (try identNode(b, name, .{ .w = rr.width, .s = rr.signed })).?;
 }
 
 /// §5.5.3 the literal a `reg` the analog context never assigns was given,
 /// extended to the `reg` by the literal's own sign (zero with none).
-fn constReg(b: *Build, name: []const u8, st: T) Oom!u32 {
+fn constReg(b: *Build, name: []const u8, st: T) Oom!WideId {
     const e = b.l.reg_consts.get(name) orelse .none;
     if (e == .none) return lit(b, &.{}, st.w);
     const lt = try selfType(b, e);
@@ -512,7 +512,7 @@ fn constReg(b: *Build, name: []const u8, st: T) Oom!u32 {
 }
 
 /// A discrete input `reg` (`Lowered.discrete_words`): its `Model` words.
-fn inputNode(b: *Build, name: []const u8, st: T) Oom!u32 {
+fn inputNode(b: *Build, name: []const u8, st: T) Oom!WideId {
     const l = b.l;
     const words = l.out.discrete_words.get(name) orelse 1;
     if (words == 1) return b.node(.{ .op = .leaf_int, .width = st.w, .signed = st.s, .arg = try b.arg(try lower_expr_select.regWordValue(l, name, 0)) });
@@ -565,7 +565,7 @@ fn selectType(b: *Build, e: Ast.ExprId, name: []const u8) Oom!T {
 }
 
 /// IEEE 1364 §4.2.1: bits `lo` to `lo + width - 1` of `base`, unsigned.
-fn selectNode(b: *Build, base: u32, base_width: u32, lo: u32, width: u32) Oom!u32 {
+fn selectNode(b: *Build, base: WideId, base_width: u32, lo: u32, width: u32) Oom!WideId {
     var n = base;
     if (lo != 0) {
         const count = try lit(b, &.{lo}, 32);
@@ -576,7 +576,7 @@ fn selectNode(b: *Build, base: u32, base_width: u32, lo: u32, width: u32) Oom!u3
 }
 
 /// §2.6.1/§3.5.1 a literal operand at its own type `st`.
-fn literal(b: *Build, e: Ast.ExprId, st: T) Oom!u32 {
+fn literal(b: *Build, e: Ast.ExprId, st: T) Oom!WideId {
     const ex = &b.l.file.exprs;
     const words = try b.l.arena.alloc(u32, (st.w + 31) / 32);
     @memset(words, 0);
@@ -591,13 +591,13 @@ fn literal(b: *Build, e: Ast.ExprId, st: T) Oom!u32 {
         };
     }
     const node = try lit(b, words, st.w);
-    b.l.out.wide_nodes.items[node].signed = st.s;
+    b.l.out.wide_nodes.items[@backingInt(node)].signed = st.s;
     return node;
 }
 
 /// A literal node of `width` bits, its 32-bit words `words` (missing ones
 /// zero; bits past `width` are cut).
-fn lit(b: *Build, words: []const u32, width: u32) Oom!u32 {
+fn lit(b: *Build, words: []const u32, width: u32) Oom!WideId {
     const first: u32 = @intCast(b.l.out.wide_lits.items.len);
     const n = (width + 31) / 32;
     for (0..n) |k| try b.l.out.wide_lits.append(b.l.arena, if (k < words.len) words[k] else 0);

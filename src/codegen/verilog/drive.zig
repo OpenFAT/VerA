@@ -76,27 +76,27 @@ pub fn scan(scratch: Allocator, mir: *const Mir, lw: *const Lowered, pins: []con
     @memset(source, .none);
     for (lw.contributions.items, 0..) |c, ci| {
         if (c.kind != .direct) return refusal.raise(.indirect_branch);
-        for ([_]u32{ c.hi, c.lo }) |r| {
-            if (r == Lowered.ground) continue;
+        for ([_]u32{ @backingInt(c.hi), @backingInt(c.lo) }) |r| {
+            if (r == @backingInt(Lowered.ground)) continue;
             if (kinds[r] != .net) return refusal.raise(.{ .not_a_net = names[r] });
         }
         if (c.access == .flow) {
-            for ([_]u32{ c.hi, c.lo }) |r| {
-                if (r != Lowered.ground and !ports.isSupply(pins, r)) driven.set(r);
+            for ([_]u32{ @backingInt(c.hi), @backingInt(c.lo) }) |r| {
+                if (r != @backingInt(Lowered.ground) and !ports.isSupply(pins, r)) driven.set(r);
             }
             continue;
         }
         // §5.6.1.3: a row discarded on every path is no source; the flow
         // rows over its pair govern.
         if (!(staticRetention(mir, c.wrote_val) orelse true)) continue;
-        const hi_rail = c.hi == Lowered.ground or ports.isSupply(pins, c.hi);
-        const lo_rail = c.lo == Lowered.ground or ports.isSupply(pins, c.lo);
+        const hi_rail = c.hi == Lowered.ground or ports.isSupply(pins, @backingInt(c.hi));
+        const lo_rail = c.lo == Lowered.ground or ports.isSupply(pins, @backingInt(c.lo));
         // A rail against a rail is the supply itself.
         if (hi_rail and lo_rail) continue;
-        if (hi_rail) return refusal.raise(.{ .potential_from_first = .{ .hi = lw.nodeName(c.hi), .lo = names[c.lo] } });
-        if (!lo_rail) return refusal.raise(.{ .potential_not_rail = .{ .hi = names[c.hi], .lo = names[c.lo] } });
-        source[c.hi] = @fromBackingInt(@intCast(ci));
-        driven.set(c.hi);
+        if (hi_rail) return refusal.raise(.{ .potential_from_first = .{ .hi = lw.nodeName(c.hi), .lo = names[@backingInt(c.lo)] } });
+        if (!lo_rail) return refusal.raise(.{ .potential_not_rail = .{ .hi = names[@backingInt(c.hi)], .lo = names[@backingInt(c.lo)] } });
+        source[@backingInt(c.hi)] = @fromBackingInt(@intCast(ci));
+        driven.set(@backingInt(c.hi));
     }
 
     var vars: std.ArrayList(u32) = .empty;

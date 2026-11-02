@@ -247,7 +247,7 @@ fn planHeld(g: *Gen) Error!void {
         g.str_caps.clearRetainingCapacity();
         var changed = false;
         for (held, caps) |h, *c| {
-            if (h.ty != .string or h.array != none_u32) continue;
+            if (h.ty != .string or h.array != .none) continue;
             const n = try cap(g, h.final);
             if (n > c.*) {
                 c.* = n;

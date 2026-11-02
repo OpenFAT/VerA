@@ -54,7 +54,7 @@ pub const State = struct {
     indirect: std.AutoHashMapUnmanaged(u64, void) = .empty,
 
     /// `direct`'s key: the target's access, (hi, lo) net pair and branch row.
-    pub const Key = struct { access: Access, hi: u32, lo: u32, br: u32 };
+    pub const Key = struct { access: Access, hi: Lower.NodeId, lo: Lower.NodeId, br: Lower.BranchId };
     comptime {
         assert(@sizeOf(Key) == 16); // hashed per `<+`
     }
@@ -70,7 +70,7 @@ pub fn directRow(self: *const Lower, key: State.Key) ?u32 {
 
 /// `direct`'s key for the other quantity of `t`'s branch.
 pub fn oppositeKey(t: Target) State.Key {
-    assert(t.hi <= t.lo); // `canonical` ordered the pair
+    assert(@backingInt(t.hi) <= @backingInt(t.lo)); // `canonical` ordered the pair
     assert(t.access == .potential or t.access == .flow);
     return .{ .access = if (t.access == .potential) .flow else .potential, .hi = t.hi, .lo = t.lo, .br = t.br };
 }
@@ -140,7 +140,7 @@ pub fn lowerContribute(self: *Lower, lhs: Ast.ExprId, rhs: Ast.ExprId) Oom!void 
     // direction is the direction of its one quantity, so an `input` is supplied
     // from outside and driving it has no meaning. Only `input`: an `output` is
     // meant to be driven, and E0360 already refuses an `inout` signal-flow port.
-    for ([_]u32{ target.hi, target.lo }) |n| {
+    for ([_]u32{ @backingInt(target.hi), @backingInt(target.lo) }) |n| {
         if (n >= self.out.nodes.len or self.out.nodes.items(.dir)[n] != .input) continue;
         if (!lower_node_discipline.isSignalFlow(self, self.out.nodes.items(.disc)[n])) continue;
         try self.err(self.file.exprs.mainTok(lhs), .E0425, "`{s}` is an `input` port of discipline `{s}`", .{ self.out.nodes.items(.name)[n], self.out.nodes.items(.disc)[n] });
@@ -384,6 +384,6 @@ test "§1.3.1.2 a reversed spelling accumulates into one source" {
     _ = try h.low.lowerFile();
     // `I(q,p) <+ 2` is `I(p,q) <+ -2`: one row, in lower_branch.canonical (p, q) order.
     try std.testing.expectEqual(@as(usize, 1), h.low.out.contributions.items.len);
-    try std.testing.expectEqual(@as(u32, 0), h.low.out.contributions.items[0].hi);
-    try std.testing.expectEqual(@as(u32, 1), h.low.out.contributions.items[0].lo);
+    try std.testing.expectEqual(@as(Lower.NodeId, @fromBackingInt(0)), h.low.out.contributions.items[0].hi);
+    try std.testing.expectEqual(@as(Lower.NodeId, @fromBackingInt(1)), h.low.out.contributions.items[0].lo);
 }

@@ -113,8 +113,8 @@ pub fn lowerTimepoint(self: *Lower, id: Ast.StmtId) Oom!void {
     self.cur = hit_b;
     for (slots.items, places.items, 0..) |s, p, k| {
         const kv: u32 = @intCast(k);
-        const v = if (s.array != Lower.none_u32)
-            try self.mir.emitAnewCached(self.arena, self.cur, s.array, b, kv)
+        const v = if (s.array != .none)
+            try self.mir.emitAnewCached(self.arena, self.cur, @backingInt(s.array), b, kv)
         else
             try self.call(switch (s.ty) {
                 .integer => "$tp_int",
@@ -164,7 +164,7 @@ fn timepointSlots(self: *Lower, id: Ast.StmtId, slots: *std.ArrayList(Lower.TpSl
         if ((try seen.getOrPut(self.arena, name)).found_existing) continue;
         if (self.arrays.get(name)) |info| {
             if (info.mem) |m| {
-                try slots.append(self.arena, .{ .name = name, .ty = info.ty, .array = m.id });
+                try slots.append(self.arena, .{ .name = name, .ty = info.ty, .array = @fromBackingInt(m.id) });
                 try places.append(self.arena, m.place);
                 continue;
             }

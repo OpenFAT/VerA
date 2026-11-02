@@ -192,7 +192,7 @@ pub fn lowerSysArg(self: *Lower, e: Ast.ExprId, net_ok: bool) Oom!TypedValue {
             self.consts.contains(name);
         if (!is_value) {
             if (self.node_voltages.get(name)) |idx|
-                return .{ .v = try self.mir.addIntConst(self.arena, idx), .ty = .integer };
+                return .{ .v = try self.mir.addIntConst(self.arena, @backingInt(idx)), .ty = .integer };
         }
     }
     return lower_expr.lowerExpr(self, e);

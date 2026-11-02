@@ -9,9 +9,9 @@
 //! Contents:
 //! - `pub fn declareBranches(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
 //! - `pub fn checkPortBranchDecls(self: *Lower) Oom!void`
-//! - `pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!u32`
+//! - `pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!NodeId`
 //! - `pub fn netKey(self: *Lower, name: []const u8, tok: u32) Oom![]const u8`
-//! - `pub fn internNodeElem(self: *Lower, base: []const u8, i: i64) Oom!u32`
+//! - `pub fn internNodeElem(self: *Lower, base: []const u8, i: i64) Oom!NodeId`
 //! - `pub fn foldDim(self: *Lower, d: Ast.Dim, tok: u32) Oom!?VecRange`
 //! - `pub fn portRange(self: *Lower, p: *const Ast.Port) Oom!?VecRange`
 //! - `pub fn vecTerminal(self: *Lower, e: Ast.ExprId, tok: u32) Oom!?VecTerm`
@@ -29,6 +29,7 @@ const lower_node = @import("node.zig");
 const lower_node_discipline = @import("node_discipline.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
+const NodeId = Lower.NodeId;
 const VecRange = Lower.VecRange;
 
 /// A vector branch terminal: the vector `name` and the elements it covers.
@@ -129,7 +130,7 @@ pub fn checkPortBranchDecls(self: *Lower) Oom!void {
 /// Resolves a net reference, `n` or `n[i]`, to a `nodes` row. An access function
 /// takes "scalars or individual elements of a vector" (§5.5.2), so a bare vector
 /// name reports E0351 and an undeclared element E0351/E0352.
-pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!u32 {
+pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!NodeId {
     assert(e == .none or self.exprValid(e));
     if (e == .none) return ground;
     const ex = &self.file.exprs;
@@ -232,7 +233,7 @@ pub fn netKey(self: *Lower, name: []const u8, tok: u32) Oom![]const u8 {
 
 /// `internNode` for a vector element, spelled as the source does (`bus[3]`).
 /// Looks up on a stack buffer and allocates only for a new element.
-pub fn internNodeElem(self: *Lower, base: []const u8, i: i64) Oom!u32 {
+pub fn internNodeElem(self: *Lower, base: []const u8, i: i64) Oom!NodeId {
     var buf: [lower_shape.elem_key_len]u8 = undefined;
     const key = try lower_shape.elemKey(self, &buf, base, &.{i});
     const name = self.node_voltages.getKey(key) orelse try self.arena.print("{s}[{d}]", .{ base, i });
@@ -388,8 +389,8 @@ fn partSelect(self: *const Lower, e: Ast.ExprId) bool {
 
 /// Returns a fresh §5.4.1 branch identity, one per declared branch name (array
 /// elements included). Ids are per-module, never reused, and private to lowering.
-fn newBranchId(self: *Lower) u32 {
-    self.node_state.last_branch_id += 1;
+fn newBranchId(self: *Lower) Lower.BranchId {
+    self.node_state.last_branch_id = @fromBackingInt(@backingInt(self.node_state.last_branch_id) + 1);
     return self.node_state.last_branch_id;
 }
 

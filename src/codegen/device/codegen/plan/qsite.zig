@@ -65,7 +65,7 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
     const Rows = struct {
         fn add(al: std.mem.Allocator, m: *std.AutoArrayHashMapUnmanaged(u32, std.ArrayList(Term)), row: u32, t: Term) Error!void {
             assert(t.sign == 1 or t.sign == -1); // a unit term, before site signs
-            if (row == Lower.ground) return; // §1.3.1.1 ground has no row
+            if (row == @backingInt(Lower.ground)) return; // §1.3.1.1 ground has no row
             const g = try m.getOrPut(al, row);
             if (!g.found_existing) g.value_ptr.* = .empty;
             try g.value_ptr.append(al, t);
@@ -73,7 +73,7 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
         }
         fn assign(al: std.mem.Allocator, m: *std.AutoArrayHashMapUnmanaged(u32, std.ArrayList(Term)), row: u32, t: Term) Error!void {
             assert(t.sign == 1 or t.sign == -1);
-            if (row == Lower.ground) return;
+            if (row == @backingInt(Lower.ground)) return;
             const g = try m.getOrPut(al, row);
             g.value_ptr.* = .empty;
             try g.value_ptr.append(al, t);
@@ -92,9 +92,9 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
                     try Rows.assign(a, &rows, nn, .{ .sign = -1, .contrib = i });
                     continue;
                 }
-                try Rows.add(a, &rows, c.hi, .{ .sign = 1, .contrib = i });
-                try Rows.add(a, &rows, c.lo, .{ .sign = -1, .contrib = i });
-                if (topo.freeFlowOf(c.hi, c.lo)) |f| try Rows.add(a, &rows, f.u, .{ .sign = -1, .contrib = i });
+                try Rows.add(a, &rows, @backingInt(c.hi), .{ .sign = 1, .contrib = i });
+                try Rows.add(a, &rows, @backingInt(c.lo), .{ .sign = -1, .contrib = i });
+                if (topo.freeFlowOf(@backingInt(c.hi), @backingInt(c.lo))) |f| try Rows.add(a, &rows, f.u, .{ .sign = -1, .contrib = i });
             },
             .potential => {
                 const u = branch_u[i];
@@ -105,16 +105,16 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
                 if (plan_topo.retention(in, lw.contributions.items[j]) == .off) continue;
                 const jj: u32 = @intCast(j);
                 if (topo.collapsible(u)) {
-                    try Rows.add(a, &rows, c.hi, .{ .sign = 1, .contrib = jj });
-                    try Rows.add(a, &rows, c.lo, .{ .sign = -1, .contrib = jj });
+                    try Rows.add(a, &rows, @backingInt(c.hi), .{ .sign = 1, .contrib = jj });
+                    try Rows.add(a, &rows, @backingInt(c.lo), .{ .sign = -1, .contrib = jj });
                 } else try Rows.add(a, &rows, u, .{ .sign = -1, .contrib = jj });
             },
         }
     }
     // §5.4.3 the port probes read the FINISHED port rows, in order.
     for (lw.port_probes.items) |pp| {
-        const src = rows.get(pp.port);
-        const g = try rows.getOrPut(a, pp.u);
+        const src = rows.get(@backingInt(pp.port));
+        const g = try rows.getOrPut(a, @backingInt(pp.u));
         g.value_ptr.* = .empty;
         if (src) |s| for (s.items) |t| try g.value_ptr.append(a, .{ .sign = -t.sign, .contrib = t.contrib });
     }
@@ -126,7 +126,7 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
     var it = rows.iterator();
     while (it.next()) |e| for (e.value_ptr.items) |t| {
         for (lw.charge_sites.items, 0..) |s, k| {
-            if (s.contrib == t.contrib) stamps_of[k] = true;
+            if (@backingInt(s.contrib) == t.contrib) stamps_of[k] = true;
         }
     };
     const slot_of = try a.alloc(u32, ns);
@@ -146,7 +146,7 @@ pub fn plan(in: Input, branch_u: []const u32, topo: plan_topo.Topology, sinv: []
     while (it.next()) |e| {
         const row = e.key_ptr.*;
         for (e.value_ptr.items) |t| for (lw.charge_sites.items, 0..) |s, k| {
-            if (s.contrib != t.contrib or slot_of[k] == none_u32) continue;
+            if (@backingInt(s.contrib) != t.contrib or slot_of[k] == none_u32) continue;
             const sg = t.sign * s.sign;
             for (out.items) |*o| {
                 if (o.row == row and o.slot == slot_of[k]) {
@@ -202,10 +202,10 @@ test "two charges on one pin are two slots; a flow contribution stamps +hi and �
     const a = f.alloc();
     const qgs = try f.mir.emit(a, .entry, .fmul, &.{ try f.probe(0), try f.probe(1) });
     const qgd = try f.mir.emit(a, .entry, .fmul, &.{ try f.probe(0), try f.probe(2) });
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1, .react_val = qgs, .wrote_val = .f_one });
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 2, .react_val = qgd, .wrote_val = .f_one });
-    try f.lowered.charge_sites.append(a, .{ .contrib = 0, .sign = 1, .final = qgs });
-    try f.lowered.charge_sites.append(a, .{ .contrib = 1, .sign = 1, .final = qgd, .lte = false });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .react_val = qgs, .wrote_val = .f_one });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(2), .react_val = qgd, .wrote_val = .f_one });
+    try f.lowered.charge_sites.append(a, .{ .contrib = @fromBackingInt(0), .sign = 1, .final = qgs });
+    try f.lowered.charge_sites.append(a, .{ .contrib = @fromBackingInt(1), .sign = 1, .final = qgd, .lte = false });
     const an = try f.analysis();
     const in: Input = .{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered };
     const sinv = try a.alloc(bool, an.nv);
@@ -237,14 +237,14 @@ test "a flux on its branch row, a ground end, a port probe's mirror, and the cha
     const qlit = try f.mir.addFloatConst(a, 1e-12); // a literal
     try f.lowered.params.append(a, .{ .name = "c0", .ty = .real, .default = .f_one });
     // 0: V(a,b) <+ ddt(phi), unconditional: the flux stamps −1 on row ib.
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 0, .lo = 1, .wrote_val = .f_one, .react_val = phi_l });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .wrote_val = .f_one, .react_val = phi_l });
     // 1: I(a) <+ ddt(qa) + ddt(qinv) + ddt(qlit): only qa moves in time.
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = Lower.ground, .wrote_val = .f_one });
-    try f.lowered.charge_sites.append(a, .{ .contrib = 0, .sign = 1, .final = phi_l });
-    try f.lowered.charge_sites.append(a, .{ .contrib = 1, .sign = 1, .final = qa });
-    try f.lowered.charge_sites.append(a, .{ .contrib = 1, .sign = 1, .final = qinv });
-    try f.lowered.charge_sites.append(a, .{ .contrib = 1, .sign = 1, .final = qlit });
-    try f.lowered.port_probes.append(a, .{ .port = 0, .u = 3 });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = Lower.ground, .wrote_val = .f_one });
+    try f.lowered.charge_sites.append(a, .{ .contrib = @fromBackingInt(0), .sign = 1, .final = phi_l });
+    try f.lowered.charge_sites.append(a, .{ .contrib = @fromBackingInt(1), .sign = 1, .final = qa });
+    try f.lowered.charge_sites.append(a, .{ .contrib = @fromBackingInt(1), .sign = 1, .final = qinv });
+    try f.lowered.charge_sites.append(a, .{ .contrib = @fromBackingInt(1), .sign = 1, .final = qlit });
+    try f.lowered.port_probes.append(a, .{ .port = @fromBackingInt(0), .u = @fromBackingInt(3) });
     const an = try f.analysis();
     const in: Input = .{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered };
     // `prove/setup.zig` would find qinv solve-invariant; stated here directly.

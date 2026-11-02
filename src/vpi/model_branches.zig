@@ -25,6 +25,8 @@ const Error = session.Error;
 const Rows = model.Rows;
 
 const UnnamedKey = struct { scope: u32, hi: u32, lo: u32 };
+/// `Lowered.ground` as a row: the solver rows here are the C ABI's plain `u32`s.
+const ground_row: u32 = @backingInt(Lowered.ground);
 
 /// §11.6.2's natures and disciplines, §11.6.5's nodes, §11.6.6's branches and
 /// §11.6.7's quantities — the analog classes, read from the elaborated
@@ -180,8 +182,8 @@ pub fn addAnalog(
             .disc = if (pos != .none) objects.coldOf(pos).disc else .none,
             .pos = pos,
             .neg = neg,
-            .hi_row = if (pos != .none) objects.coldOf(pos).row orelse Lowered.ground else Lowered.ground,
-            .lo_row = if (neg != .none) objects.coldOf(neg).row orelse Lowered.ground else Lowered.ground,
+            .hi_row = if (pos != .none) objects.coldOf(pos).row orelse ground_row else ground_row,
+            .lo_row = if (neg != .none) objects.coldOf(neg).row orelse ground_row else ground_row,
         });
         if (full.len != 0) named.appendAssumeCapacity(at);
         try scopes[split.scope].branches.append(gpa, at);
@@ -209,7 +211,7 @@ pub fn addAnalog(
             var found: ObjId = .none;
             var twice = false;
             for (named.items) |i| {
-                if (!branchSpans(objects, objects.coldOf(i), c.hi, c.lo)) continue;
+                if (!branchSpans(objects, objects.coldOf(i), @backingInt(c.hi), @backingInt(c.lo))) continue;
                 if (found != .none) twice = true;
                 found = i;
             }
@@ -222,7 +224,7 @@ pub fn addAnalog(
         }
         try unnamedBranch(gpa, objects, scopes, &unnamed, by_path, res, node_of_row, c, idx, c.unit);
         for (lowered.contrib_sharers.items) |sh| {
-            if (sh.row == idx) try unnamedBranch(gpa, objects, scopes, &unnamed, by_path, res, node_of_row, c, idx, sh.unit);
+            if (@backingInt(sh.row) == idx) try unnamedBranch(gpa, objects, scopes, &unnamed, by_path, res, node_of_row, c, idx, sh.unit);
         }
     }
     std.debug.assert(natures.len == 0 or objects.at(natures[0]).kind == .nature);
@@ -280,25 +282,25 @@ fn unnamedBranch(
     else
         0;
     std.debug.assert(scope < scopes.len);
-    const g = try unnamed.getOrPut(gpa, .{ .scope = scope, .hi = c.hi, .lo = c.lo });
+    const g = try unnamed.getOrPut(gpa, .{ .scope = scope, .hi = @backingInt(c.hi), .lo = @backingInt(c.lo) });
     if (!g.found_existing) {
-        const pos = nodeOfRow(node_of_row, c.hi);
-        const neg = nodeOfRow(node_of_row, c.lo);
+        const pos = nodeOfRow(node_of_row, @backingInt(c.hi));
+        const neg = nodeOfRow(node_of_row, @backingInt(c.lo));
         // §5.4.2 gives an unnamed branch no name; `vpiName` answers the empty
         // string, as §11.6.7's unnamed quantity does.
         const at = try addBranch(objects, scope, "", "", .{
             .disc = if (pos != .none) objects.coldOf(pos).disc else if (neg != .none) objects.coldOf(neg).disc else .none,
             .pos = pos,
             .neg = neg,
-            .hi_row = c.hi,
-            .lo_row = c.lo,
+            .hi_row = @backingInt(c.hi),
+            .lo_row = @backingInt(c.lo),
         });
         try scopes[scope].branches.append(gpa, at);
         g.value_ptr.* = at;
     }
     // §5.4.1 the instance's own share of a row others share too.
     const share: ?u32 = for (lowered.contrib_shares.items, 0..) |sh, s| {
-        if (sh.row == idx and sh.unit == unit) break @intCast(s);
+        if (@backingInt(sh.row) == idx and sh.unit == unit) break @intCast(s);
     } else null;
     std.debug.assert(objects.at(g.value_ptr.*).kind == .branch);
     try bindRow(objects, g.value_ptr.*, c, idx, share);
@@ -312,9 +314,9 @@ fn bindRow(objects: *Rows, at: ObjId, c: Lowered.Contribution, k: u32, share: ?u
     const unnamed = objects.at(at).full.len == 0;
     const b = try objects.coldFor(at);
     if (unnamed) {
-        b.hi_row = c.hi;
-        b.lo_row = c.lo;
-    } else b.flow_neg = b.hi_row != c.hi;
+        b.hi_row = @backingInt(c.hi);
+        b.lo_row = @backingInt(c.lo);
+    } else b.flow_neg = b.hi_row != @backingInt(c.hi);
     switch (c.access) {
         .potential => b.contrib_pot = k,
         .flow => {
@@ -333,8 +335,8 @@ fn bindRow(objects: *Rows, at: ObjId, c: Lowered.Contribution, k: u32, share: ?u
 /// `addAnalog`); null for ground (§1.3.1.1 has no node row for it) and for a
 /// row no node object carries. Asserts that ground is no row of the table.
 fn nodeOfRow(node_of_row: []const ObjId, row: u32) ObjId {
-    std.debug.assert(node_of_row.len < Lowered.ground);
-    if (row == Lowered.ground or row >= node_of_row.len) return .none;
+    std.debug.assert(node_of_row.len < ground_row);
+    if (row == ground_row or row >= node_of_row.len) return .none;
     std.debug.assert(row < node_of_row.len);
     return node_of_row[row];
 }
@@ -348,8 +350,8 @@ fn nodeOfRow(node_of_row: []const ObjId, row: u32) ObjId {
 fn branchSpans(objects: *const Rows, o: *const Cold, hi: u32, lo: u32) bool {
     std.debug.assert(o.branch == .none);
     std.debug.assert(o.nature == .none);
-    const p: u32 = if (o.pos != .none) objects.coldOf(o.pos).row orelse return false else Lowered.ground;
-    const n: u32 = if (o.neg != .none) objects.coldOf(o.neg).row orelse return false else Lowered.ground;
+    const p: u32 = if (o.pos != .none) objects.coldOf(o.pos).row orelse return false else ground_row;
+    const n: u32 = if (o.neg != .none) objects.coldOf(o.neg).row orelse return false else ground_row;
     return (p == hi and n == lo) or (p == lo and n == hi);
 }
 
