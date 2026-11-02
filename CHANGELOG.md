@@ -21,6 +21,10 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Veri
   (the monitor latches) and the latched §9.5 results move from
   `zf__.res__<site>` to top-level `zf_res__<site>`; `--display=drop` and
   `record` devices change only in unused kernel text (#123).
+- **An analog write to a bit, part or element of a `reg` is E0316 alone**
+  (§5.7): `r[38:8] = 1` no longer adds E0311, nor `m[1][3:0] = 1` E0356, and
+  `m[1] = 1` on a constant-indexed `reg [7:0] m[0:3]`, which compiled with no
+  diagnostic, is now E0316 (#126).
 
 ## v0.22.0 — 2026-11-02
 
