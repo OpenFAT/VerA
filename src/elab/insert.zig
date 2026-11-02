@@ -86,13 +86,12 @@ const Prim = struct { term: Ast.PrimTerm, flat: usize };
 pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src: []const Ast.Instance, gates: []const Ast.ExprId) design.Error![]const Ast.Instance {
     // Without the first walk (`Flatten.tree`) an out-of-context declaration
     // below is collected only when its module is walked (`ooc.collectOoc`),
-    // and a paramset child or an array element is a child only at the level
-    // that walks it (`segment.kidsOf`), so an answer cached for the level
-    // above may predate them: cleared when a declaration arrived or the
-    // climb read such a child (`segment.State`). Otherwise, and always with
-    // the first walk's tree, every input of an answer is the same at every
-    // level, so each segment is climbed once, not once per level above it
-    // (§7.8.4's deep-chain tests).
+    // so an answer cached for the level above may predate it, and a climb a
+    // cycle cut short differs from level to level: cleared when a
+    // declaration arrived or a cycle was cut (`segment.State`). Otherwise,
+    // and always with the first walk's tree, every input of an answer is the
+    // same at every level, so each segment is climbed once, not once per
+    // level above it (§7.8.4's deep-chain tests).
     assert(src.len == module.instances.len + gates.len); // `enterLevel`'s, consumed here
     if (self.tree.kids.count() == 0 and (self.seg.level_bound or self.seg.oocs_seen != self.oocs.decls.count())) {
         self.seg.up.clearRetainingCapacity();

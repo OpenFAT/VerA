@@ -48,10 +48,8 @@ pub const State = struct {
     /// was planned (`down`), the same keys: the upper connection of the ports
     /// one level further down.
     down: std.StringHashMapUnmanaged(Seg) = .empty,
-    /// Without `Flatten.tree`, an answer `up` memoized reads a child that
-    /// another level sees differently: an instance array (expanded only at
-    /// the level that walks it), a paramset instance (selected only at
-    /// `depth == 0`), or a climb cut short by a module already on it.
+    /// Without `Flatten.tree`, an answer `up` memoized was cut short by a
+    /// module already on the climb, which another level climbs differently.
     level_bound: bool = false,
     /// `Flatten.oocs.decls`' count when `up`'s memo was last cleared: a
     /// declaration collected since may override an answer in it.
@@ -140,12 +138,11 @@ const cases_src =
 /// holds, every element of an instance array, a §6.4 paramset instance as
 /// the module it selected, at any depth, with every out-of-context
 /// declaration (`resolve.oocDisciplineBelow`). Without that walk (no
-/// `connectrules`, so nothing to plan) the source instance list is read, a
-/// paramset instance only where `insert.plan` is planning (`depth == 0`),
-/// and an answer that read one, or an instance array, or a cut cycle, is
-/// marked `State.level_bound` for `insert.plan` to drop. A port this pass
-/// could not decide is judged after the walk
-/// (`insert.checkUnbridged`, E0929).
+/// `connectrules`, and no paramset, instance array or generate instance in
+/// the design: `elaborate`) the source instance list is the elaborated one,
+/// and an answer a cut cycle shortened is marked `State.level_bound` for
+/// `insert.plan` to drop. A port this pass could not decide is judged after
+/// the walk (`insert.checkUnbridged`, E0929).
 pub fn up(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, net: Ast.StrId, depth: u32) design.Error!Seg {
     if (memo(self, path, net)) |s| return s;
     const a = self.ctx.arena;
@@ -353,19 +350,20 @@ fn indexOf(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, dept
 
 /// The children of the unit at `path` (an instance of `module`): the ones
 /// the walk that inserts nothing elaborated below `path` (`Flatten.tree`),
-/// else (no `connectrules`) the source instance list, a paramset instance
-/// resolved only at `depth == 0`, where `insert.plan` is planning.
+/// else the source instance list: all of it without the tree (`up`), and
+/// for a path the tree lacks, a paramset instance resolved only at
+/// `depth == 0`, where `insert.plan` is planning.
 fn kidsOf(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, depth: u32) design.Error![]const walk.TreeKid {
     if (path.len != 0) assert(path[path.len - 1] == sep);
     if (self.tree.kids.get(path)) |kids| return kids.items;
     var kids: std.ArrayList(walk.TreeKid) = .empty;
     for (module.instances) |*inst| {
-        const found = lookup.findModule(self, inst.module);
-        // A child another level sees differently (`State.level_bound`).
-        if (inst.range != null or found == null) self.seg.level_bound = true;
         if (inst.range != null) continue;
         const child_path = try self.ctx.arena.print("{s}{s}{c}", .{ path, self.ctx.file.str(inst.name), sep });
-        const m = found orelse (if (depth == 0) try insert.moduleOf(self, inst, child_path) else null) orelse continue;
+        const m = (if (depth == 0)
+            try insert.moduleOf(self, inst, child_path)
+        else
+            lookup.findModule(self, inst.module)) orelse continue;
         try kids.append(self.ctx.arena, .{ .inst = inst, .module = m, .path = child_path });
     }
     return kids.items;
@@ -628,6 +626,43 @@ test "Annex F.2.1 step 3 an out-of-context declaration walked after a climb stil
     try std.testing.expectError(error.DiagnosticsReported, @import("elaborate.zig").elaborate(f.ctx()));
     try std.testing.expectEqual(@as(usize, 1), f.bag.count());
     try std.testing.expect(f.bag.at(0).code == .E0927);
+}
+
+test "Annex F.2.1 an elaborated child's port is a child segment at any depth, without connectrules" {
+    // Oracle: Annex F.2.1 by hand. Step 1 elaborates the design: it picks
+    // `ps` for `x` and makes `x` an instance of `leaf` (§6.4.2, §6.4), expands
+    // the array to `x[1]` and `x[0]` (IEEE 1364-2005 §12.1.2), or brings
+    // `g.x` into existence (§6.6). Step 2 makes each `leaf` port `dd`, and
+    // step 4 then makes `u.w.p` and `u.p` digital with `dd`. The one port
+    // joining domains is `top`'s `u` (`ca a` above, `dd` below), and with no
+    // connect statement it is E0927 there (§7.8.4), as it is when `wrap`
+    // instantiates `leaf` directly.
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{
+        "ps x(p);",
+        "leaf x[1:0](p);",
+        "generate if (1) begin : g leaf x(p); end endgenerate",
+    }) |child| {
+        const text = try gpa.print(
+            \\discipline ca; domain continuous; enddiscipline
+            \\discipline dd; domain discrete; enddiscipline
+            \\module top; ca a; mid u(a); endmodule
+            \\module mid(p); input p; wrap w(p); endmodule
+            \\module wrap(p); input p; {s} endmodule
+            \\paramset ps leaf; parameter real l = 1.0; .k = l; endparamset
+            \\module leaf(p); input p; dd p; parameter real k = 1.0; endmodule
+            \\
+        , .{child});
+        defer gpa.free(text);
+        var f: fixture.Fixture = .{ .arena = .init(gpa) };
+        defer f.deinit();
+        try fixture.parse(&f, text);
+        try std.testing.expectError(error.DiagnosticsReported, @import("elaborate.zig").elaborate(f.ctx()));
+        try std.testing.expectEqual(@as(usize, 1), f.bag.count());
+        try std.testing.expect(f.bag.at(0).code == .E0927);
+        // The caret is on `top`'s connection `a` of `u`, not on a level below.
+        try std.testing.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, text, "u(a)").? + 2)), f.bag.at(0).span.start);
+    }
 }
 
 // Exact Annex F.2.2 pass-boundary observations: the bottom-up and top-down
