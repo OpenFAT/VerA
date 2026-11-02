@@ -10,7 +10,25 @@
   result or formatting row, so two instances on two threads each write
   their own file (`tests/host/fileio_threads_host.zig`: 10000 lines each,
   byte-exact to a single-threaded run). A digital run owns its own table
-  too. A host that never touches the table changes nothing.
+  too. A host that never touches the table changes nothing; this changes the
+  device ABI, so a host that reads `file_io` must move to `fileIo(inst)` (#INT).
+- **An instance whose two ports share a net is legal** (`res r1(a, a)`):
+  E0315 is IEEE 1364-2005 §4.4's rule on a module's own text, so it fires only
+  when one contribution names the same terminal twice (`I(p, p)`); a shorted
+  named branch `branch (a, a)` no longer crashes `vera --check` (#INT).
+- **New refusals for inputs VerA accepted or crashed on**, each a coded
+  diagnostic: a genvar sharing a name with a parameter, variable or net
+  (E0362, §4.11), a one-port UDP (E0207, A.5.1), a 2^24th `$fatal`/`$error`
+  site (E1022, which spilled into the severity byte), a call of 2^24
+  operands (E1021), `{}` as a port connection (E0906), an empty library-map
+  file spec such as `library a "";` (E0244), and `ac_stim` or
+  `flicker_noise` with a fourth argument at lowering (E0506) (#INT).
+- **`\\$x ` and `\$x ` are two names**: an escaped identifier's name is the
+  text after its `\`, so `\\$x ` is `\$x`, and `--emit-rtlil`, `--run` and
+  the VPI keep them apart (#INT).
+- **A chain of defparams that double each other elaborates at once**: each
+  parameter's value is built once, in post-order with a counted bound; 40
+  levels of `p_i = p_{i-1} + p_{i-1}` ran past 240 s (#INT).
 
 ## v0.21.0 — 2026-11-01
 
