@@ -282,7 +282,10 @@ pub fn parse(cli: *Cli, gpa: Allocator, args: anytype, out: *Io.Writer, err: *Io
                 try err.print("error: unknown option `{s}`\n", .{arg});
                 return 2;
             }
-        } else try cli.paths.append(gpa, arg);
+        } else {
+            if (try nameTooLong(err, "an input", arg)) return 2;
+            try cli.paths.append(gpa, arg);
+        }
     }
     assert(cli.paths.items.len >= paths_before);
     assert(n <= args_max);
@@ -586,9 +589,25 @@ fn pathValue(args: anytype, err: *Io.Writer, flag: []const u8, what: []const u8)
     assert(switches.get(flag) != null);
     assert(what.len != 0);
     const v = args.next() orelse "";
-    if (v.len != 0) return v;
-    _ = try missing(err, flag, what);
-    return null;
+    if (v.len == 0) {
+        _ = try missing(err, flag, what);
+        return null;
+    }
+    if (try nameTooLong(err, flag, v)) return null;
+    return v;
+}
+
+/// Refuses (on `err`, true) a path with a name longer than any filesystem
+/// holds (`Io.Dir.max_name_bytes`). It is user text: Windows reports such a
+/// name as OBJECT_NAME_INVALID, which std treats as a programmer bug and
+/// panics on, so it never reaches a file call.
+fn nameTooLong(err: *Io.Writer, what: []const u8, path: []const u8) Io.Writer.Error!bool {
+    var it = std.mem.tokenizeAny(u8, path, "/\\");
+    while (it.next()) |name| if (name.len > Io.Dir.max_name_bytes) {
+        try err.print("error: {s}: a name in `{s}...` is {d} bytes, longer than a file name can be ({d})\n", .{ what, path[0..@min(path.len, 40)], name.len, Io.Dir.max_name_bytes });
+        return true;
+    };
+    return false;
 }
 
 /// A simple identifier (IEEE 1364-2005 §3.7.1), what `define names.
@@ -596,6 +615,24 @@ fn isMacroName(name: []const u8) bool {
     if (name.len == 0 or !(std.ascii.isAlphabetic(name[0]) or name[0] == '_')) return false;
     for (name[1..]) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '$')) return false;
     return true;
+}
+
+test "parse: a path with a name past max_name_bytes is refused at argv (exit 2), never reaching a file call" {
+    // Oracle: a file name is at most Io.Dir.max_name_bytes on every target
+    // (Windows panicked in std on `--contract <24 KiB>`, OBJECT_NAME_INVALID).
+    var long: [Io.Dir.max_name_bytes + 1]u8 = undefined;
+    @memset(&long, 'a');
+    inline for (.{ &[_][]const u8{ "--contract", &long, "e.va" }, &[_][]const u8{&long} }) |line| {
+        var l: fixtures.Line = .init();
+        defer l.deinit();
+        try std.testing.expectEqual(@as(?u8, 2), try l.read(line));
+        try std.testing.expect(std.mem.indexOf(u8, l.err.written(), "longer than a file name can be") != null);
+    }
+    var ok: [Io.Dir.max_name_bytes]u8 = undefined;
+    @memset(&ok, 'a');
+    var l: fixtures.Line = .init();
+    defer l.deinit();
+    try std.testing.expectEqual(@as(?u8, null), try l.read(&.{ "--contract", &ok, "e.va" }));
 }
 
 test "parse: --help and -h print the usage on stdout, exit 0, and read no further" {

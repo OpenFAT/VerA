@@ -136,7 +136,8 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2448/2452, Verilog 3611/3611, Veri
   ascending range's offset is its lower bound, and an escaped name keeps its
   `.` and `\`.
 - **Inputs that aborted `vera` are refused or accepted**: `vera ""`, an empty
-  path to `--spice`/`--protect-keys`/`--digital-pins`, a defparam through an
+  path to `--spice`/`--protect-keys`/`--digital-pins`, a path whose name is
+  longer than a file name can be (Windows panicked on it), a defparam through an
   escaped name holding `[` or `.` (`\a__g[1]__in1`), a display-only device's
   noise and AC tables, `ac_stim` with four arguments (E0506), a NaN noise-table
   knot, and a 5000-statement chain, 5000-arm `case` or 5000-deep else-if or
