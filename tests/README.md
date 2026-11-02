@@ -22,8 +22,8 @@ external suites `zig build conformance` runs).
 | `nix develop -c zig build suite` | Every fixture plus a separate compiler timing pass |
 | `nix develop -c zig build suite -- golden <tag>` | Snapshot every fixture's generated code; `-- golden diff [a b]` compares two |
 | `nix develop .#external -c python3 tools/external_analog.py` | The `osdi/` decks in ngspice over `vera --emit-osdi` libraries, against hand-derived values |
-| `python3 tests/host.py selftest` | The host oracles fed wrong observations; never evidence |
-| `python3 tools/conformance.py selftest` | Regression checks: the subcommands and the fixture layout |
+| `python3 tests/host.py selftest` | The host oracles fed wrong observations; never evidence (in `test`) |
+| `python3 tools/conformance.py selftest` | Regression checks: the subcommands and the fixture layout (in `test`) |
 
 `test` is the development gate; it does not run all language fixtures.
 `suite -- ams` fails on failures, unasserted fixtures and expected failures.
