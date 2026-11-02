@@ -3,8 +3,8 @@
 //! out, with the file system changed as the clause says. `ZfTable` holds the
 //! channels and their read lines; every method that allocates takes the
 //! caller's `gpa` and every one that touches a file the caller's `io`.
-//! Device text (`text.file`, with `file_kernels.zig`, which holds the
-//! device's one table and the `zF*` ABI over it).
+//! Device text (`text.file`, with `file_kernels.zig`, the `zF*` ABI over a
+//! caller's table: one per device instance, one per digital `Run`).
 //! Cites: VAMS §9.5.1 (Table 9-24), §9.5.1.1, §9.5.2, §9.5.4.1, §9.5.4.2,
 //! §9.5.5-§9.5.8; IEEE 1364-2005 §17.2.4.1, §17.2.8;
 //! docs/specification/Vague_Decisions.md VD-084.

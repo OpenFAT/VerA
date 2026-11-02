@@ -2,7 +2,7 @@
 //! Cites: IEEE 1364-2005 §17.2.1, §17.2.2, §17.2.4, §17.2.7, Table 17-7.
 //!
 //! Contents:
-//! - `pub const own: contract.FileIo`
+//! - `pub fn own(t: *ZfTable) contract.FileIo`
 //! - `pub const FileFn = enum`
 //! - `pub const FileScan = struct`
 //! - `pub const unwritten`
@@ -43,6 +43,7 @@ const wordMask = @import("net.zig").wordMask;
 const rng = @import("kernels").rng_kernels;
 const contract = @import("contract");
 const fk = @import("kernels").file_kernels;
+const ZfTable = @import("kernels").file_table.ZfTable;
 const queues = @import("queues.zig");
 const scanf = @import("scanf.zig");
 const system = @import("system.zig");
@@ -53,11 +54,14 @@ const scanCall = scanf.scanCall;
 const scanContext = scanf.scanContext;
 const text = system.text;
 
-/// This engine's own descriptor table: `file_kernels`, the table the analog
-/// devices run, so both engines answer §17.2 one way (IEEE 1364-2005 §17.2.1's
+/// A `Run`'s own descriptor table `t` (`Run.tasks.files`) as a
+/// `contract.FileIo`: `file_kernels`, the table an analog device instance
+/// runs, so both engines answer §17.2 one way (IEEE 1364-2005 §17.2.1's
 /// encodings: an mcd's bit 0 is standard output, an fd has bit 31 set and
 /// 0..2 are the standard streams).
-pub const own: contract.FileIo = .{ .open = fk.zFOpen, .close = fk.zFClose, .put = fk.zFPut, .getc = fk.zFGetc, .ungetc = fk.zFUngetc, .tell = fk.zFTell, .seek = fk.zFSeek, .eof = fk.zFEof, .err = fk.zFError };
+pub fn own(t: *ZfTable) contract.FileIo {
+    return .{ .ctx = t, .open = fk.zFOpen, .close = fk.zFClose, .put = fk.zFPut, .getc = fk.zFGetc, .ungetc = fk.zFUngetc, .tell = fk.zFTell, .seek = fk.zFSeek, .eof = fk.zFEof, .err = fk.zFError, .new_analysis = fk.zFNewAnalysis };
+}
 
 /// The §17.2 functions an expression can call.
 pub const FileFn = enum { fopen, fgetc, ungetc, fgets, fscanf, fread, ftell, fseek, rewind, feof, ferror, sscanf };
@@ -88,27 +92,27 @@ pub const FakeFile = struct {
     }
     /// A read opens beside the source when it can (`dir/f.txt`, 7), and
     /// anything else as itself (3).
-    fn open(path: []const u8, _: []const u8, _: bool) i64 {
+    fn open(_: *anyopaque, path: []const u8, _: []const u8, _: bool) i64 {
         const d: i64 = if (path.len > "f.txt".len and std.mem.endsWith(u8, path, "f.txt")) 7 else 3;
         // Never 0, the "cannot open" answer `fopen` passes on.
         assert(d != 0);
         assert(pos <= data.len);
         return d;
     }
-    fn close(_: i64) i64 {
+    fn close(_: *anyopaque, _: i64) i64 {
         assert(pos <= data.len);
         assert(put_bytes <= std.math.maxInt(usize));
         return 0;
     }
     /// Takes none of the bytes, as a file not open for writing.
-    fn put(_: i64, bytes: []const u8) i64 {
+    fn put(_: *anyopaque, _: i64, bytes: []const u8) i64 {
         const before = put_bytes;
         put_bytes += bytes.len;
         assert(put_bytes - before == bytes.len);
         assert(pos <= data.len);
         return 0;
     }
-    fn getc(_: i64) i64 {
+    fn getc(_: *anyopaque, _: i64) i64 {
         assert(pos <= data.len);
         if (pos == data.len) return -1;
         pos += 1;
@@ -116,32 +120,32 @@ pub const FakeFile = struct {
         return data[pos - 1];
     }
     // The fake holds no pushback: an `ungetc` only ever follows a `getc`.
-    fn ungetc(c: i64, _: i64) i64 {
+    fn ungetc(_: *anyopaque, c: i64, _: i64) i64 {
         assert(pos >= 1);
         pos -= 1;
         assert(pos < data.len);
         return c;
     }
-    fn tell(_: i64) i64 {
+    fn tell(_: *anyopaque, _: i64) i64 {
         assert(pos <= data.len);
         const at: i64 = @intCast(pos);
         assert(at >= 0);
         return at;
     }
     // The tests seek only to a position they read past, or to the start.
-    fn seek(_: i64, off: i64, _: i64) i64 {
+    fn seek(_: *anyopaque, _: i64, off: i64, _: i64) i64 {
         assert(off >= 0);
         pos = @intCast(off);
         assert(pos <= data.len);
         return 0;
     }
-    fn eof(_: i64) i64 {
+    fn eof(_: *anyopaque, _: i64) i64 {
         assert(pos <= data.len);
         const at_end = pos == data.len;
         if (!at_end) assert(pos < data.len);
         return @intFromBool(at_end);
     }
-    const io: contract.FileIo = .{ .open = open, .close = close, .put = put, .getc = getc, .ungetc = ungetc, .tell = tell, .seek = seek, .eof = eof };
+    const io: contract.FileIo = .{ .ctx = &pos, .open = open, .close = close, .put = put, .getc = getc, .ungetc = ungetc, .tell = tell, .seek = seek, .eof = eof };
 };
 
 /// A descriptor is "a 32-bit value" (§17.2.1): its low 32 bits, however the
@@ -177,7 +181,7 @@ pub fn fileCall(self: *Run, a: std.mem.Allocator, f: FileFn, args: []const Ast.E
         .fread => return fread(self, a, t, args),
         // §17.2.7: the code, and its description in `str`, cleared when 0.
         .ferror => {
-            const code = if (t.err) |err| err((try descriptor(self, a, args[0])) orelse 0) else 0;
+            const code = if (t.err) |err| err(t.ctx, (try descriptor(self, a, args[0])) orelse 0) else 0;
             try evaluate.assign(self, a, args[1], try evaluate.stringLiteral(a, fk.zFErrorStr(code, 0)));
             return code;
         },
@@ -205,10 +209,10 @@ pub fn fopen(t: contract.FileIo, a: std.mem.Allocator, file_name: []const u8, na
     // A file read is looked for beside the source first, as `$readmemh`
     // looks (`display.sideFile`).
     if (ty[0] == 'r') if (std.Io.Dir.path.dirname(file_name)) |dir| {
-        const d = t.open(try std.Io.Dir.path.join(a, &.{ dir, path }), ty, mcd);
+        const d = t.open(t.ctx, try std.Io.Dir.path.join(a, &.{ dir, path }), ty, mcd);
         if (d != 0) return d;
     };
-    return t.open(path, ty, mcd);
+    return t.open(t.ctx, path, ty, mcd);
 }
 
 /// Is `ty` one of §17.2.1 Table 17-7's file types? The list is lowering's
@@ -231,20 +235,20 @@ pub fn fileOp(t: contract.FileIo, f: FileFn, x: ?i64, y: ?i64, z: ?i64) i64 {
     assert(f != .sscanf);
     const eof: i64 = -1;
     switch (f) {
-        .fgetc => return t.getc(low32(x) orelse return eof),
-        .ungetc => return t.ungetc(x orelse return eof, low32(y) orelse return eof),
-        .ftell => return t.tell(low32(x) orelse return eof),
+        .fgetc => return t.getc(t.ctx, low32(x) orelse return eof),
+        .ungetc => return t.ungetc(t.ctx, x orelse return eof, low32(y) orelse return eof),
+        .ftell => return t.tell(t.ctx, low32(x) orelse return eof),
         // §17.2.5: whence 0 from the start, 1 from here, 2 from the end.
         .fseek, .rewind => {
             const d = low32(x) orelse return eof;
-            if (f == .rewind) return t.seek(d, 0, 0);
+            if (f == .rewind) return t.seek(t.ctx, d, 0, 0);
             const offset = y orelse return eof;
             const whence = z orelse return eof;
             if (whence < 0 or whence > 2) return eof;
             assert(whence >= 0);
-            return t.seek(d, offset, whence);
+            return t.seek(t.ctx, d, offset, whence);
         },
-        .feof => return t.eof(low32(x) orelse return eof),
+        .feof => return t.eof(t.ctx, low32(x) orelse return eof),
         .fopen, .sscanf, .fgets, .fscanf, .fread, .ferror => unreachable, // `fileCall`'s own
     }
 }
@@ -256,7 +260,7 @@ pub fn readLine(a: std.mem.Allocator, t: contract.FileIo, d: i64, room: u32) std
     var line: std.ArrayList(u8) = .empty;
     assert(line.items.len == 0);
     while (line.items.len < room) {
-        const c = t.getc(d);
+        const c = t.getc(t.ctx, d);
         if (c < 0) break;
         try line.append(a, @intCast(c));
         if (c == '\n') break;
@@ -273,23 +277,23 @@ pub fn readLine(a: std.mem.Allocator, t: contract.FileIo, d: i64, room: u32) std
 pub fn fileScan(a: std.mem.Allocator, t: contract.FileIo, descriptor_: ?i64, format: ?[]const u8, outs: usize) std.mem.Allocator.Error!FileScan {
     const no_input: FileScan = .{ .scan = .init(null, format, outs) };
     const d = low32(descriptor_) orelse return no_input;
-    const start = t.tell(d);
+    const start = t.tell(t.ctx, d);
     if (start < 0) return no_input;
     // ponytail: reads the rest of the file per call; a streaming scan when a
     // model reads large files this way.
     var rest: std.ArrayList(u8) = .empty;
     while (true) {
-        const c = t.getc(d);
+        const c = t.getc(t.ctx, d);
         if (c < 0) break;
         try rest.append(a, @intCast(c));
     }
     // `$ungetc`'s characters came first (VD-084). The file's own bytes under
     // them (at most 16, `file_table.zig`'s `ZfSlot.back`) tell which ones
     // `finishFileScan` must push back after it repositions.
-    _ = t.seek(d, start, 0);
+    _ = t.seek(t.ctx, d, start, 0);
     var pushed: usize = 0;
     for (rest.items[0..@min(rest.items.len, 16)], 0..) |c, i| {
-        if (t.getc(d) != c) pushed = i + 1;
+        if (t.getc(t.ctx, d) != c) pushed = i + 1;
     }
     assert(pushed <= rest.items.len);
     assert(pushed <= 16);
@@ -307,19 +311,19 @@ pub fn finishFileScan(t: contract.FileIo, file: FileScan, scan: Scan) i64 {
     assert(file.start >= 0);
     if (scan.at < file.pushed) {
         // The pushback the scan left unread stays the next input.
-        _ = t.seek(d, file.start + @as(i64, @intCast(file.pushed)), 0);
+        _ = t.seek(t.ctx, d, file.start + @as(i64, @intCast(file.pushed)), 0);
         var k = file.pushed;
         while (k > scan.at) {
             k -= 1;
-            _ = t.ungetc(scan.input[k], d);
+            _ = t.ungetc(t.ctx, scan.input[k], d);
         }
         assert(k == scan.at);
         return scan.result;
     }
-    _ = t.seek(d, file.start + @as(i64, @intCast(scan.at)), 0);
+    _ = t.seek(t.ctx, d, file.start + @as(i64, @intCast(scan.at)), 0);
     // A scan that ran to the end of the input met EOF (§17.2.8), which the
     // repositioning cleared.
-    if (scan.at == file.input_len) _ = t.getc(d);
+    if (scan.at == file.input_len) _ = t.getc(t.ctx, d);
     return scan.result;
 }
 
@@ -334,7 +338,7 @@ pub fn readWord(a: std.mem.Allocator, t: contract.FileIo, d: i64, width: u32) Er
     const v = try filled(a, width, false, .zero);
     assert(v.values().len * 64 >= @as(usize, bytes - 1) * 8 + 1);
     for (0..bytes) |k| {
-        const c = t.getc(d);
+        const c = t.getc(t.ctx, d);
         if (c < 0) {
             if (k == 0) return .{ .value = null, .n = 0 };
             v.values()[v.values().len - 1] &= wordMask(width, v.values().len - 1);
@@ -376,7 +380,7 @@ pub fn fclose(self: *Run, a: std.mem.Allocator, args: []const Ast.ExprId) Error!
     assert(args[0] != .none);
     const d = (try descriptor(self, a, args[0])) orelse return;
     display.cancelFile(self, d);
-    if (table(self)) |t| _ = t.close(d);
+    if (table(self)) |t| _ = t.close(t.ctx, d);
 }
 
 /// §17.2.2 `$fdisplay`/`$fwrite` and their radix forms: the `$display` text
@@ -429,17 +433,17 @@ pub fn channels(t: ?contract.FileIo, io: ?std.Io, out: *std.Io.Writer, d: i64, b
     if (fd and files != 0) assert(ch > 2);
     if (files == 0 or bytes.len == 0) return false;
     const tt = t orelse return false;
-    return tt.put(files, bytes) == 0;
+    return tt.put(tt.ctx, files, bytes) == 0;
 }
 
 // ---- private ----
 
 /// VAMS §9.5.1.2: one descriptor table per simulation, the host's
-/// (`Run.tasks.file_io`: a mixed simulation's device table), else this engine's
-/// own, which only an engine given filesystem access (`Options.io`) opens
-/// files through.
+/// (`Run.tasks.file_io`: a mixed simulation's device instance's table), else
+/// the run's own (`Run.tasks.files`), which only an engine given filesystem
+/// access (`Options.io`) opens files through.
 fn table(self: *Run) ?contract.FileIo {
-    const t = self.tasks.file_io orelse if (self.io != null) own else null;
+    const t = self.tasks.file_io orelse if (self.io != null) own(&self.tasks.files) else null;
     // No host table and no filesystem: nothing opens a file.
     if (t == null) assert(self.tasks.file_io == null);
     if (t == null) assert(self.io == null);

@@ -271,6 +271,9 @@ mon_pending: bool = false,
 queues: system.Queues = .empty,
 /// `Run.tasks.random_seed`.
 random_seed: i32 = 0,
+/// `Run.tasks.files`: IEEE 1364-2005 §17.2's descriptor table
+/// (`rt/system.zig`). Its channels and memory live until the process ends.
+files: @import("kernels").file_table.ZfTable = .{},
 /// §9.3 per slot (empty when the design has no `assign` or `force`):
 /// the pc ranges of the procedural continuous assignments holding it.
 /// While one does, only its own process (`overriding`) writes the slot.

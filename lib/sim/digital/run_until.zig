@@ -58,9 +58,6 @@ const Error = root.Error;
 const Stop = root.Stop;
 const isRoot = root.isRoot;
 
-/// The descriptor table a `Run` with no `file_io` opens files through.
-const own_files = system.own;
-
 /// The zero-delay-loop guard of a run: the events dispatched at tick `time`,
 /// against `max` (`Options.event_budget`).
 pub const EventBudget = struct {

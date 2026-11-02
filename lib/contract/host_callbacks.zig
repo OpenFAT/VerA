@@ -1,8 +1,8 @@
 //! What a host lends a device to call back into in, the contract of those
 //! function-pointer tables out: the §12.32 VPI application behind every
 //! `$name` the compiler could not resolve (`Systf`, `SystfHost`), and the
-//! §9.5 descriptor table a mixed simulation's second context shares
-//! (`FileIo`). Also the rule `validate` applies to `systf_calls`.
+//! §9.5 descriptor table of one instance a mixed simulation's second
+//! context shares (`FileIo`). Also the rule `validate` applies to `systf_calls`.
 //! Cites: VAMS-2023 §2.8.3 (unresolved system tasks), §12.22.1-§12.22.2
 //! (calltf, derivtf, output arguments), §12.30, §12.32 (analog systf
 //! registration), §9.5.1-§9.5.1.2 (descriptors shared across contexts),
@@ -12,7 +12,7 @@
 //! - `pub const Systf = struct`
 //! - `pub const SystfHost = struct`, with `pub fn output`
 //! - `pub const FileIo = struct`
-//! - `pub fn fileIo(comptime D: type) ?FileIo`
+//! - `pub fn fileIo(comptime D: type, inst: *D.Instance) ?FileIo`
 //! - `pub fn systfError(comptime D: type) ?[]const u8`
 
 const std = @import("std");
@@ -85,35 +85,47 @@ pub const SystfHost = struct {
     }
 };
 
-/// The device's §9.5 descriptor table, for a host whose second context (a
-/// mixed simulation's digital half) must share it (§9.5.1.2). The host routes
-/// that context's file tasks through these, so a descriptor names the same
-/// channel in both, with §9.5.1's encodings (an mcd has bit 31 clear, an fd bit
-/// 31 set). `put` writes already-formatted text. Declared only by a printing
-/// artifact that calls the §9.5 family.
+/// One instance's §9.5 descriptor table, for a host whose second context (a
+/// mixed simulation's digital half) must share it (§9.5.1.2). The device
+/// keeps the table in the instance, created with it and empty (`.{}`), and
+/// its display phase runs the instance's file tasks on it; a host that only
+/// calls `display` never sees it. A host that shares it asks the device for
+/// the instance's table (`fileIo(D, inst)`) and routes the second context's
+/// file tasks through these functions, each called with `ctx`, so a
+/// descriptor names the same channel in both, with §9.5.1's encodings (an
+/// mcd has bit 31 clear, an fd bit 31 set). `put` writes already-formatted
+/// text. Two instances have two tables, so each instance's first fd is
+/// 0x8000_0003. The table lives as long as the instance; a host that frees
+/// an instance before the process ends calls `deinitInstance` first, which
+/// closes the instance's channels. Declared only by a printing artifact
+/// that calls the §9.5 family. One thread at a time per `ctx`.
 pub const FileIo = struct {
-    open: *const fn (path: []const u8, ty: []const u8, mcd: bool) i64,
-    close: *const fn (d: i64) i64,
-    put: *const fn (d: i64, text: []const u8) i64,
-    getc: *const fn (d: i64) i64,
-    ungetc: *const fn (c: i64, d: i64) i64,
-    tell: *const fn (d: i64) i64,
-    seek: *const fn (d: i64, off: i64, op: i64) i64,
-    eof: *const fn (d: i64) i64,
+    /// The table every function acts on: the instance's own, from
+    /// `fileIo(D, inst)`. Valid while the instance is.
+    ctx: *anyopaque,
+    open: *const fn (ctx: *anyopaque, path: []const u8, ty: []const u8, mcd: bool) i64,
+    close: *const fn (ctx: *anyopaque, d: i64) i64,
+    put: *const fn (ctx: *anyopaque, d: i64, text: []const u8) i64,
+    getc: *const fn (ctx: *anyopaque, d: i64) i64,
+    ungetc: *const fn (ctx: *anyopaque, c: i64, d: i64) i64,
+    tell: *const fn (ctx: *anyopaque, d: i64) i64,
+    seek: *const fn (ctx: *anyopaque, d: i64, off: i64, op: i64) i64,
+    eof: *const fn (ctx: *anyopaque, d: i64) i64,
     /// §9.5.7 `$ferror`'s code for the most recent operation on `d`, or on
     /// the failed open that returned `d` = 0. Optional: without it every
     /// `$ferror` answers 0, "no error".
-    err: ?*const fn (d: i64) i64 = null,
+    err: ?*const fn (ctx: *anyopaque, d: i64) i64 = null,
     /// §9.5.1.1: a host running several analyses in one process calls this
     /// at the first point of each analysis after the first, so a file one
     /// analysis opened "w" and a later one reopens "w" is appended to rather
     /// than truncated. Optional: a one-analysis host never calls it.
-    new_analysis: ?*const fn () void = null,
+    new_analysis: ?*const fn (ctx: *anyopaque) void = null,
 };
 
-/// Returns the device's `file_io`, or null when it has no descriptor table.
-pub fn fileIo(comptime D: type) ?FileIo {
-    return if (@hasDecl(D, "file_io")) D.file_io else null;
+/// Returns instance `inst`'s descriptor table (`D.fileIo`), or null when
+/// the device has none.
+pub fn fileIo(comptime D: type, inst: *D.Instance) ?FileIo {
+    return if (@hasDecl(D, "fileIo")) D.fileIo(inst) else null;
 }
 
 /// Why `D.systf_calls` breaks §2.8.3/§12.32, or null: every name starts

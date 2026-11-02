@@ -72,7 +72,10 @@ pub fn requireWithError(comptime D: type, comptime decl: []const u8, comptime ne
 }
 
 /// `D.decl` must be a struct whose every field has a default and a value
-/// type (`isValueType`), so a host can make one and copy it.
+/// type (`isValueType`), so a host can make one and copy it. One field is
+/// admitted by name instead: `Instance.zf__`, the instance's §9.5
+/// descriptor table (`fileIo`), whose rows the device allocates; a copy of
+/// the instance shares them, and `deinitInstance` frees them once.
 pub fn defaultedStructError(comptime D: type, comptime decl: []const u8) ?[]const u8 {
     assert(@hasDecl(D, decl));
     const T = @field(D, decl);
@@ -82,7 +85,8 @@ pub fn defaultedStructError(comptime D: type, comptime decl: []const u8) ?[]cons
     for (s.field_names, s.field_types, s.field_attrs) |f_name, F, attrs| {
         if (attrs.default_value_ptr == null)
             return @typeName(D) ++ "." ++ decl ++ "." ++ f_name ++ " must have a default value";
-        if (!isValueType(F))
+        const table = std.mem.eql(u8, decl, "Instance") and std.mem.eql(u8, f_name, "zf__") and @hasDecl(D, "fileIo");
+        if (!table and !isValueType(F))
             return @typeName(D) ++ "." ++ decl ++ "." ++ f_name ++
                 ": field type must be numeric/bool/enum, []const u8, or a fixed-size array of these";
     }

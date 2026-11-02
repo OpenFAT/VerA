@@ -1,7 +1,8 @@
 //! `rt.State`'s IEEE 1364-2005 §17.2 file I/O (`$fopen` .. `$fclose`, the
 //! `$fgets`/`$fread`/`$fscanf`/`$sscanf` readers, `$fdisplay`'s channels)
-//! over `digital/system.zig`'s descriptor table, and §17.2.3's held
-//! `$sformat` formats scanned at run time. Free functions over `*State`,
+//! over the state's own descriptor table (`State.files` as
+//! `digital/system.zig`'s `own`), and §17.2.3's held `$sformat` formats
+//! scanned at run time. Free functions over `*State`,
 //! aliased on `State` because the emitted design calls each one as a
 //! method (`s.fopen(...)`, `S.formatOf(...)`).
 //!
@@ -9,14 +10,14 @@
 //! - `pub const Format = struct`
 //! - `pub const Spec = struct`
 //! - `pub fn fopen(self: *State, source: []const u8, name: anytype, comptime nw: u32, mode: anytype, comptime mw: u32) Error!i64`
-//! - `pub fn fileOp(self: *const State, f: system.FileFn, x: ?i64, y: ?i64, z: ?i64) i64`
+//! - `pub fn fileOp(self: *State, f: system.FileFn, x: ?i64, y: ?i64, z: ?i64) i64`
 //! - `pub fn fileLine(self: *State, d: ?i64, comptime w: u32) Error![]const u8`
 //! - `pub fn fileWord(self: *State, d: ?i64, comptime w: u32, prior: anytype) Error!struct { value: ?logic.T(w), n: i64 }`
-//! - `pub fn fileError(self: *const State, d: ?i64) struct { code: i64, text: []const u8 }`
-//! - `pub fn fclose(self: *const State, d: ?i64) void`
+//! - `pub fn fileError(self: *State, d: ?i64) struct { code: i64, text: []const u8 }`
+//! - `pub fn fclose(self: *State, d: ?i64) void`
 //! - `pub fn scan(_: *const State, a: std.mem.Allocator, input: anytype, comptime iw: u32, format: anytype, comptime fw: u32, outs: usize) Error!system.Scan`
-//! - `pub fn scanFile(self: *const State, a: std.mem.Allocator, descriptor: ?i64, format: anytype, comptime fw: u32, outs: usize) Error!system.FileScan`
-//! - `pub fn finishFileScan(self: *const State, file: system.FileScan, sc: system.Scan) void`
+//! - `pub fn scanFile(self: *State, a: std.mem.Allocator, descriptor: ?i64, format: anytype, comptime fw: u32, outs: usize) Error!system.FileScan`
+//! - `pub fn finishFileScan(self: *State, file: system.FileScan, sc: system.Scan) void`
 //! - `pub fn fshow(self: *State, d: i64) Error!void`
 //! - `pub fn formatOf(buf: []u8, a: anytype, w: u32) Format`
 //! - `pub fn nextSpec(self: *State, f: *Format, scope: []const u8, lib: []const u8) Error!?Spec`
@@ -29,6 +30,7 @@ const State = @import("State.zig");
 const Error = design.Error;
 const logic = @import("logic/root.zig");
 const fmt = @import("kernels").fmt;
+const fk = @import("kernels").file_kernels;
 const system = @import("../digital/system.zig");
 const display = @import("../digital/display.zig");
 const testing = std.testing;
@@ -56,18 +58,18 @@ pub fn fopen(self: *State, source: []const u8, name: anytype, comptime nw: u32, 
     defer arena.deinit();
     const a = arena.allocator();
     const m = if (mcd) null else try State.chars(a, mode, mw);
-    return system.fopen(system.own, a, source, try State.chars(a, name, nw), m, mcd);
+    return system.fopen(system.own(&self.files), a, source, try State.chars(a, name, nw), m, mcd);
 }
 
 /// `system.fileOp`; -1 in a `quiet` run, which touches no file.
 /// Asserts that `f` is one of the descriptor functions `system.fileOp` runs.
-pub fn fileOp(self: *const State, f: system.FileFn, x: ?i64, y: ?i64, z: ?i64) i64 {
+pub fn fileOp(self: *State, f: system.FileFn, x: ?i64, y: ?i64, z: ?i64) i64 {
     assert(switch (f) {
         .fgetc, .ungetc, .ftell, .fseek, .rewind, .feof => true,
         .fopen, .fgets, .fscanf, .fread, .ferror, .sscanf => false,
     });
     if (self.quiet) return -1;
-    return system.fileOp(system.own, f, x, y, z);
+    return system.fileOp(system.own(&self.files), f, x, y, z);
 }
 
 /// §17.2.4.2 `$fgets`: the bytes read into a `w`-bit destination, valid
@@ -78,7 +80,7 @@ pub fn fileLine(self: *State, d: ?i64, comptime w: u32) Error![]const u8 {
     if (self.quiet) return "";
     const fd = (d orelse return "") & 0xffff_ffff;
     _ = self.scratch.reset(.retain_capacity);
-    const line = try system.readLine(self.scratch.allocator(), system.own, fd, w / 8);
+    const line = try system.readLine(self.scratch.allocator(), system.own(&self.files), fd, w / 8);
     assert(line.len <= w / 8); // `readLine` stops at the room it is given.
     return line;
 }
@@ -93,7 +95,7 @@ pub fn fileWord(self: *State, d: ?i64, comptime w: u32, prior: anytype) Error!st
     if (self.quiet) return .{ .value = null, .n = 0 };
     const fd = (d orelse return .{ .value = null, .n = 0 }) & 0xffff_ffff;
     _ = self.scratch.reset(.retain_capacity);
-    const word = system.readWord(self.scratch.allocator(), system.own, fd, w) catch return error.OutOfMemory;
+    const word = system.readWord(self.scratch.allocator(), system.own(&self.files), fd, w) catch return error.OutOfMemory;
     // `readWord`: no value exactly when no character was read, and at most
     // one per byte of the target.
     assert((word.value == null) == (word.n == 0));
@@ -109,21 +111,21 @@ pub fn fileWord(self: *State, d: ?i64, comptime w: u32, prior: anytype) Error!st
 
 /// §17.2.7 `$ferror`: the descriptor's error and the corresponding text.
 /// Descriptor zero also reports a failed open, as on the interpreter path.
-pub fn fileError(self: *const State, d: ?i64) struct { code: i64, text: []const u8 } {
-    const code = if (self.quiet) 0 else system.own.err.?((d orelse 0) & 0xffff_ffff);
+pub fn fileError(self: *State, d: ?i64) struct { code: i64, text: []const u8 } {
+    const code = if (self.quiet) 0 else fk.zFError(&self.files, (d orelse 0) & 0xffff_ffff);
     if (self.quiet) assert(code == 0);
-    const text = @import("kernels").file_kernels.zFErrorStr(code, 0);
+    const text = fk.zFErrorStr(code, 0);
     // §9.5.7: an empty string exactly when there is no error.
     assert((code == 0) == (text.len == 0));
     return .{ .code = code, .text = text };
 }
 
 /// §17.2.1 `$fclose`.
-pub fn fclose(self: *const State, d: ?i64) void {
+pub fn fclose(self: *State, d: ?i64) void {
     if (self.quiet) return;
     const fd = (d orelse return) & 0xffff_ffff;
     assert(fd >= 0); // A §17.2.1 descriptor is its low 32 bits.
-    _ = system.own.close(fd);
+    _ = fk.zFClose(&self.files, fd);
 }
 
 /// §17.2.4.3 `$sscanf` over the characters of `input` and `format`.
@@ -141,9 +143,9 @@ pub fn scan(_: *const State, a: std.mem.Allocator, input: anytype, comptime iw: 
 /// §17.2.4.3 `$fscanf`: the same conversion stream as `$sscanf`, together
 /// with the file position which `finishFileScan` advances by consumed input.
 /// Asserts that the format has bits.
-pub fn scanFile(self: *const State, a: std.mem.Allocator, descriptor: ?i64, format: anytype, comptime fw: u32, outs: usize) Error!system.FileScan {
+pub fn scanFile(self: *State, a: std.mem.Allocator, descriptor: ?i64, format: anytype, comptime fw: u32, outs: usize) Error!system.FileScan {
     comptime assert(fw >= 1);
-    const file = try system.fileScan(a, system.own, if (self.quiet) null else descriptor, try State.chars(a, format, fw), outs);
+    const file = try system.fileScan(a, system.own(&self.files), if (self.quiet) null else descriptor, try State.chars(a, format, fw), outs);
     assert(file.scan.outs == outs);
     if (self.quiet) assert(file.descriptor == null); // A quiet run reads no file.
     return file;
@@ -151,11 +153,11 @@ pub fn scanFile(self: *const State, a: std.mem.Allocator, descriptor: ?i64, form
 
 /// `system.finishFileScan` of a `scanFile`: the file position follows
 /// what the scan consumed. Asserts that `sc` is `file`'s stream.
-pub fn finishFileScan(self: *const State, file: system.FileScan, sc: system.Scan) void {
+pub fn finishFileScan(self: *State, file: system.FileScan, sc: system.Scan) void {
     assert(sc.outs == file.scan.outs); // Pair of `scanFile`.
     assert(sc.input.len == file.scan.input.len);
     if (self.quiet) return;
-    _ = system.finishFileScan(system.own, file, sc);
+    _ = system.finishFileScan(system.own(&self.files), file, sc);
 }
 
 /// §17.2.2: ends a `capture`, sending its bytes to descriptor `d`'s
@@ -165,7 +167,7 @@ pub fn fshow(self: *State, d: i64) Error!void {
     const bytes = self.captured();
     assert(self.out == self.buffers.sink);
     if (self.quiet) return;
-    if (try system.channels(system.own, self.io, self.out, d & 0xffff_ffff, bytes)) self.warn("W1154", system.unwritten, .{});
+    if (try system.channels(system.own(&self.files), self.io, self.out, d & 0xffff_ffff, bytes)) self.warn("W1154", system.unwritten, .{});
 }
 
 /// The characters of the `w`-bit format `a` (`system.text`) in `buf`,

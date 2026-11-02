@@ -27,8 +27,6 @@ const display = @import("display.zig");
 /// process does (`waiters.store` now, `exec.enqueue` of a `.write` later), so a
 /// §12.30 put wakes waiters and value-change watchers like any other write.
 const exec = @import("exec.zig");
-/// §17 system tasks.
-const system = @import("system.zig");
 const driver = @import("driver.zig");
 const binding = @import("bind.zig");
 const elab = @import("elab.zig");
@@ -56,8 +54,6 @@ const TimeFormat = display.TimeFormat;
 const root = @import("root.zig");
 const Run = root.Run;
 const Error = root.Error;
-/// The descriptor table a `Run` with no `file_io` opens files through.
-const own_files = system.own;
 
 /// A design's §7.9 netlist: which slots are nets, each net's hot and cold
 /// row and driver list, each driver's contribution and inertial state, the

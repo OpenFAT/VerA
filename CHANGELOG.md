@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Contract: a printing device keeps one §9.5 descriptor table per
+  instance.** `contract.FileIo` gains `ctx`, which every function takes
+  first; a device declares `fileIo(inst)` in place of `file_io`, and
+  `deinitInstance(inst)` closes the instance's files; `contract.fileIo(D,
+  inst)` reads it. Two instances share no descriptor, latched `$fopen`
+  result or formatting row, so two instances on two threads each write
+  their own file (`tests/host/fileio_threads_host.zig`: 10000 lines each,
+  byte-exact to a single-threaded run). A digital run owns its own table
+  too. A host that never touches the table changes nothing.
+
 ## v0.21.0 — 2026-11-01
 
 On Suite VAMS-CONFORMANCE, we score Verilog-A 2448/2452, Verilog 3611/3611, Verilog-AMS 746/754, Cumulative: 6805/6817.

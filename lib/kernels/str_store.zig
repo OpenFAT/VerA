@@ -10,9 +10,11 @@
 //! comptime `site`: a distinct site instantiates a distinct struct and so a
 //! distinct array, which keeps two `$sformat` calls in one module from
 //! writing over each other (§9.5.3 has each name its own string variable).
-//! ponytail: file-scope rows and latches. Two threads evaluating the same
-//! call site on different instances would interleave; per-instance scratch
-//! is the upgrade the day a host runs a device's units concurrently.
+//! The rows are thread-local on a CPU, so two threads evaluating the same
+//! call site on different instances each format into their own row.
+//! ponytail: the `$monitor` latches stay file scope, one per site for every
+//! instance and thread; per-instance latches are the upgrade the day a host
+//! runs two instances of a model that monitors.
 //!
 //! Contents:
 //! - `pub const ZStrHeld = ZStrHeldN(4096)`
@@ -32,6 +34,13 @@
 const zstd = @import("std");
 
 // ---- device text ----
+
+/// Whether the scratch rows are thread-local: on every CPU target, not on a
+/// GPU, which has no thread-local storage (one GPU thread formats nothing).
+const zs_tls = switch (@import("builtin").target.cpu.arch) {
+    .nvptx64, .amdgcn => false,
+    else => true,
+};
 
 /// The held string of the 4096-byte row.
 pub const ZStrHeld = ZStrHeldN(4096);
@@ -64,7 +73,10 @@ pub fn ZStrHeldN(comptime len: usize) type {
 /// site whose text can be longer gets a row of its own size (`zSRow`, sized
 /// by `cg_strcap`).
 pub fn zSBuf(comptime site: usize) *[4096]u8 {
-    const Buf = struct {
+    const Buf = if (zs_tls) struct {
+        const n = site;
+        threadlocal var b: [4096]u8 = undefined;
+    } else struct {
         const n = site;
         var b: [4096]u8 = undefined;
     };
@@ -76,7 +88,11 @@ pub fn zSBuf(comptime site: usize) *[4096]u8 {
 /// wide for the stack (`cg_display.Spec.max_stack`). `zSBuf`'s terms
 /// otherwise.
 pub fn zSRow(comptime site: usize, comptime slot: usize, comptime len: usize) *[len]u8 {
-    const Row = struct {
+    const Row = if (zs_tls) struct {
+        const n = site;
+        const k = slot;
+        threadlocal var b: [len]u8 = undefined;
+    } else struct {
         const n = site;
         const k = slot;
         var b: [len]u8 = undefined;
@@ -89,7 +105,9 @@ pub fn zSRow(comptime site: usize, comptime slot: usize, comptime len: usize) *[
 /// For this group's kernels only; the next call of any of them with the same
 /// `len` reuses the bytes.
 pub fn zSTmp(comptime len: usize) *[len]u8 {
-    const Tmp = struct {
+    const Tmp = if (zs_tls) struct {
+        threadlocal var b: [len]u8 = undefined;
+    } else struct {
         var b: [len]u8 = undefined;
     };
     return &Tmp.b;

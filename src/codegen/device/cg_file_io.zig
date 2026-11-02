@@ -35,15 +35,21 @@ pub fn emitFileCall(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize
     // `$fscanf$real` is the one real-typed §9.5 call whose kernel (`zScanR`)
     // already returns f64, so it takes no `@floatFromInt`.
     const from_int = c != .@"$fscanf$real";
-    // An integer result is latched for the other units (`file_kernels.zFRes`).
+    // An integer result is latched in the instance for the other units
+    // (`file_kernels.zFKeep`, `instance.emitFileFields`).
     const keep = Mir.callee.ty(c) == .int;
     if (wrap) try g.b("S.con(", .{});
     if (wrap and from_int) try g.b("@as(f64, @floatFromInt(", .{});
-    if (keep) try g.b("zFKeep({d}, ", .{site});
+    if (keep) try g.b("zFKeep(&inst.zf__.res__{d}, ", .{site});
     // §9.5.4.1/§9.5.4.2 a read's line is copied when the read runs, so its
     // readers see it however late codegen places them (`zFLatch`).
     const latch = c == .@"$fgets" or c == .@"$fscanf";
-    if (latch) try g.b("zFLatch({d}, ", .{site});
+    if (latch) {
+        try g.b("zFLatch(", .{});
+        try emitCtx(g);
+        try g.b("&inst.zf__.line__{d}, ", .{site});
+    }
+    if (keep or latch) g.cur.uses.inst = true;
     try emitFileCallInner(g, c, args, site);
     if (latch) {
         try g.b(", ", .{});
@@ -139,6 +145,7 @@ fn emitFileCallInner(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usiz
         // and it is the only thing that decides which encoding comes back.
         .@"$fopen" => {
             try g.b("zFOpen(", .{});
+            try emitCtx(g);
             try g.renderVal(if (args.len > 0) args[0] else Mir.Value.f_zero, .str);
             try g.b(", ", .{});
             if (args.len > 1) try g.renderVal(args[1], .str) else try g.b("\"\"", .{});
@@ -152,6 +159,7 @@ fn emitFileCallInner(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usiz
                 .@"$feof" => "zFEof", // §9.5.8
                 else => "zFError", // else: `$ferror`, the one left (§9.5.7) — the errno
             }});
+            try emitCtx(g);
             try g.renderVal(if (args.len > 0) args[0] else Mir.Value.zero, .int);
             return g.b(")", .{});
         },
@@ -159,11 +167,13 @@ fn emitFileCallInner(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usiz
         // words, so it is the same kernel with the constants written in.
         .@"$rewind" => {
             try g.b("zFSeek(", .{});
+            try emitCtx(g);
             try g.renderVal(if (args.len > 0) args[0] else Mir.Value.zero, .int);
             return g.b(", 0, 0)", .{});
         },
         .@"$fseek" => {
             try g.b("zFSeek(", .{});
+            try emitCtx(g);
             try g.renderVal(if (args.len > 0) args[0] else Mir.Value.zero, .int);
             try g.b(", ", .{});
             try g.renderVal(if (args.len > 1) args[1] else Mir.Value.zero, .int);
@@ -180,21 +190,24 @@ fn emitFileCallInner(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usiz
         .@"$fscanf" => {
             const fd = if (args.len > 0) args[0] else Mir.Value.zero;
             try g.b("zk{d}: while (true) {{ const zw = zFWindow(", .{site});
+            try emitCtx(g);
             try g.renderVal(fd, .int);
             try g.b("); const zr = zScan(zw, ", .{});
             try g.renderVal(if (args.len > 1) args[1] else Mir.Value.f_zero, .str);
             // A scan that read to the end of a full window runs again over a
             // wider one (`file_kernels.zFMore`).
             try g.b(", -1); if (zFMore(", .{});
+            try emitCtx(g);
             try g.renderVal(fd, .int);
             try g.b(", zr.used)) continue; break :zk{d} zFTake(", .{site});
+            try emitCtx(g);
             try g.renderVal(fd, .int);
             return g.b(", zr.n, @intCast(zr.used)); }}", .{});
         },
         // The synthetic readers, all of which take the count first; see
         // `file_kernels.zFLine` for why that operand is there and why it is read.
         .@"$fgets$str" => return emitReadLine(g, args),
-        .@"$ferror$str" => return emitLine(g, args, "zFErrorStr"),
+        .@"$ferror$str" => return emitLine(g, args, "zFErrorStr", false),
         // §9.5.4.2's items: the same three flavours `$sscanf` has, over the line the
         // count's read latched. `(count, fd, format, item)`.
         .@"$fscanf$int", .@"$fscanf$real", .@"$fscanf$str" => {
@@ -224,20 +237,30 @@ fn emitReadLine(g: *Gen, args: []const Mir.Value) Error!void {
     if (def == .inst_result and g.mir.instOp(def.inst_result) == .call) {
         const callee = g.mir.instData(def.inst_result).call.callee;
         if (callee == .@"$fgets" or callee == .@"$fscanf") {
-            try g.b("zFLineAt({d}, ", .{@backingInt(def.inst_result)});
+            g.cur.uses.inst = true;
+            try g.b("zFLineAt(inst.zf__.line__{d}, ", .{@backingInt(def.inst_result)});
             try g.renderVal(n, .int);
             return g.b(")", .{});
         }
     }
-    return emitLine(g, args, "zFLine");
+    return emitLine(g, args, "zFLine", true);
 }
 
-/// The first two operands every synthetic reader carries: count, then fd.
-inline fn emitLine(g: *Gen, args: []const Mir.Value, comptime kernel: []const u8) Error!void {
+/// The instance's descriptor table as a kernel's first argument
+/// (`file_kernels.zFCtx`, `instance.emitFileFields`).
+fn emitCtx(g: *Gen) Error!void {
+    g.cur.uses.inst = true;
+    try g.b("zFCtx(&inst.zf__.t), ", .{});
+}
+
+/// The first two operands every synthetic reader carries: count, then fd,
+/// after the instance's table when the kernel reads it (`table`).
+inline fn emitLine(g: *Gen, args: []const Mir.Value, comptime kernel: []const u8, comptime table: bool) Error!void {
     comptime assert(kernel.len != 0);
     assert(args.len >= 2);
     const len_before = g.out.items.len;
     try g.b(kernel ++ "(", .{});
+    if (table) try emitCtx(g);
     try g.renderVal(if (args.len > 0) args[0] else Mir.Value.zero, .int);
     try g.b(", ", .{});
     try g.renderVal(if (args.len > 1) args[1] else Mir.Value.zero, .int);
@@ -254,6 +277,7 @@ fn emitFileWrite(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) E
     // §9.5.1 `$fclose` and §9.5.6 `$fflush` take a descriptor and no text.
     if (c == .@"$fclose" or c == .@"$fflush") {
         try g.b("{s}(", .{if (c == .@"$fclose") "zFClose" else "zFFlush"});
+        if (c == .@"$fclose") try emitCtx(g);
         try g.renderVal(if (args.len > 0) args[0] else Mir.Value.zero, .int);
         return g.b(")", .{});
     }
@@ -282,6 +306,7 @@ fn emitFileWrite(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) E
     // composed either way, and `zMonitor` decides whether it is written.
     if (mon) try g.b("const zt = ", .{}) else try g.b("break :zf zFPut(", .{});
     if (!mon) {
+        try emitCtx(g);
         try g.renderVal(if (all.len > 0) all[0] else Mir.Value.zero, .int);
         try g.b(", ", .{});
     }
@@ -290,6 +315,7 @@ fn emitFileWrite(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) E
         try g.b("; break :zf if (zMonitor({d}, ", .{monitorKey(g, args)});
         try monitorValues(g, ops.items);
         try g.b(", zt)) |zm| zFPut(", .{});
+        try emitCtx(g);
         try g.renderVal(if (all.len > 0) all[0] else Mir.Value.zero, .int);
         try g.b(", zm) else 0; }}", .{});
     } else try g.b("); }}", .{});
