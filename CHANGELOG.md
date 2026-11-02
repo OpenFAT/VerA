@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A deep connect-module chain with `connectrules` elaborates in linear
+  time** (§7.8.4, Annex F.2.1): `segment.up` climbs the chain once, not once
+  per level above it, so a 1500-level chain takes 0.26 s where it took
+  19.5 s and 2.7 GB.
 - **`diag.Code` has no `name()` method** (the `vera` Zig module's API): use
   `@tagName(code)`. The code catalogue moved to `lib/diag/codes/`, one file
   per class, and `Code` is built from one ordered list of names, so every
