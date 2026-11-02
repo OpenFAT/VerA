@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Verilog-AMS 752/752, Cumulative: 6815/6815.
+
+- **No expected conformance failures again**: the twelve fixtures v0.21.0
+  listed in `tools/vera.xfail` now expect what the LRM says
+  (OpenFAT/VAMS-Conformance-Suite#2). An instance's own port flow and a
+  run-time `$simprobe` name are run tests with hand-derived values (§5.4.3,
+  §9.16). An analog assignment to a `reg` is a refusal (§5.7, §7.3), and the
+  fixtures that set a `reg` that way now set it from a declaration or an
+  `initial` block. The two wider copies of `wide_reg_matches_digital` left
+  the suite, so Verilog-AMS has 752 tests instead of 754.
+
 ## v0.22.0 — 2026-11-02
 
 On Suite VAMS-CONFORMANCE, we score Verilog-A 2448/2452, Verilog 3611/3611, Verilog-AMS 746/754, Cumulative: 6805/6817.
