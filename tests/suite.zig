@@ -3284,11 +3284,11 @@ const Golden = struct {
     //! spawning. A kind that fails is `error=<name>` in its own file (a `.so` tree
     //! is then `<path>.so.error.txt`), so it hides no other kind.
     //!
-    //! Every file is written with the checkout's root cut out (`unrooted`): the
-    //! fixture's absolute path reaches diagnostics, device and program text
-    //! (`$fopen`, `$readmem`, the fallback's `file_name`), so two worktrees'
-    //! snapshots are equal byte for byte. `diff` cuts it again, for snapshots an
-    //! older tree wrote.
+    //! Every file is written with the checkout's root cut out (`unrooted`), for
+    //! the suite's fixtures and VerA's own alike: the fixture's absolute path
+    //! reaches diagnostics, device and program text (`$fopen`, `$readmem`, the
+    //! fallback's `file_name`), so two worktrees' snapshots are equal byte for
+    //! byte. `diff` cuts it again, for snapshots an older tree wrote.
     //!
     //! Not a cacheable build step: the build graph cannot see fixture contents, so
     //! a cached run would compare nothing (`build.zig`'s note on the `suite` step).
@@ -3609,8 +3609,8 @@ const Golden = struct {
         return list.items;
     }
 
-    /// `diff -r a b` with every `<root>/tests/conformance/tests/` written `tests/conformance/tests/`
-    /// on both sides. Prints one line per file that is missing or differs, then
+    /// `diff -r a b` with every fixture root's checkout cut out on both sides
+    /// (`unrooted`). Prints one line per file that is missing or differs, then
     /// IDENTICAL or the count; exit 1 on any difference.
     fn compare(arena: Allocator, io: Io, a: []const u8, b: []const u8, w: *Io.Writer) !u8 {
         const left = try fileList(arena, io, a);
@@ -3651,29 +3651,42 @@ const Golden = struct {
         return 1;
     }
 
-    /// `text` with each absolute path's root cut back to `tests/conformance/tests`.
-    /// A path starts after a space, quote, backtick or parenthesis, or at a line
-    /// start, and must start with `/`. It may name the fixture root itself, as
-    /// the include-search note does (`searched: <root>/tests/conformance/tests, ...`).
+    /// The fixture roots a snapshot holds, each as it follows the checkout's root:
+    /// the suite's, then `own_dirs`'.
+    const roots = [_][]const u8{"/tests/conformance/tests"} ++ own: {
+        var keys: [own_dirs.len][]const u8 = undefined;
+        for (&keys, own_dirs) |*key, sub| key.* = "/tests/" ++ sub;
+        break :own keys;
+    };
+
+    /// `text` with each absolute path's checkout cut out, back to the fixture
+    /// root it lies under (`roots`, so `tests/conformance/tests/...` or
+    /// `tests/rtlil/...`). A path starts after a space, quote, backtick or
+    /// parenthesis, or at a line start, and must start with `/`. It may name the
+    /// fixture root itself, as the include-search note does
+    /// (`searched: <root>/tests/conformance/tests, ...`).
     fn unrooted(arena: Allocator, text: []const u8) ![]const u8 {
-        const key = "/tests/conformance/tests";
-        var out: std.ArrayList(u8) = .empty;
-        var rest = text;
-        while (std.mem.find(u8, rest, key)) |at| {
-            const end = at + key.len;
-            const whole = end == rest.len or std.mem.findScalar(u8, "/ \t\n,;:'\"`)", rest[end]) != null;
-            var start = at;
-            while (start > 0 and std.mem.findScalar(u8, " \t\n'\"`(", rest[start - 1]) == null) start -= 1;
-            if (whole and rest[start] == '/') {
-                try out.appendSlice(arena, rest[0..start]);
-                try out.appendSlice(arena, key[1..]);
-            } else {
-                try out.appendSlice(arena, rest[0..end]);
+        var cut = text;
+        inline for (roots) |key| {
+            var out: std.ArrayList(u8) = .empty;
+            var rest = cut;
+            while (std.mem.find(u8, rest, key)) |at| {
+                const end = at + key.len;
+                const whole = end == rest.len or std.mem.findScalar(u8, "/ \t\n,;:'\"`)", rest[end]) != null;
+                var start = at;
+                while (start > 0 and std.mem.findScalar(u8, " \t\n'\"`(", rest[start - 1]) == null) start -= 1;
+                if (whole and rest[start] == '/') {
+                    try out.appendSlice(arena, rest[0..start]);
+                    try out.appendSlice(arena, key[1..]);
+                } else {
+                    try out.appendSlice(arena, rest[0..end]);
+                }
+                rest = rest[end..];
             }
-            rest = rest[end..];
+            try out.appendSlice(arena, rest);
+            cut = out.items;
         }
-        try out.appendSlice(arena, rest);
-        return out.items;
+        return cut;
     }
 
     test "unrooted: two checkouts' diagnostics compare equal" {
@@ -3693,6 +3706,11 @@ const Golden = struct {
         try std.testing.expectEqualStrings("/r/tests/conformance/tests2/x", try unrooted(arena, "/r/tests/conformance/tests2/x"));
         // A relative mention is not a root and stays as written.
         try std.testing.expectEqualStrings("see tests/conformance/tests/a.va", try unrooted(arena, "see tests/conformance/tests/a.va"));
+        // VerA's own fixtures (`own_dirs`): a diagnostic and the program header.
+        try std.testing.expectEqualStrings(
+            "  --> tests/beh_verilog/x.va:3:5\n// DO NOT EDIT. tests/rtlil/c.v\n",
+            try unrooted(arena, "  --> /home/a/VerA/tests/beh_verilog/x.va:3:5\n// DO NOT EDIT. /tmp/wt/b/tests/rtlil/c.v\n"),
+        );
     }
 };
 
