@@ -308,7 +308,7 @@ fn recordProbeTerminal(self: *Lower, t: Ast.ExprId, only: bool) Oom!void {
     if (self.out.discrete_probes.contains(key)) return;
     const name = if (ex.tag(t) == .ident) key else try lower_expr_name.flatName(self, t);
     const branch = if (only) self.branches.get(name) else null;
-    const pair: [2]u32 = if (branch) |b| .{ b.hi, b.lo } else if (self.node_voltages.get(name)) |n| .{ n, Lower.ground } else {
+    const pair: [2]Lower.NodeId = if (branch) |b| .{ b.hi, b.lo } else if (self.node_voltages.get(name)) |n| .{ n, Lower.ground } else {
         if (ex.tag(t) == .hier_ident) try self.err(ex.mainTok(t), .E0901, "`{s}` names no net or branch in the elaborated design", .{name});
         return;
     };

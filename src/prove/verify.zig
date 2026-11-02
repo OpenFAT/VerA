@@ -441,8 +441,8 @@ fn held(mir: *const Mir, lowered: *const Lowered, an: *const Analysis) ?Violatio
         if (@backingInt(h.seed) >= an.nv) return bad(.handle, null, .none, "a `held_vars` seed names no Value");
         const seed = mir.valueDef(an.rv(h.seed));
         const inst = if (seed == .inst_result) seed.inst_result else return bad(.table, null, .none, "a `held_vars` seed is not a row");
-        if (h.array != Lowered.none_u32) {
-            if (h.array >= lowered.mem_arrays.items.len or lowered.mem_arrays.items[h.array].held != i)
+        if (h.array != .none) {
+            if (@backingInt(h.array) >= lowered.mem_arrays.items.len or @backingInt(lowered.mem_arrays.items[@backingInt(h.array)].held) != i)
                 return bad(.table, mir.instBlock(inst), inst, "a held array's `mem_arrays` row does not name its `held_vars` row");
             continue;
         }
@@ -665,7 +665,7 @@ test "verify: a well-formed MIR passes, and each broken invariant is named" {
         }.f },
         .{ .want = .table, .name = "a held array whose `mem_arrays` row names another", .f = struct {
             fn f(a: Allocator, mir: *Mir, lw: *Lowered, s: Sample) anyerror!void {
-                try lw.held_vars.append(a, .{ .name = "arr", .ty = .real, .init = .f_zero, .seed = mir.instResult(s.anew), .array = 0 });
+                try lw.held_vars.append(a, .{ .name = "arr", .ty = .real, .init = .f_zero, .seed = mir.instResult(s.anew), .array = @fromBackingInt(0) });
             }
         }.f },
         .{ .want = .table, .name = "a held seed that is a constant", .f = struct {

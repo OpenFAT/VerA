@@ -7,6 +7,7 @@
 //! Contents:
 //! - `pub fn emitFileCall(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) Error!void`
 //! - `pub fn emitMonitorArm(g: *Gen, args: []const Mir.Value) Error!void`
+//! - `pub fn emitMonitorLatch(g: *Gen, args: []const Mir.Value) Error!void`
 //! - `pub fn monitorValues(g: *Gen, ops: []const cg_format.PrintArg) Error!void`
 //! - `pub fn monitorKey(g: *const Gen, args: []const Mir.Value) i64`
 
@@ -40,7 +41,7 @@ pub fn emitFileCall(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize
     const keep = Mir.callee.ty(c) == .int;
     if (wrap) try g.b("S.con(", .{});
     if (wrap and from_int) try g.b("@as(f64, @floatFromInt(", .{});
-    if (keep) try g.b("zFKeep(&inst.zf__.res__{d}, ", .{site});
+    if (keep) try g.b("zFKeep(&inst.zf_res__{d}, ", .{site});
     // §9.5.4.1/§9.5.4.2 a read's line is copied when the read runs, so its
     // readers see it however late codegen places them (`zFLatch`).
     const latch = c == .@"$fgets" or c == .@"$fscanf";
@@ -69,7 +70,20 @@ pub fn emitMonitorArm(g: *Gen, args: []const Mir.Value) Error!void {
     // `call_gate` arms a monitor only in a printing artifact's display unit.
     assert(g.cur.emitting_display);
     assert(g.display == .emit);
-    return g.b("S.con(zMonitorArm({d}))", .{monitorKey(g, args)});
+    try g.b("S.con(zMonitorArm(", .{});
+    try emitMonitorLatch(g, args);
+    return g.b("))", .{});
+}
+
+/// Emits the instance's latch of the monitor site keyed by `args[0]`
+/// (`Instance.zm__`, `instance.emitMonitorFields`): each instance compares
+/// against its own last report.
+pub fn emitMonitorLatch(g: *Gen, args: []const Mir.Value) Error!void {
+    assert(g.display == .emit);
+    const len_before = g.out.items.len;
+    g.cur.uses.inst = true;
+    try g.b("&inst.zm__[{d}]", .{monitorKey(g, args)});
+    assert(g.out.items.len > len_before);
 }
 
 /// §9.4.1 what a monitor watches: one u64 per argument (a real's or integer's
@@ -114,7 +128,7 @@ pub fn monitorValues(g: *Gen, ops: []const cg_format.PrintArg) Error!void {
 }
 
 /// The site key `Lower.armMonitor` put first in a monitor's registration and
-/// report: a literal, so it can key a comptime latch.
+/// report: a literal, the index of its latch in `Instance.zm__`.
 pub fn monitorKey(g: *const Gen, args: []const Mir.Value) i64 {
     assert(args.len != 0);
     const def = g.mir.valueDef(g.an.rv(args[0]));
@@ -312,7 +326,9 @@ fn emitFileWrite(g: *Gen, c: Mir.Callee, args: []const Mir.Value, site: usize) E
     }
     try cg_display.emitBufPrint(g, fmt.items, ops.items, site);
     if (mon) {
-        try g.b("; break :zf if (zMonitor({d}, ", .{monitorKey(g, args)});
+        try g.b("; break :zf if (zMonitor(", .{});
+        try emitMonitorLatch(g, args);
+        try g.b(", ", .{});
         try monitorValues(g, ops.items);
         try g.b(", zt)) |zm| zFPut(", .{});
         try emitCtx(g);

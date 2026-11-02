@@ -115,7 +115,7 @@ fn build(a: Allocator, r: std.Random, prog: *Program) !void {
     for ([_]f64{ 0.0, 1.0, -1.0, 0.5, 2.0 }) |c| try prog.pool.append(a, try m.addFloatConst(a, c));
     var cur: Mir.Block = .entry;
     prog.out = try body(a, r, prog, &cur, 0, null);
-    try prog.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1, .resist_val = prog.out });
+    try prog.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .resist_val = prog.out });
     assert(m.valueCount() <= values_max);
 }
 

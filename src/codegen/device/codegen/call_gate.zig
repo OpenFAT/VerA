@@ -20,6 +20,7 @@ const Error = codegen.Error;
 const cg_display = @import("../cg_display.zig");
 const cg_file_io = @import("../cg_file_io.zig");
 const cg_say = @import("../cg_say.zig");
+const float_lanes = @import("float/lanes.zig");
 
 /// Writes a §9.4/§9.5/§9.7 task call: performed (and gated per pass) in a
 /// printing display unit, a `say` record in a `.record` device, void or its
@@ -187,9 +188,10 @@ pub fn emitFileCallDropped(self: *Gen, c: Mir.Callee, args: []const Mir.Value, s
     // its integer result in the instance, so read it back.
     if (self.display == .emit and Mir.callee.ty(c) == .int) {
         self.cur.uses.inst = true;
-        // The instance the host passed, not a lane's: one point's display
-        // unit wrote it, as the old file-scope latch was one for every lane.
-        return self.b("inst.zf__.res__{d}", .{site});
+        // Each point's own instance: in a batch, point w reads the result
+        // its own instance's display unit latched (`zInstI`, `batch_inst`).
+        float_lanes.instLanes(self, true);
+        return self.b("zInstI(S, inst, \"zf_res__{d}\")", .{site});
     }
     // Zero is the LRM's answer: §9.5.1 `$fopen` failure, §9.5.4.1 read
     // error, §9.5.8 no EOF, §9.5.7 no error.

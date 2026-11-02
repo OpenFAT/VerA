@@ -177,7 +177,7 @@ fn transferOf(p: *const Prover, inst: Mir.Inst) transfer.Abstract {
         // accepted evaluation stored, which nothing here bounds. A
         // `vera_timepoint` cached start is only ever read by the join phi,
         // which also joins the miss-arm version.
-        .anew => |a| if (p.lowered.mem_arrays.items[a.array].held == Lowered.none_u32)
+        .anew => |a| if (p.lowered.mem_arrays.items[a.array].held == .none)
             .{ .iv = Interval.point(0), .finite = true }
         else
             .{ .iv = .top, .finite = false },

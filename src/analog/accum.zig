@@ -49,7 +49,7 @@ pub fn contribIndex(self: *Lower, t: Target, tok: u32) Oom!u32 {
         if (c.unit != self.cur_unit) {
             c.shared = true;
             const gop = try st.sharers.getOrPut(self.arena, .{ .row = row, .unit = self.cur_unit });
-            if (!gop.found_existing) try self.out.contrib_sharers.append(self.arena, .{ .row = row, .unit = self.cur_unit });
+            if (!gop.found_existing) try self.out.contrib_sharers.append(self.arena, .{ .row = @fromBackingInt(row), .unit = self.cur_unit });
         }
         return row;
     }
@@ -140,7 +140,7 @@ pub fn discardOpposite(self: *Lower, t: Target) Oom!void {
     }
     // The discarded charge goes with its sites.
     for (self.out.charge_sites.items, self.site_places.items) |s, p| {
-        if (s.contrib == ci) try self.builder.writeVariable(p, self.cur, .f_zero);
+        if (@backingInt(s.contrib) == ci) try self.builder.writeVariable(p, self.cur, .f_zero);
     }
 }
 

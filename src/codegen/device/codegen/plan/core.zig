@@ -273,7 +273,7 @@ fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
         if (in.mir.instOp(inst) != .store) continue;
         const id = in.an.arrOf(in.mir.instResult(inst)) orelse continue;
-        if (in.lowered.mem_arrays.items[id].held != none_u32) any = true;
+        if (in.lowered.mem_arrays.items[id].held != .none) any = true;
     }
     if (!any) return;
 
@@ -299,7 +299,7 @@ fn heldOnly(in: Input, jobs: []const Job, out: *Core) Error!void {
         if (in.mir.instOp(inst) != .store) continue;
         const r = in.an.rv(in.mir.instResult(inst));
         const id = in.an.arrOf(r) orelse continue;
-        if (in.lowered.mem_arrays.items[id].held == none_u32 or m.need[@backingInt(r)]) continue;
+        if (in.lowered.mem_arrays.items[id].held == .none or m.need[@backingInt(r)]) continue;
         skip[@backingInt(r)] = true;
         some = true;
     }
@@ -391,10 +391,10 @@ test "§5.10 a held-array store only updateState reads is held-only; one eval lo
         const a = f.alloc();
         const va = try f.probe(0);
         const vb = try f.probe(1);
-        try f.lowered.mem_arrays.append(a, .{ .name = "h", .len = 2, .ty = .real, .held = 0 });
+        try f.lowered.mem_arrays.append(a, .{ .name = "h", .len = 2, .ty = .real, .held = @fromBackingInt(0) });
         const h0 = try f.mir.emitAnew(a, .entry, 0);
         const st = try f.mir.emit(a, .entry, .store, &.{ h0, .zero, va });
-        try f.lowered.held_vars.append(a, .{ .name = "h", .ty = .real, .init = .f_zero, .seed = h0, .final = st, .array = 0 });
+        try f.lowered.held_vars.append(a, .{ .name = "h", .ty = .real, .init = .f_zero, .seed = h0, .final = st, .array = @fromBackingInt(0) });
         const ld = try f.mir.emit(a, .entry, .fload, &.{ st, .zero });
         const an = try f.analysis();
         const jobs = [_]Job{

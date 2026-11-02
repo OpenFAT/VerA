@@ -88,7 +88,7 @@ pub fn emitStateCtl(self: *Gen, t_prev: bool) Error!void {
         if (h.why != .event) continue;
         // §3.2.2 a held array (and a wide `reg`) compares element by element;
         // a string by text.
-        if (h.array != none_u32 or h.ty == .wide)
+        if (h.array != .none or h.ty == .wide)
             try self.w("{s}!std.meta.eql(inst.{s}, state.{s})", .{ if (first) " " else "\n            or ", n, n })
         else if (h.ty == .string)
             try self.w("{s}!std.mem.eql(u8, inst.{s}.get(), state.{s}.get())", .{ if (first) " " else "\n            or ", n, n })
@@ -191,9 +191,9 @@ fn fsmStateCtl(self: *const Gen) bool {
 /// Returns the `Lowered.held_vars` row's array id when it is dirty-tracked.
 fn dirtyArray(self: *const Gen, h: Lowered.HeldVar) ?u32 {
     assert(h.name.len != 0);
-    if (h.array == none_u32 or !gen_instance.dirtyTracked(self, h.array)) return null;
-    assert(h.array < self.lowered.mem_arrays.items.len);
-    return h.array;
+    if (h.array == .none or !gen_instance.dirtyTracked(self, @backingInt(h.array))) return null;
+    assert(@backingInt(h.array) < self.lowered.mem_arrays.items.len);
+    return @backingInt(h.array);
 }
 
 /// Returns the module's `Lowered.held_vars` row named `name`, if any.
@@ -208,7 +208,7 @@ fn heldNamed(self: *const Gen, name: []const u8) ?Lowered.HeldVar {
 
 /// Returns the element type of held array row `h`'s `Instance` field.
 fn elemTy(self: *const Gen, h: Lowered.HeldVar) []const u8 {
-    assert(h.array != none_u32);
-    assert(h.array < self.lowered.mem_arrays.items.len);
-    return if (self.lowered.mem_arrays.items[h.array].ty == .integer) "i64" else "f64";
+    assert(h.array != .none);
+    assert(@backingInt(h.array) < self.lowered.mem_arrays.items.len);
+    return if (self.lowered.mem_arrays.items[@backingInt(h.array)].ty == .integer) "i64" else "f64";
 }

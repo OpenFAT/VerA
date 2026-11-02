@@ -106,7 +106,7 @@ pub fn describe(p: *const Prover, v: Mir.Value) Error![]const u8 {
             p.arena.print("parameter `{s}`", .{p.lowered.params.items[pi].name})
         else
             "a parameter",
-        .block_param => |n| p.arena.print("a probe of node `{s}`", .{p.lowered.nodeName(@intCast(n))}),
+        .block_param => |n| p.arena.print("a probe of node `{s}`", .{p.lowered.nodeName(@fromBackingInt(n))}),
         .float_const => |c| p.arena.print("the constant {d}", .{c}),
         .int_const => |c| p.arena.print("the constant {d}", .{c}),
         .inst_result => |inst| blk: {

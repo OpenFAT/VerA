@@ -330,8 +330,8 @@ pub const Cold = struct {
     /// flow §12.10 reads (§5.4.1).
     contrib_share: ?u32 = null,
     /// `.branch`: the terminal rows, `Lower.ground` for the reference node.
-    hi_row: u32 = Lower.ground,
-    lo_row: u32 = Lower.ground,
+    hi_row: u32 = @backingInt(Lower.ground),
+    lo_row: u32 = @backingInt(Lower.ground),
     /// `.branch`: its flow row absorbed another instance's `<+`
     /// (`Contribution.shared`) and holds no share of this instance's (it
     /// drives the pair only through another's branch, §5.6.8.2), or a named

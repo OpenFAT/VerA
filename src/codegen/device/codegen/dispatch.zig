@@ -232,9 +232,9 @@ fn emitVpiContribs(self: *Gen) Error!void {
     try self.w("pub const vpi_contrib_access = [_]u8{{", .{});
     for (cs) |c| try self.w(" {d},", .{@backingInt(c.access)});
     try self.w(" }};\npub const vpi_contrib_hi = [_]i32{{", .{});
-    for (cs) |c| try self.w(" {d},", .{nodeCol(c.hi)});
+    for (cs) |c| try self.w(" {d},", .{nodeCol(@backingInt(c.hi))});
     try self.w(" }};\npub const vpi_contrib_lo = [_]i32{{", .{});
-    for (cs) |c| try self.w(" {d},", .{nodeCol(c.lo)});
+    for (cs) |c| try self.w(" {d},", .{nodeCol(@backingInt(c.lo))});
     try self.w(" }};\npub const vpi_contrib_flow_u = [_]i32{{", .{});
     for (self.names.branch_u) |u| try self.w(" {d},", .{if (u == none_u32) @as(i64, -1) else u});
     try self.w(" }};\n", .{});
@@ -244,7 +244,7 @@ fn emitVpiContribs(self: *Gen) Error!void {
     if (ss.len == 0) return;
     try self.w("/// Clause 12: each instance's own share of a shared row, by\n/// `Lowered.contrib_shares` index; `vpi_share_row` is the row's.\n", .{});
     try self.w("pub const vpi_share_row = [_]u32{{", .{});
-    for (ss) |sh| try self.w(" {d},", .{sh.row});
+    for (ss) |sh| try self.w(" {d},", .{@backingInt(sh.row)});
     try self.w(" }};\n", .{});
     try emitVpiValues(self, "vpiShares", ss);
 }
@@ -279,7 +279,7 @@ fn emitVpiValues(self: *Gen, name: []const u8, items: anytype) Error!void {
 
 fn nodeCol(n: u32) i64 {
     assert(n != Lower.none_u32); // a contribution terminal is a `nodes` row or `ground`
-    return if (n == Lower.ground) -1 else n;
+    return if (n == @backingInt(Lower.ground)) -1 else n;
 }
 
 /// Emits `display`, the §9.4 entry point a host calls to run the module's

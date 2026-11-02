@@ -26,6 +26,7 @@ const gen_wide = @import("wide.zig");
 const opdb = @import("op_zig.zig");
 const cg_filters = @import("../cg_filters.zig");
 const cg_strcap = @import("../cg_strcap.zig");
+const cg_file_io = @import("../cg_file_io.zig");
 const Lowered = @import("ir").Lowered;
 const Mir = @import("ir").Mir;
 const Error = codegen.Error;
@@ -98,6 +99,7 @@ pub fn emitInstance(self: *Gen) Error!void {
         .{},
     );
     if (gen_file.hasFiles(self)) try emitFileFields(self);
+    if (self.display == .emit) try emitMonitorFields(self);
     // §9.17 the two fields `updateState` resets every accepted point are
     // history only where an operator moves them off the reset value; without
     // one they are the same constant before and after any revert, and their
@@ -277,11 +279,11 @@ pub fn emitInstance(self: *Gen) Error!void {
         // Why it is held (`HeldVar.Why`), so a reader of the device can tell
         // a latch from retention.
         const note = try self.arena.print("// §5.10 held across evaluations: {t}", .{h.why});
-        if (h.array != none_u32) {
+        if (h.array != .none) {
             try emitHeldArrayField(self, h, self.names.held_names[i], note);
-            if (dirtyTracked(self, h.array)) try self.w(
+            if (dirtyTracked(self, @backingInt(h.array))) try self.w(
                 "    {s}__dirty: [2]i64 = .{{ 0, {d} }}, // §5.10 elements written since the last stateCtl\n",
-                .{ self.names.held_names[i], self.lowered.mem_arrays.items[h.array].len - 1 },
+                .{ self.names.held_names[i], self.lowered.mem_arrays.items[@backingInt(h.array)].len - 1 },
             );
             continue;
         }
@@ -420,27 +422,55 @@ fn writesSchedule(self: *const Gen, comptime which: @import("ir").op.OpKind) boo
 
 /// Records `Instance` field `fmt` as history `stateCtl` commits and reverts.
 /// §9.5 the instance's descriptor table and the results its display unit
-/// latched, in one field, `zf__`: the table (`t`, `file.zig`'s `fileIo`)
-/// and, per §9.5 call site with an integer result, that result
-/// (`res__<site>`, `file_kernels.zFKeep`) and, for a read, its line
-/// (`line__<site>`, `zFLatch`). Each instance has its own, so two instances
-/// number their descriptors alike and never read each other's. One struct,
-/// not top-level fields: the latches are the instance's, not a point's, so
-/// every point of a batch reads the instance the host passed, as `zf__`'s
-/// table is.
+/// latched. The table (`t`, `file.zig`'s `fileIo`) and, for a read, its line
+/// (`line__<site>`, `zFLatch`) sit in one field, `zf__`, which `validate`
+/// admits by name: the table holds heap rows. Per §9.5 call site with an
+/// integer result, that result (`zf_res__<site>`, `file_kernels.zFKeep`) is
+/// a top-level integer field: the other units read it as they read a held
+/// integer (`zInstI`), so each point of a batch reads its own instance's
+/// (`batch_inst`). Each instance has its own, so two instances number their
+/// descriptors alike and never read each other's.
 fn emitFileFields(self: *Gen) Error!void {
     const len_before = self.out.items.len;
-    try self.w("    /// §9.5 this instance's descriptor table and latched results (`fileIo`, `deinitInstance`).\n    zf__: struct {{\n        t: ZfTable = .{{}},\n", .{});
+    try self.w("    /// §9.5 this instance's descriptor table and latched lines (`fileIo`, `deinitInstance`).\n    zf__: struct {{\n        t: ZfTable = .{{}},\n", .{});
+    for (0..self.mir.instCount()) |ii| {
+        const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
+        if (self.mir.instOp(inst) != .call) continue;
+        const c = self.mir.instData(inst).call.callee;
+        if (c == .@"$fgets" or c == .@"$fscanf") try self.w("        line__{d}: []const u8 = \"\",\n", .{ii});
+    }
+    try self.w("    }} = .{{}},\n", .{});
     for (0..self.mir.instCount()) |ii| {
         const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
         if (self.mir.instOp(inst) != .call) continue;
         const c = self.mir.instData(inst).call.callee;
         if (!Mir.callee.isFileCall(c) or Mir.callee.ty(c) != .int) continue;
-        try self.w("        res__{d}: i64 = 0,\n", .{ii});
-        if (c == .@"$fgets" or c == .@"$fscanf") try self.w("        line__{d}: []const u8 = \"\",\n", .{ii});
+        try self.w("    zf_res__{d}: i64 = 0, // §9.5 the result its display unit latched\n", .{ii});
     }
-    try self.w("    }} = .{{}},\n", .{});
     assert(self.out.items.len > len_before);
+}
+
+/// §9.4.1 one `str_store.ZMon` per `$monitor`/`$fmonitor` site
+/// (`Lower.armMonitor`'s keys, from 0), in one field, `zm__`: the mechanism
+/// a monitor statement sets up is the instance's, so two instances never
+/// compare against each other's last report. Not history: only the display
+/// phase of an accepted point writes it.
+fn emitMonitorFields(self: *Gen) Error!void {
+    assert(self.display == .emit);
+    var sites: u64 = 0;
+    for (0..self.mir.instCount()) |ii| {
+        const inst: Mir.Inst = @fromBackingInt(@intCast(ii));
+        if (self.mir.instOp(inst) != .call) continue;
+        const call = self.mir.instData(inst).call;
+        switch (call.callee) {
+            .@"$monitor$arm", .@"$monitor", .@"$fmonitor" => {},
+            else => continue,
+        }
+        sites = @max(sites, @as(u64, @intCast(cg_file_io.monitorKey(self, call.args))) + 1);
+    }
+    if (sites == 0) return;
+    try self.w("    /// §9.4.1 this instance's `$monitor` latches, one per site (`zMonitor`).\n    zm__: [{d}]ZMon = @splat(.{{}}),\n", .{sites});
+    assert(sites <= self.mir.instCount());
 }
 
 fn keepHist(self: *Gen, comptime fmt: []const u8, args: anytype) Error!void {
@@ -454,10 +484,10 @@ fn keepHist(self: *Gen, comptime fmt: []const u8, args: anytype) Error!void {
 /// defaulting element by element to the declared initializer (§3.2's zero
 /// where the pattern is silent), the spec default as for a held scalar.
 fn emitHeldArrayField(self: *Gen, h: Lowered.HeldVar, name: []const u8, comment: []const u8) Error!void {
-    assert(h.array != none_u32);
+    assert(h.array != .none);
     assert(name.len != 0);
-    assert(h.array < self.lowered.mem_arrays.items.len);
-    const m = self.lowered.mem_arrays.items[h.array];
+    assert(@backingInt(h.array) < self.lowered.mem_arrays.items.len);
+    const m = self.lowered.mem_arrays.items[@backingInt(h.array)];
     const ty: []const u8 = if (m.ty == .integer) "i64" else "f64";
     var all_zero = true;
     for (h.inits) |iv| {

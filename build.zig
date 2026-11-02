@@ -304,6 +304,17 @@ pub fn build(b: *Build) void {
         }
     }
 
+    // The release measures' and fixture-maintenance signals' own checks: no
+    // compiler, a couple of seconds. UTF-8 whatever the host's locale, as the
+    // fixtures are (Windows' default is cp1252).
+    const conformance_selftest = b.addSystemCommand(&.{"python3"});
+    conformance_selftest.addFileArg(b.path("tools/conformance.py"));
+    conformance_selftest.addArg("selftest");
+    conformance_selftest.setEnvironmentVariable("PYTHONUTF8", "1");
+    conformance_selftest.expectExitCode(0);
+    conformance_selftest.has_side_effects = true; // reads the fixtures and tools/install.sh
+    test_step.dependOn(&conformance_selftest.step);
+
     // The degenerate-argv table: every documented flag x "", "-", "=", a
     // 128 KiB value, missing, repeated, through this build's vera.
     const argv_exe = b.addExecutable(.{ .name = "vera-argv", .root_module = m.make("tests/argv.zig", &.{}) });

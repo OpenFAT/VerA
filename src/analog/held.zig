@@ -23,7 +23,6 @@ const lower_constfold = @import("constfold.zig");
 const lower_shape = @import("shape.zig");
 const lower_expr_select = @import("expr_select.zig");
 const Oom = Lower.Oom;
-const none_u32 = Lower.none_u32;
 
 /// One enclosing §5.3.2 named block, as `scanHeld` sees it: the dotted prefix
 /// its locals are keyed under, and the declarations that say which names those
@@ -431,10 +430,10 @@ pub fn dropHeld(lowered: *Lower.Lowered, keep: []const bool) void {
     var kept: usize = 0;
     for (held.items, keep) |h, k| {
         if (!k) {
-            std.debug.assert(h.array == none_u32);
+            std.debug.assert(h.array == .none);
             continue;
         }
-        if (h.array != none_u32) lowered.mem_arrays.items[h.array].held = @intCast(kept);
+        if (h.array != .none) lowered.mem_arrays.items[@backingInt(h.array)].held = @fromBackingInt(@intCast(kept));
         held.items[kept] = h;
         kept += 1;
     }

@@ -98,13 +98,13 @@ pub fn sample(scratch: Allocator, mir: *const Mir, lw: *const Lowered, pins: []c
             const retained = if (source == .none) false else (try in.get(contribs[@backingInt(source)].wrote_val)).c.isTrue();
             if (retained) {
                 const c = contribs[@backingInt(source)];
-                assert(c.hi == r);
+                assert(@backingInt(c.hi) == r);
                 const f = try in.get(c.resist_val);
-                current = f.c.asReal() + if (c.lo == Lowered.ground) 0 else volts[c.lo];
+                current = f.c.asReal() + if (c.lo == Lowered.ground) 0 else volts[@backingInt(c.lo)];
                 delay_s = f.d;
             } else for (flows.entries[flows.starts[si]..flows.starts[si + 1]]) |ci| {
                 const c = contribs[ci];
-                const sign: f64 = if (c.hi == r) 1 else -1;
+                const sign: f64 = if (@backingInt(c.hi) == r) 1 else -1;
                 const rv = try in.get(c.resist_val);
                 const qv = try in.get(c.react_val);
                 current += sign * rv.c.asReal();
@@ -131,7 +131,7 @@ fn flowRows(scratch: Allocator, contribs: []const Lowered.Contribution, states: 
     for (states, 0..) |r, si| {
         starts[si] = @intCast(entries.items.len);
         for (contribs, 0..) |c, ci| {
-            if (c.access != .flow or (c.hi != r and c.lo != r)) continue;
+            if (c.access != .flow or (@backingInt(c.hi) != r and @backingInt(c.lo) != r)) continue;
             try entries.append(scratch, @intCast(ci));
         }
     }

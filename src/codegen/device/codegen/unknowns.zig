@@ -164,7 +164,7 @@ fn emitNodesets(self: *Gen) Error!void {
         // wins." Last wins here, which the clause permits.
         var v: ?f64 = null;
         for (self.lowered.nodesets.items) |ns| {
-            if (ns.node == i) v = ns.value;
+            if (@backingInt(ns.node) == i) v = ns.value;
         }
         if (v) |x| try self.w("    {s},\n", .{try gen_file.fmtF64(self, x)}) else try self.w("    null,\n", .{});
     }
@@ -185,10 +185,10 @@ fn abstolOf(self: *const Gen, i: u32) f64 {
     var idx: u32 = i;
     if (i < self.lowered.nodes.len) switch (self.lowered.nodes.items(.kind)[i]) {
         .net => {},
-        .branch_flow, .port_flow => |n| idx = n,
+        .branch_flow, .port_flow => |n| idx = @backingInt(n),
         .op_state => |t| return t,
     };
-    if (idx == Lower.ground or idx >= self.lowered.nodes.len)
+    if (idx == @backingInt(Lower.ground) or idx >= self.lowered.nodes.len)
         return if (flow) 1e-12 else 1e-6;
     if (!flow) if (self.lowered.nodes.items(.potential_abstol)[idx]) |abstol| return abstol;
     const info = self.lowered.disciplines.get(self.lowered.nodes.items(.disc)[idx]) orelse

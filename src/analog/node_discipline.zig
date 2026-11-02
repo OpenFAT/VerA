@@ -77,7 +77,7 @@ pub fn resolveDisciplines(self: *Lower, module: *const Ast.ModuleDecl) Oom!void 
         const probe_name = if (self.out.vectors.get(base)) |r| try lower_shape.elemKey(self, &key_buf, base, &.{r.at(0)}) else base;
         const idx = self.node_voltages.get(probe_name) orelse continue;
         if (idx == ground) continue;
-        const dname = self.out.nodes.items(.disc)[idx];
+        const dname = self.out.nodes.items(.disc)[@backingInt(idx)];
         if (!isSignalFlow(self, dname)) continue;
         var b = self.errWith(p.main_tok, .E0360);
         b.msg("`{s}` is an `inout` port of discipline `{s}`, which binds a {s} nature only", .{
@@ -98,11 +98,11 @@ pub fn resolveDisciplines(self: *Lower, module: *const Ast.ModuleDecl) Oom!void 
     // whose domain is decided by resolution (§7.4) and not by this module, and
     // E0337 already rules on it if anything analog touches it.
     for (self.out.nodesets.items) |ns| {
-        const dname = self.out.nodes.items(.disc)[ns.node];
+        const dname = self.out.nodes.items(.disc)[@backingInt(ns.node)];
         const info = self.out.disciplines.get(dname) orelse continue;
         if (!info.is_discrete) continue;
         var b = self.errWith(ns.tok, .E0366);
-        b.msg("`{s}` is of discipline `{s}`, whose domain is discrete", .{ self.out.nodes.items(.name)[ns.node], dname });
+        b.msg("`{s}` is of discipline `{s}`, whose domain is discrete", .{ self.out.nodes.items(.name)[@backingInt(ns.node)], dname });
         b.note("a nodeset is an initial guess for a POTENTIAL, and §3.6.2.2 leaves a discrete discipline with no nature to have one", .{});
         try b.emit();
     }
@@ -155,7 +155,7 @@ pub fn applyUnconnectedDrive(self: *Lower) Oom!void {
         if (drive == .float) continue;
         const idx = self.node_voltages.get(self.file.str(site.name)) orelse continue;
         if (idx == ground) continue;
-        const info = self.out.disciplines.get(self.out.nodes.items(.disc)[idx]) orelse continue;
+        const info = self.out.disciplines.get(self.out.nodes.items(.disc)[@backingInt(idx)]) orelse continue;
         if (!info.has_potential) continue;
         const target: lower_branch.Target = .{ .access = .potential, .hi = idx, .lo = ground };
         const acc = self.accum.items[try lower_accum.contribIndex(self, target, site.main_tok)];
@@ -195,12 +195,12 @@ fn applyDefaultDiscipline(self: *Lower, name: []const u8, main_tok: u32, q: ?dir
     if (self.opts.directives.disciplines.len == 0) return;
     const idx = self.node_voltages.get(name) orelse return;
     if (idx == ground) return;
-    if (self.out.nodes.items(.disc)[idx].len != 0) return;
+    if (self.out.nodes.items(.disc)[@backingInt(idx)].len != 0) return;
     const dname = defaultDisciplineAt(self, main_tok, q) orelse return;
     // A default naming a discipline that was never declared supplies no
     // nature, so the net stays bare and E0337 reports it.
     if (!self.out.disciplines.contains(dname)) return;
-    self.out.nodes.items(.disc)[idx] = dname;
+    self.out.nodes.items(.disc)[@backingInt(idx)] = dname;
 }
 
 /// §10.2 the `default_discipline in force for a `q` signal at token `main_tok`, or null.
@@ -244,7 +244,7 @@ fn checkPrimitiveTerminal(self: *Lower, term: Ast.ExprId, prim_tok: u32, what: [
     const key = if (self.out.vectors.get(name)) |r| try lower_shape.elemKey(self, &key_buf, name, &.{r.at(0)}) else name;
     const idx = self.node_voltages.get(key) orelse return;
     if (idx == ground) return;
-    const dname = self.out.nodes.items(.disc)[idx];
+    const dname = self.out.nodes.items(.disc)[@backingInt(idx)];
     const decl = lower_discipline.disciplineDecl(self, dname) orelse return;
     if (discipline_rules.domainOf(decl) != .continuous) return;
     var b = self.errWith(ex.mainTok(base), .E0960);

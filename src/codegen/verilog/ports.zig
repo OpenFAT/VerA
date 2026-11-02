@@ -143,5 +143,5 @@ test isSupply {
     try std.testing.expect(isSupply(&pins, 3));
     // An internal net and ground are no port.
     try std.testing.expect(!isSupply(&pins, 4));
-    try std.testing.expect(!isSupply(&pins, Lowered.ground));
+    try std.testing.expect(!isSupply(&pins, @backingInt(Lowered.ground)));
 }

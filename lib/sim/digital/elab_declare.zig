@@ -566,36 +566,54 @@ fn implicitNet(r: *Run, e: *Elab, scope: u32, m: *const Ast.ModuleDecl, x: Ast.E
 
 /// Does statement `s` hold a block with declarations of its own? A worklist,
 /// not a recursion: the walk is as deep as the source nests, and it runs in
-/// pass one before any walk that checks `deep.exhausted`.
-// ponytail: `blockScopes` asks again at each named block that declares
-// nothing, so a nest of n such blocks costs O(n^2); one bottom-up pass
-// marking the declaring blocks if that nest ever matters.
+/// pass one before any walk that checks `deep.exhausted`. Bottom-up, each
+/// statement answered once into `r.hier.declaring`, so the named blocks of a
+/// nest n deep, each asking of the nest below, cost n, not n^2.
 fn declares(r: *Run, s: Ast.StmtId) Error!bool {
     assert(s != .none);
     assert(r.file.stmt(s) == .block); // `blockScopes` asks of a named block only.
+    const memo = &r.hier.declaring;
+    if (memo.get(s)) |answer| return answer;
+    const Item = struct { s: Ast.StmtId, children_done: bool };
     const Push = struct {
         a: std.mem.Allocator,
-        work: *std.ArrayList(Ast.StmtId),
+        work: *std.ArrayList(Item),
         pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) Error!void {}
         pub fn stmt(p: @This(), c: Ast.StmtId) Error!void {
-            if (c != .none) try p.work.append(p.a, c);
+            if (c != .none) try p.work.append(p.a, .{ .s = c, .children_done = false });
         }
     };
-    var work: std.ArrayList(Ast.StmtId) = .empty;
-    defer work.deinit(r.arena);
-    try work.append(r.arena, s);
-    var seen: usize = 0;
-    while (work.pop()) |c| : (seen += 1) {
-        // A statement tree: each statement is pushed once, by its parent.
-        assert(seen < std.math.maxInt(u32));
-        switch (r.file.stmt(c)) {
-            .block => |b| if (b.vars.len != 0 or b.params.len != 0 or b.events.len != 0) return true,
-            else => {}, // else: only a block declares
+    const Any = struct {
+        memo: *const @TypeOf(r.hier.declaring),
+        any: *bool,
+        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) Error!void {}
+        pub fn stmt(v: @This(), c: Ast.StmtId) Error!void {
+            if (c != .none) v.any.* = v.any.* or v.memo.get(c).?; // Answered before its parent.
         }
-        try r.file.stmtEdges(c, Push{ .a = r.arena, .work = &work });
+    };
+    var work: std.ArrayList(Item) = .empty;
+    defer work.deinit(r.arena);
+    try work.append(r.arena, .{ .s = s, .children_done = false });
+    var seen: u64 = 0;
+    while (work.pop()) |c| : (seen += 1) {
+        // A statement tree: each statement is pushed twice, once by its
+        // parent and once again to be answered.
+        assert(seen < 2 * @as(u64, std.math.maxInt(u32)));
+        if (!c.children_done) {
+            if (memo.contains(c.s)) continue;
+            try work.append(r.arena, .{ .s = c.s, .children_done = true });
+            try r.file.stmtEdges(c.s, Push{ .a = r.arena, .work = &work });
+            continue;
+        }
+        var any = switch (r.file.stmt(c.s)) {
+            .block => |b| b.vars.len != 0 or b.params.len != 0 or b.events.len != 0,
+            else => false, // else: only a block declares
+        };
+        try r.file.stmtEdges(c.s, Any{ .memo = memo, .any = &any });
+        try memo.put(r.arena, c.s, any);
     }
     assert(work.items.len == 0);
-    return false;
+    return memo.get(s).?;
 }
 
 test "blockScopes refuses a statement nest past its thread's stack with E0241, never a crash" {
@@ -662,4 +680,30 @@ test "a named block over a nest past the stack is a coded refusal, never a crash
         try std.testing.expect(std.mem.find(u8, messages.written(), "E0241") != null);
         try std.testing.expect(std.mem.find(u8, messages.written(), "exhausts the 4 MiB stack") != null);
     }
+}
+
+test "a nest of named blocks that declare nothing elaborates in time linear in its depth" {
+    // Oracle: a time bound between the two costs. Each of the n named
+    // blocks asks `declares` of the nest below it: a walk per block is
+    // n^2/2 statement visits, which took 24.5 s here in a Debug build; one
+    // answer per statement took 0.39 s. 20,000 levels elaborate within
+    // `runGuarded`'s smallest stack (256 MiB on Windows; 30,000 do not).
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const n = 20_000;
+    var src: std.ArrayList(u8) = .empty;
+    try src.appendSlice(a, "module m; initial ");
+    for (0..n) |i| try src.print(a, "begin : b{d} ", .{i});
+    try src.appendSlice(a, "$display(\"ok\");");
+    for (0..n) |_| try src.appendSlice(a, " end");
+    try src.appendSlice(a, " endmodule");
+    const io = std.testing.io;
+    const t0: std.Io.Timestamp = .now(io, .awake);
+    var bag = diag.Bag.init(a);
+    var out = std.Io.Writer.Allocating.init(a);
+    _ = try root.elaborate(a, src.items, .{}, &bag, &out.writer);
+    const ns = t0.durationTo(.now(io, .awake)).nanoseconds;
+    try std.testing.expect(!bag.failed());
+    try std.testing.expect(ns < 4 * std.time.ns_per_s);
 }

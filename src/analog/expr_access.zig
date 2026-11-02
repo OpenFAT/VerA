@@ -165,10 +165,11 @@ pub fn ammeterFlow(self: *Lower, internal: []const u8) Oom!?TypedValue {
     } else return null;
     const into = try lower_node.internNode(self, self.file.str(am.internal), "");
     const from = try lower_node.internNode(self, self.file.str(am.bound), "");
-    const u = try lower_node.flowUnknown(self, @min(from, into), @max(from, into));
+    const from_first = @backingInt(from) < @backingInt(into);
+    const u = try lower_node.flowUnknown(self, if (from_first) from else into, if (from_first) into else from);
     const v = try lower_node.probe(self, u);
     assert(from != into); // the split put the port on a net of its own
-    return .{ .v = if (from > into) try self.emit(.fneg, &.{v}) else v, .ty = .real };
+    return .{ .v = if (!from_first) try self.emit(.fneg, &.{v}) else v, .ty = .real };
 }
 
 // ---- private ----
@@ -199,10 +200,10 @@ fn flowAccum(self: *const Lower, t: lower_branch.Target) ?Accum {
 
 /// §3.6.1.2 the flow tolerance of the discipline at node `n`, which is what
 /// codegen's `abstolOf` gives a branch current; annex D's 1e-12 without one.
-fn flowAbstol(self: *const Lower, n: u32) f64 {
+fn flowAbstol(self: *const Lower, n: Lower.NodeId) f64 {
     assert(self.nodeValid(n));
     if (n == ground) return 1e-12;
-    const info = self.out.disciplines.get(self.out.nodes.items(.disc)[n]) orelse return 1e-12;
+    const info = self.out.disciplines.get(self.out.nodes.items(.disc)[@backingInt(n)]) orelse return 1e-12;
     assert(!std.math.isNan(info.flow_abstol));
     return info.flow_abstol;
 }
@@ -236,7 +237,7 @@ fn potentialSourceHere(self: *const Lower, t: lower_branch.Target) bool {
 /// `nodeOf`, or null when it refused the terminal (E0351/E0352). It stands
 /// ground in for a refused one, and ground is no port: a caller that went on
 /// would report the same mistake a second time, as E0508.
-fn nodeUnrefused(self: *Lower, e: Ast.ExprId) Oom!?u32 {
+fn nodeUnrefused(self: *Lower, e: Ast.ExprId) Oom!?Lower.NodeId {
     assert(e == .none or self.exprValid(e));
     const had = self.had_error;
     self.had_error = false;
@@ -350,7 +351,7 @@ fn addSigned(self: *Lower, acc: Mir.Value, v: Mir.Value, neg: bool) Oom!Mir.Valu
 /// be one unknown and one set of rules. `p` is the port's `nodes` row —
 /// resolved by the caller, because the two spellings name it differently (an
 /// argument expression here, a branch declaration there).
-fn portFlowRead(self: *Lower, e: Ast.ExprId, p: u32) Oom!TypedValue {
+fn portFlowRead(self: *Lower, e: Ast.ExprId, p: Lower.NodeId) Oom!TypedValue {
     assert(e == .none or self.exprValid(e));
     assert(self.nodeValid(p));
     const ex = &self.file.exprs;
@@ -376,10 +377,10 @@ fn portFlowRead(self: *Lower, e: Ast.ExprId, p: u32) Oom!TypedValue {
     // of the module"; §5.4.1 "it must be a declared port of the module in which
     // the port access function is used." An internal net has no outside, so its
     // port flow would be an identically-zero substitute — reject instead.
-    if (p == ground or p >= self.out.num_ports) {
+    if (p == ground or @backingInt(p) >= self.out.num_ports) {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0508);
         b.msg("`{s}(<{s}>)`", .{ name, lower_node.nodeName(self, p) });
-        if (diag.didYouMeanMap(u32, lower_node.nodeName(self, p), self.node_voltages)) |s|
+        if (diag.didYouMeanMap(Lower.NodeId, lower_node.nodeName(self, p), self.node_voltages)) |s|
             b.help("did you mean `{s}`?", .{s});
         try b.emit();
         return poison;

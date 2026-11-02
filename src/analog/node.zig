@@ -6,8 +6,8 @@
 //! Spine, in `lowerModule`'s order: `declarePorts`, `declareNets`,
 //! `bindPortConnections`, `resolveDisciplines`, `declareBranches`. After them,
 //! rows are only appended (implicit nets, §5.4.2 flow unknowns, §4.5.2 operator
-//! states), so a row index, once handed out, is stable. A row is a `u32`;
-//! past its index space (`max_nodes`), E1015.
+//! states), so a row index, once handed out, is stable. A row is a `NodeId`
+//! (a `u32` underneath); past its index space (`max_nodes`), E1015.
 //!
 //! Cites: §1.3.1.1, §1.3.4.1, §1.3.4.2, A.2.2.1, §2.7, §2.8.1, §3.4, §3.4.4,
 //! §3.6.1.2, §3.6.2.2, §3.6.3, §3.6.3.2, §3.6.4, §3.6.5, §3.9, §3.12.1, §4.4,
@@ -16,19 +16,19 @@
 //!
 //! Contents:
 //! - `pub const State = struct`
-//! - `pub const max_nodes = ground`
+//! - `pub const max_nodes: u32`
 //! - `pub fn declarePorts(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
 //! - `pub fn declareNets(self: *Lower, module: *const Ast.ModuleDecl) Oom!void`
 //! - `pub fn bindPortConnections(self: *Lower) Oom!void`
 //! - `pub fn indexedRange(decl: VecRange, base: i64, width: i64, down: bool) VecRange`
 //! - `pub fn partOf(decl: VecRange, r: VecRange) bool`
-//! - `pub fn internNode(self: *Lower, name: []const u8, discipline: []const u8) Oom!u32`
+//! - `pub fn internNode(self: *Lower, name: []const u8, discipline: []const u8) Oom!NodeId`
 //! - `pub fn collectSignalAbstols(self: *Lower, segments: []const elab.design.SignalDiscipline) Oom!void`
-//! - `pub fn opStateNode(self: *Lower, op: []const u8, abstol: f64) Oom!u32`
-//! - `pub fn nodeName(self: *const Lower, idx: u32) []const u8`
-//! - `pub fn probe(self: *Lower, idx: u32) Oom!Mir.Value`
-//! - `pub fn flowUnknown(self: *Lower, hi: u32, lo: u32) Oom!u32`
-//! - `pub fn portFlowUnknown(self: *Lower, p: u32) Oom!u32`
+//! - `pub fn opStateNode(self: *Lower, op: []const u8, abstol: f64) Oom!NodeId`
+//! - `pub fn nodeName(self: *const Lower, idx: NodeId) []const u8`
+//! - `pub fn probe(self: *Lower, idx: NodeId) Oom!Mir.Value`
+//! - `pub fn flowUnknown(self: *Lower, hi: NodeId, lo: NodeId) Oom!NodeId`
+//! - `pub fn portFlowUnknown(self: *Lower, p: NodeId) Oom!NodeId`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -42,6 +42,8 @@ const lower_node_discipline = @import("node_discipline.zig");
 const lower_node_ref = @import("node_ref.zig");
 const Oom = Lower.Oom;
 const ground = Lower.ground;
+const NodeId = Lower.NodeId;
+const BranchId = Lower.BranchId;
 const unnamed_branch = Lower.unnamed_branch;
 const NodeKind = Lower.NodeKind;
 const VecRange = Lower.VecRange;
@@ -51,7 +53,7 @@ pub const State = struct {
     /// Last `BranchInfo.id` handed out. Starts at `unnamed_branch`, so the first
     /// declared branch is 1 and no named branch can ever be mistaken for §5.4.1
     /// Example 2's single implicit branch of a node pair.
-    last_branch_id: u32 = unnamed_branch,
+    last_branch_id: BranchId = unnamed_branch,
     /// Every spelling handed to `nodes`, so `appendNode` can keep them unique for
     /// the emitted `U` enum. Not an identity table: two different unknowns may want
     /// one spelling (see `uniqueSpelling`).
@@ -64,10 +66,10 @@ pub const State = struct {
     full: bool = false,
 };
 
-/// The most rows `nodes` holds: a row is a u32 below `ground`. Not a design
+/// The most rows `nodes` holds: a row is a `NodeId` below `ground`. Not a design
 /// limit: a row costs tens of bytes of lowering state alone, so a module
 /// reaching it has run out of memory first (#29).
-pub const max_nodes = ground;
+pub const max_nodes: u32 = @backingInt(ground);
 
 /// Widest spelling `uniqueSpelling` builds without spilling: two 1024-character
 /// identifiers (the bound `elem_key_len` uses), punctuation, and `#` with a `u32`.
@@ -86,7 +88,7 @@ pub fn declarePorts(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
             const disc = lower_node_discipline.strOrEmpty(self, p.discipline);
             for (0..r.size()) |k| {
                 const idx = try internNode(self, try self.arena.print("{s}[{d}]", .{ name, r.at(@intCast(k)) }), disc);
-                self.out.nodes.items(.dir)[idx] = p.direction;
+                self.out.nodes.items(.dir)[@backingInt(idx)] = p.direction;
             }
             try self.out.vectors.put(self.arena, name, r);
             continue;
@@ -94,7 +96,7 @@ pub fn declarePorts(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
         const idx = try internNode(self, try lower_node_ref.netKey(self, self.file.str(p.name), p.main_tok), lower_node_discipline.strOrEmpty(self, p.discipline));
         // §6.5.2.2. Recorded here and nowhere else: only a port can be
         // directional, and this loop is the only place the direction is known.
-        self.out.nodes.items(.dir)[idx] = p.direction;
+        self.out.nodes.items(.dir)[@backingInt(idx)] = p.direction;
         // §1.3.4.1/§1.3.4.2's "not to `inout` ports" is checked below the net
         // loop (E0360): the discipline is not known yet here.
     }
@@ -156,7 +158,7 @@ pub fn declareNets(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
             const dname = if (n.discipline != .none)
                 self.file.str(n.discipline)
             else if (self.node_voltages.get(name)) |idx|
-                (if (idx == ground) "" else self.out.nodes.items(.disc)[idx])
+                (if (idx == ground) "" else self.out.nodes.items(.disc)[@backingInt(idx)])
             else
                 "";
             if (self.out.disciplines.get(dname)) |info| {
@@ -178,7 +180,7 @@ pub fn declareNets(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
         // ports carry `""`, and a later declaration of one of those is the
         // first declaration, not a conflict.
         if (n.discipline != .none) if (self.node_voltages.get(name)) |idx| {
-            const had = if (idx == ground) "" else self.out.nodes.items(.disc)[idx];
+            const had = if (idx == ground) "" else self.out.nodes.items(.disc)[@backingInt(idx)];
             if (had.len != 0) {
                 var b = self.errWith(n.main_tok, .E0902);
                 b.msg("`{s}` is already of discipline `{s}`", .{ name, had });
@@ -200,7 +202,7 @@ pub fn declareNets(self: *Lower, module: *const Ast.ModuleDecl) Oom!void {
         // (`sim.digital.elab.declareNet`), not a nodeset. The interned node's
         // discipline decides, not the entry's: `electrical p = 5.0;` on a
         // header port is an entry with none over a port that has one.
-        const undisciplined = idx != ground and self.out.nodes.items(.disc)[idx].len == 0;
+        const undisciplined = idx != ground and self.out.nodes.items(.disc)[@backingInt(idx)].len == 0;
         if (n.init != .none and !(self.out.mixed_signal and undisciplined)) try recordNodeset(self, idx, n.init, n.main_tok, name);
     }
 }
@@ -223,7 +225,7 @@ pub fn bindPortConnections(self: *Lower) Oom!void {
     // §6.5.7.1 a vector port bound to a concatenated net expression or to
     // §6.5.5's sub-range of a net: element k of the port IS bit k of the
     // connection, so its key names that bit's node.
-    var bits: std.ArrayList(u32) = .empty;
+    var bits: std.ArrayList(NodeId) = .empty;
     for (self.design.port_concats) |pc| {
         const pc_name = self.file.str(pc.name);
         bits.clearRetainingCapacity();
@@ -271,11 +273,11 @@ pub fn partOf(decl: VecRange, r: VecRange) bool {
 
 /// Returns the `nodes` row of net `name`, creating it on first use. Undeclared names
 /// are implicit nets (§3.6.5); rows are created in source order.
-pub fn internNode(self: *Lower, name: []const u8, discipline: []const u8) Oom!u32 {
+pub fn internNode(self: *Lower, name: []const u8, discipline: []const u8) Oom!NodeId {
     const gop = try self.node_voltages.getOrPut(self.arena, name);
     if (gop.found_existing) {
         if (discipline.len != 0 and gop.value_ptr.* != ground)
-            self.out.nodes.items(.disc)[gop.value_ptr.*] = discipline;
+            self.out.nodes.items(.disc)[@backingInt(gop.value_ptr.*)] = discipline;
         return gop.value_ptr.*;
     }
     const idx = try appendNode(self, name, discipline, .net);
@@ -303,31 +305,32 @@ pub fn collectSignalAbstols(self: *Lower, segments: []const elab.design.SignalDi
 
 /// Mints the §4.5.2 unknown one analog operator site introduces, spelled
 /// `<op>$<k>`. Never deduped: each site owns its own unknown and row.
-pub fn opStateNode(self: *Lower, op: []const u8, abstol: f64) Oom!u32 {
+pub fn opStateNode(self: *Lower, op: []const u8, abstol: f64) Oom!NodeId {
     const name = try self.arena.print("{s}${d}", .{ op, self.node_state.op_states });
     self.node_state.op_states += 1;
     return appendNode(self, name, "", .{ .op_state = abstol });
 }
 
 /// Returns the name codegen prints for a `nodes` row, or "gnd" for `ground`.
-pub fn nodeName(self: *const Lower, idx: u32) []const u8 {
+pub fn nodeName(self: *const Lower, idx: NodeId) []const u8 {
     return self.out.nodeName(idx);
 }
 
 /// Returns the §4.4 potential probe of one node, deduped so a node is one
 /// `block_param` (codegen's `x[idx]`); ground is the literal 0 (§1.3.1.1).
-pub fn probe(self: *Lower, idx: u32) Oom!Mir.Value {
+pub fn probe(self: *Lower, idx: NodeId) Oom!Mir.Value {
     if (idx == ground) return .f_zero;
-    if (self.node_state.probe_cache.items[idx] != .undef) return self.node_state.probe_cache.items[idx];
-    const v = try self.mir.addBlockParam(self.arena, idx);
-    self.node_state.probe_cache.items[idx] = v;
+    const row = @backingInt(idx);
+    if (self.node_state.probe_cache.items[row] != .undef) return self.node_state.probe_cache.items[row];
+    const v = try self.mir.addBlockParam(self.arena, row);
+    self.node_state.probe_cache.items[row] = v;
     return v;
 }
 
 /// Returns the `nodes` row of branch (hi, lo)'s current, the solver unknown a §5.4.2
 /// flow read creates. Deduped on the node pair (the §5.4.1 identity), not the
 /// printed name, since a net called `gnd` prints like the reference node.
-pub fn flowUnknown(self: *Lower, hi: u32, lo: u32) Oom!u32 {
+pub fn flowUnknown(self: *Lower, hi: NodeId, lo: NodeId) Oom!NodeId {
     assert(self.nodeValid(hi));
     assert(self.nodeValid(lo));
     const gop = try self.out.flow_unknowns.getOrPut(self.arena, .{ .hi = hi, .lo = lo });
@@ -343,7 +346,7 @@ pub fn flowUnknown(self: *Lower, hi: u32, lo: u32) Oom!u32 {
 /// Returns the §5.4.3 unknown carrying `I(<p>)`, spelled `flow(<p>)`. `port_probes`
 /// is the identity (a linear scan over the module's ports), so a net spelled
 /// `flow(<p>)` cannot take over the port's current.
-pub fn portFlowUnknown(self: *Lower, p: u32) Oom!u32 {
+pub fn portFlowUnknown(self: *Lower, p: NodeId) Oom!NodeId {
     assert(self.nodeValid(p));
     for (self.out.port_probes.items) |pp| {
         if (pp.port == p) return pp.u;
@@ -361,7 +364,7 @@ pub fn portFlowUnknown(self: *Lower, p: u32) Oom!u32 {
 /// or the elements a constant select names (§6.5.5), which must be a part of
 /// the net's declared range (E0351 on a net with none, E0352 outside it).
 /// Returns false after the diagnostic.
-fn partNodes(self: *Lower, part: elab.design.NetPart, tok: u32, out: *std.ArrayList(u32)) Oom!bool {
+fn partNodes(self: *Lower, part: elab.design.NetPart, tok: u32, out: *std.ArrayList(NodeId)) Oom!bool {
     assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     const net = self.file.str(part.net);
     const decl = self.out.vectors.get(net) orelse {
@@ -395,9 +398,9 @@ fn partNodes(self: *Lower, part: elab.design.NetPart, tok: u32, out: *std.ArrayL
 fn collectNodeAbstol(self: *Lower, name: []const u8, abstol: f64) void {
     const idx = self.node_voltages.get(name) orelse return;
     if (idx == ground) return;
-    const local = self.out.disciplines.get(self.out.nodes.items(.disc)[idx]) orelse return;
+    const local = self.out.disciplines.get(self.out.nodes.items(.disc)[@backingInt(idx)]) orelse return;
     if (local.is_discrete or !local.has_potential) return;
-    const slot = &self.out.nodes.items(.potential_abstol)[idx];
+    const slot = &self.out.nodes.items(.potential_abstol)[@backingInt(idx)];
     slot.* = @min(slot.* orelse local.potential_abstol, abstol);
 }
 
@@ -408,7 +411,7 @@ fn collectNodeAbstol(self: *Lower, name: []const u8, abstol: f64) void {
 /// ponytail: the value is frozen at the parameter's declared default, so a card
 /// override leaves a stale initial guess (never a wrong answer). Upgrade: keep the
 /// `Ast.ExprId` and export `nodeset(model)` the way `derive()` is.
-fn recordNodeset(self: *Lower, node: u32, e: Ast.ExprId, tok: u32, name: []const u8) Oom!void {
+fn recordNodeset(self: *Lower, node: NodeId, e: Ast.ExprId, tok: u32, name: []const u8) Oom!void {
     assert(self.nodeValid(node));
     assert(e == .none or self.exprValid(e));
     const c = lower_constfold.constEval(self, e) orelse {
@@ -425,12 +428,12 @@ fn recordNodeset(self: *Lower, node: u32, e: Ast.ExprId, tok: u32, name: []const
 /// Does not dedupe: each caller owns identity (`node_voltages` for a net,
 /// `flow_unknowns` for a branch, `port_probes` for a port), and two distinct
 /// unknowns may ask for one name.
-fn appendNode(self: *Lower, name: []const u8, discipline: []const u8, kind: NodeKind) Oom!u32 {
+fn appendNode(self: *Lower, name: []const u8, discipline: []const u8, kind: NodeKind) Oom!NodeId {
     if (self.out.nodes.len == max_nodes) {
         const m = self.module.?;
         if (!self.node_state.full) try self.err(m.main_tok, .E1015, "`{s}` needs more than {d} nets and unknowns", .{ self.file.str(m.name), max_nodes });
         self.node_state.full = true;
-        return 0; // stands in for the row, so lowering reports the rest
+        return @fromBackingInt(0); // stands in for the row, so lowering reports the rest
     }
     assert(self.node_state.probe_cache.items.len == self.out.nodes.len); // one cache slot per row
     const idx: u32 = @intCast(self.out.nodes.len);
@@ -439,8 +442,8 @@ fn appendNode(self: *Lower, name: []const u8, discipline: []const u8, kind: Node
     try self.out.nodes.append(self.arena, .{ .name = spelling, .kind = kind, .disc = discipline, .dir = .unspecified });
     try self.node_state.probe_cache.append(self.arena, .undef);
     assert(self.node_state.probe_cache.items.len == self.out.nodes.len);
-    assert(idx < ground); // a row never spells the reference node
-    return idx;
+    assert(idx < @backingInt(ground)); // a row never spells the reference node
+    return @fromBackingInt(idx);
 }
 
 /// `name`, or the first `name#k` nobody has taken, since each slot is one `U` member.
@@ -509,7 +512,7 @@ test "lower: §3.6.3.2 a net_decl_assignment folds to a nodeset, a bus element b
     };
     try std.testing.expectEqual(want.len, out.nodesets.items.len);
     for (want, out.nodesets.items) |w, ns| {
-        try std.testing.expectEqualStrings(w.name, out.nodes.items(.name)[ns.node]);
+        try std.testing.expectEqualStrings(w.name, out.nodes.items(.name)[@backingInt(ns.node)]);
         try std.testing.expectEqual(w.value, ns.value);
     }
 }

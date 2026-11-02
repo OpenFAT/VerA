@@ -22,8 +22,8 @@ external suites `zig build conformance` runs).
 | `nix develop -c zig build suite` | Every fixture plus a separate compiler timing pass |
 | `nix develop -c zig build suite -- golden <tag>` | Snapshot every fixture's generated code; `-- golden diff [a b]` compares two |
 | `nix develop .#external -c python3 tools/external_analog.py` | The `osdi/` decks in ngspice over `vera --emit-osdi` libraries, against hand-derived values |
-| `python3 tests/host.py selftest` | The host oracles fed wrong observations; never evidence |
-| `python3 tools/conformance.py selftest` | Regression checks: the subcommands and the fixture layout |
+| `python3 tests/host.py selftest` | The host oracles fed wrong observations; never evidence (in `test`) |
+| `python3 tools/conformance.py selftest` | Regression checks: the subcommands and the fixture layout (in `test`) |
 
 `test` is the development gate; it does not run all language fixtures.
 `suite -- ams` fails on failures, unasserted fixtures and expected failures.
@@ -70,7 +70,7 @@ specification chapter. The suite is tool-neutral: VerA keeps nothing in it.
 | `tests/include/` | `check.vh` (the `CHECK` macros) and `erfc.vh`, on every compile's include path | |
 | `tests/netlist/` | ESPice's decks | none |
 
-A dedicated test file is a namespace of `unit.zig`. A `test` block that
+A dedicated test file is a namespace of `unit.zig`, in `unit/<namespace>.zig` (named as the namespace, so its tests keep `unit.<namespace>.` names). A `test` block that
 checks a file's private declarations stays beside that declaration in `lib/`
 or `src/`, as in Zig's own std; what a unit namespace needs from a module is
 exported by the module's root (`Lower.Harness`, `codegen.Harness`,

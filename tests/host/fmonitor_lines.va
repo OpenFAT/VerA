@@ -1,0 +1,22 @@
+// The device `fmonitor_host.zig` runs as two instances: each opens its own
+// file once (VAMS §9.5.1 `$fopen` under `@(initial_step)`) and monitors one
+// value into it (§9.5.2 `$fmonitor`, §9.4.1), its `id` first so a line in
+// the other instance's file names its writer. The value steps every
+// `period` accepted points, so an instance reports once per `period`
+// points. The branch current reads the file's position (§9.5.5 `$ftell`), a
+// result each instance's display unit latches and its `eval` reads back.
+`include "disciplines.vams"
+module fmonitor_lines(p, n);
+  inout p, n; electrical p, n;
+  parameter integer id = 1;
+  parameter integer period = 1 from [1:inf);
+  parameter string path = "fmonitor_lines.txt";
+  integer fd;
+  analog begin
+    @(initial_step) begin
+      fd = $fopen(path, "w");
+      $fmonitor(fd, "%0d %0d", id, $rtoi($abstime) / period);
+    end
+    I(p, n) <+ $ftell(fd) * V(p, n);
+  end
+endmodule

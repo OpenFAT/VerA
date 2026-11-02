@@ -165,7 +165,7 @@ pub fn plan(self: Input, from: From, dyn: anytype) PlanError(@TypeOf(dyn))!Jobs 
         // §5.6.1.2 its charges, one per site, beside it.
         for (from.q_sites) |k| {
             const s = self.lowered.charge_sites.items[k];
-            if (s.contrib != i) continue;
+            if (@backingInt(s.contrib) != i) continue;
             try jobs.append(self.arena, .{
                 .kind = .react,
                 .target = self.an.rv(s.final),
@@ -380,8 +380,8 @@ pub fn plan(self: Input, from: From, dyn: anytype) PlanError(@TypeOf(dyn))!Jobs 
     if (from.vpi) {
         for (self.lowered.contributions.items, 0..) |c, i| try queueVpi(self, &jobs, from, c.react_val, i);
         for (self.lowered.contrib_shares.items) |sh| {
-            try queueVpi(self, &jobs, from, sh.resist_val, sh.row);
-            try queueVpi(self, &jobs, from, sh.react_val, sh.row);
+            try queueVpi(self, &jobs, from, sh.resist_val, @backingInt(sh.row));
+            try queueVpi(self, &jobs, from, sh.react_val, @backingInt(sh.row));
         }
     }
     // The operating-point variables, which `opVars` reads out of its slice of
@@ -533,8 +533,8 @@ test "jobs queue in insert-tolerant order: contributions, operator inputs, held 
     const vb = try f.probe(1);
     const q = try f.call("slew", &.{va}); // an operator unit, input V(a)
     // I(a,b) <+ V(b) + ddt(slew(V(a))): a resistive and a reactive target.
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1, .resist_val = vb, .react_val = q });
-    try f.lowered.charge_sites.append(a, .{ .contrib = 0, .sign = 1, .final = q });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .resist_val = vb, .react_val = q });
+    try f.lowered.charge_sites.append(a, .{ .contrib = @fromBackingInt(0), .sign = 1, .final = q });
     try f.lowered.held_vars.append(a, .{ .name = "h", .ty = .real, .init = .f_zero, .seed = .f_zero, .final = vb });
     const an = try f.analysis();
     const in: Input = .{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered };

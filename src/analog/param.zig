@@ -122,7 +122,7 @@ pub fn declareAliasParams(self: *Lower, module: *const Ast.ModuleDecl) Oom!void 
         }
         if (self.param_index.get(target)) |idx| {
             try self.param_index.put(self.arena, alias, idx);
-            try self.out.aliases.append(self.arena, .{ .name = alias, .param = idx });
+            try self.out.aliases.append(self.arena, .{ .name = alias, .param = @fromBackingInt(idx) });
         } else {
             var b = self.errWith(module.main_tok, .E0303);
             b.msg("`{s}`", .{target});
@@ -261,7 +261,7 @@ pub fn aliasSystemParam(self: *Lower, alias: []const u8, target: []const u8) Oom
     const kind = hier_param.Kind.fromName(target) orelse return false;
     if (self.hier_params.get(kind)) |idx| {
         try self.param_index.put(self.arena, alias, idx);
-        try self.out.aliases.append(self.arena, .{ .name = alias, .param = idx });
+        try self.out.aliases.append(self.arena, .{ .name = alias, .param = @fromBackingInt(idx) });
         return true;
     }
     self.hier_params.set(kind, @intCast(self.out.params.items.len));

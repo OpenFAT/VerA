@@ -140,8 +140,8 @@ pub fn emitStamps(self: *Gen, react: bool) Error!u32 {
             assert(!react); // splitContribution never runs on an indirect
             try self.ind(2);
             try self.b("const ib = x[@intFromEnum(U.{s})];\n", .{self.names.u_names[u]});
-            try stamp(self, 2, c.hi, .add, "ib", try bits(self, &.{u}, &.{}), u);
-            try stamp(self, 2, c.lo, .sub, "ib", try bits(self, &.{u}, &.{}), u);
+            try stamp(self, 2, @backingInt(c.hi), .add, "ib", try bits(self, &.{u}, &.{}), u);
+            try stamp(self, 2, @backingInt(c.lo), .sub, "ib", try bits(self, &.{u}, &.{}), u);
             try self.ind(2);
             patRow(self, @intCast(u), family.mask(self, val));
             stamp_lin.linClear(self, u);
@@ -176,13 +176,13 @@ pub fn emitStamps(self: *Gen, react: bool) Error!u32 {
                 }
             } else {
                 // §1.3.1.2: the value flows INTO hi and OUT OF lo.
-                try stamp(self, 2, c.hi, .add, "c", family.mask(self, val), null);
-                try stamp(self, 2, c.lo, .sub, "c", family.mask(self, val), null);
+                try stamp(self, 2, @backingInt(c.hi), .add, "c", family.mask(self, val), null);
+                try stamp(self, 2, @backingInt(c.lo), .sub, "c", family.mask(self, val), null);
                 // §5.6.6: the model also reads `I(hi,lo)`, so this current is
                 // an unknown whose row is `x[u] − Σ contributions`. Accumulated
                 // here (contributions to one branch are one sum, §5.6.1) and
                 // closed with the `+ x[u]` term after the loop.
-                if (self.topo.freeFlowOf(c.hi, c.lo)) |f| {
+                if (self.topo.freeFlowOf(@backingInt(c.hi), @backingInt(c.lo))) |f| {
                     assert(f.sourced);
                     try stamp(self, 2, @intCast(f.u), .sub, "c", family.mask(self, val), null);
                 }
@@ -196,15 +196,15 @@ pub fn emitStamps(self: *Gen, react: bool) Error!u32 {
                     const u = self.names.branch_u[i];
                     try self.ind(2);
                     try self.b("const ib = x[@intFromEnum(U.{s})];\n", .{self.names.u_names[u]});
-                    try stamp(self, 2, c.hi, .add, "ib", try bits(self, &.{u}, &.{}), u);
-                    try stamp(self, 2, c.lo, .sub, "ib", try bits(self, &.{u}, &.{}), u);
+                    try stamp(self, 2, @backingInt(c.hi), .add, "ib", try bits(self, &.{u}, &.{}), u);
+                    try stamp(self, 2, @backingInt(c.lo), .sub, "ib", try bits(self, &.{u}, &.{}), u);
                     try self.ind(2);
-                    patRow(self, @intCast(u), try bits(self, &.{ c.hi, c.lo }, &.{family.mask(self, val)}));
-                    try stamp_lin.linBranch(self, u, c.hi, c.lo);
+                    patRow(self, @intCast(u), try bits(self, &.{ @backingInt(c.hi), @backingInt(c.lo) }, &.{family.mask(self, val)}));
+                    try stamp_lin.linBranch(self, u, @backingInt(c.hi), @backingInt(c.lo));
                     try rowSet(self, u);
-                    try nodeVoltage(self, c.hi);
+                    try nodeVoltage(self, @backingInt(c.hi));
                     try self.b(".sub(", .{});
-                    try nodeVoltage(self, c.lo);
+                    try nodeVoltage(self, @backingInt(c.lo));
                     try self.b(").sub(c)", .{});
                     try rowEnd(self);
                 } else {
@@ -276,15 +276,15 @@ pub fn emitStamps(self: *Gen, react: bool) Error!u32 {
         stamps += 1;
         try self.ind(1);
         // Reads the finished res[port], so this row's columns are that row's.
-        patRow(self, pp.u, try bits(self, if (react) &.{} else &.{pp.u}, &.{try patOf(self, pp.port)}));
-        if (self.jac.dpat.len != 0) gen_mask.orIn(rowOf(self, self.jac.dpat, pp.u), rowOf(self, self.jac.dpat, pp.port));
-        try stamp_lin.linPortProbe(self, pp.u, pp.port, !react);
-        try rowSet(self, pp.u);
+        patRow(self, @backingInt(pp.u), try bits(self, if (react) &.{} else &.{@backingInt(pp.u)}, &.{try patOf(self, @backingInt(pp.port))}));
+        if (self.jac.dpat.len != 0) gen_mask.orIn(rowOf(self, self.jac.dpat, @backingInt(pp.u)), rowOf(self, self.jac.dpat, @backingInt(pp.port)));
+        try stamp_lin.linPortProbe(self, @backingInt(pp.u), @backingInt(pp.port), !react);
+        try rowSet(self, @backingInt(pp.u));
         if (react)
-            try self.b("res[@intFromEnum(U.{s})].neg()", .{self.names.u_names[pp.port]})
+            try self.b("res[@intFromEnum(U.{s})].neg()", .{self.names.u_names[@backingInt(pp.port)]})
         else
             try self.b("x[@intFromEnum(U.{0s})].sub(res[@intFromEnum(U.{1s})])", .{
-                self.names.u_names[pp.u], self.names.u_names[pp.port],
+                self.names.u_names[@backingInt(pp.u)], self.names.u_names[@backingInt(pp.port)],
             });
         try rowEnd(self);
     }
@@ -301,7 +301,7 @@ pub fn emitStamps(self: *Gen, react: bool) Error!u32 {
 pub fn stamp(self: *Gen, depth: u32, node: u32, sign: StampSign, val: []const u8, deps: []const u64, col: ?u32) Error!void {
     assert(val.len != 0);
     assert(deps.len == 0 or deps.len == self.mw);
-    if (node == Lower.ground) return; // §1.3.1.1 ground has no equation
+    if (node == @backingInt(Lower.ground)) return; // §1.3.1.1 ground has no equation
     assert(node < self.names.n_u);
     patRow(self, node, deps);
     if (col) |k| try stamp_lin.linTerm(self, node, k, switch (sign) {
@@ -335,7 +335,7 @@ pub fn rowEnd(self: *Gen) Error!void {
 /// (`rows`). Ground has no row. Every `res[...]` writer calls this.
 pub fn patRow(self: *Gen, node: u32, deps: []const u64) void {
     assert(deps.len == 0 or deps.len == self.mw);
-    if (node == Lower.ground or !self.jac.on) return;
+    if (node == @backingInt(Lower.ground) or !self.jac.on) return;
     const half = self.jac.pat[@intFromBool(self.jac.react)];
     assert(node < self.names.n_u);
     if (half.len != 0) gen_mask.orIn(rowOf(self, half, node), deps);
@@ -361,7 +361,7 @@ pub fn bits(self: *const Gen, us: []const u32, deps: []const []const u64) Error!
     for (deps) |d| assert(d.len == self.mw);
     const m = try gen_mask.zero(self.arena, self.mw);
     for (us) |u| {
-        if (u == Lower.ground) continue;
+        if (u == @backingInt(Lower.ground)) continue;
         if (u == none_u32) {
             for (0..self.names.n_u) |k| gen_mask.set(m, @intCast(k));
             continue;
@@ -374,8 +374,8 @@ pub fn bits(self: *const Gen, us: []const u32, deps: []const []const u64) Error!
 }
 
 pub fn nodeVoltage(self: *Gen, node: u32) Error!void {
-    assert(node == Lower.ground or node < self.names.n_u);
-    if (node == Lower.ground) return self.b("S.con(0.0)", .{});
+    assert(node == @backingInt(Lower.ground) or node < self.names.n_u);
+    if (node == @backingInt(Lower.ground)) return self.b("S.con(0.0)", .{});
     try self.b("x[@intFromEnum(U.{s})]", .{self.names.u_names[node]});
     assert(std.mem.endsWith(u8, self.out.items, ")]"));
 }

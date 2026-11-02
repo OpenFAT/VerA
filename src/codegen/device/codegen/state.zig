@@ -191,7 +191,7 @@ pub fn emitStateMachine(self: *Gen) Error!void {
     // dirty-tracked held array (`instance.dirtyTracked`): the fresh `State`
     // differs from `inst` anywhere, so its range is the whole array.
     var dirty = false;
-    for (self.lowered.held_vars.items) |h| dirty = dirty or (h.array != none_u32 and gen_instance.dirtyTracked(self, h.array));
+    for (self.lowered.held_vars.items) |h| dirty = dirty or (h.array != .none and gen_instance.dirtyTracked(self, @backingInt(h.array)));
     const tp = self.lowered.timepoints.items.len != 0;
     const restart = self.hist.items.len + self.core.prev_lo.len + self.core.acc_lo.len != 0;
     try self.w(
@@ -214,8 +214,8 @@ pub fn emitStateMachine(self: *Gen) Error!void {
     if (tp) try self.w("    zTpDrop(inst);\n", .{});
     if (gen_status.hasStatus(self)) try self.w(gen_status.status_drop, .{});
     for (self.lowered.held_vars.items, self.names.held_names) |h, n| {
-        if (h.array == none_u32 or !gen_instance.dirtyTracked(self, h.array)) continue;
-        try self.w("    inst.{s}__dirty = .{{ 0, {d} }};\n", .{ n, self.lowered.mem_arrays.items[h.array].len - 1 });
+        if (h.array == .none or !gen_instance.dirtyTracked(self, @backingInt(h.array))) continue;
+        try self.w("    inst.{s}__dirty = .{{ 0, {d} }};\n", .{ n, self.lowered.mem_arrays.items[@backingInt(h.array)].len - 1 });
     }
     try self.w(
         \\    return .{{}};

@@ -78,7 +78,7 @@ pub fn emitModel(self: *Gen) Error!void {
     // Its given bit is unconditional: it is the only way to tell "the host
     // overrode the alias" from "the host left it at the default".
     for (self.lowered.aliases.items, 0..) |al, i| {
-        const p = self.lowered.params.items[al.param];
+        const p = self.lowered.params.items[@backingInt(al.param)];
         const ty = Analysis.tyOfParam(p.ty);
         try self.w("    {s}: {s} = {s}, // §3.4.7 alias of `{s}`\n", .{
             self.names.a_names[i],
@@ -192,10 +192,10 @@ pub fn emitDerive(self: *Gen) Error!void {
     // and the §6.3.4 guard below that keeps a default from erasing it) is raised.
     for (self.lowered.aliases.items, 0..) |al, i| {
         const a = self.names.a_names[i];
-        const p = self.names.p_names[al.param];
+        const p = self.names.p_names[@backingInt(al.param)];
         const ab = self.names.n_given + i;
-        if (self.names.p_given[al.param])
-            try self.w("    if (model.given__.isSet({d})) {{\n        model.{s} = model.{s};\n        model.given__.set({d});\n    }}\n", .{ ab, p, a, self.names.given_bit[al.param] })
+        if (self.names.p_given[@backingInt(al.param)])
+            try self.w("    if (model.given__.isSet({d})) {{\n        model.{s} = model.{s};\n        model.given__.set({d});\n    }}\n", .{ ab, p, a, self.names.given_bit[@backingInt(al.param)] })
         else
             try self.w("    if (model.given__.isSet({d})) model.{s} = model.{s};\n", .{ ab, p, a });
     }

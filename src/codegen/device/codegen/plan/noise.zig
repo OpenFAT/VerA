@@ -129,12 +129,12 @@ pub fn plan(self: Input, branch_u: []const u32) Error!Noise {
         // the nodes, where a host folds it into KCL either way.
         const series = c.kind == .direct and c.access == .potential and plan_topo.switchFlowOf(self, ci) == null;
         if (series) assert(ci < branch_u.len);
-        const row = if (series) branch_u[ci] else if (c.hi != Lower.ground) c.hi else c.lo;
-        const col = if (series) row else if (c.lo != Lower.ground) c.lo else row;
+        const row = if (series) branch_u[ci] else if (c.hi != Lower.ground) @backingInt(c.hi) else @backingInt(c.lo);
+        const col = if (series) row else if (c.lo != Lower.ground) @backingInt(c.lo) else row;
         // Off the series case the ground-ground branch was refused above, so
         // at least one end is a node and both indices name it or the other.
-        if (!series) assert(row != Lower.ground);
-        if (!series) assert(col != Lower.ground);
+        if (!series) assert(row != @backingInt(Lower.ground));
+        if (!series) assert(col != @backingInt(Lower.ground));
         for (c.noise_srcs) |s| {
             // §4.6.3 a stimulus has no PSD, no table and no §4.6.4.6
             // identity: one call is one source, and `addNoiseSrc` already
@@ -372,8 +372,8 @@ test "a noise table is sorted, and a repeated frequency is refused" {
     };
     const srcs0 = [_]Lower.NoiseSrc{.{ .kind = .table, .table = &good, .id = 1 }};
     const srcs1 = [_]Lower.NoiseSrc{.{ .kind = .table, .table = &dup, .id = 2 }};
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1, .noise_srcs = &srcs0 });
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = Lower.ground, .noise_srcs = &srcs1 });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .noise_srcs = &srcs0 });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(1), .lo = Lower.ground, .noise_srcs = &srcs1 });
     const an = try f.analysis();
 
     const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});
@@ -398,8 +398,8 @@ test "rows: to-ground is row == col, ground-ground is E0520, a stimulus goes to 
         .{ .kind = .flicker, .id = 40, .pwr = pwr, .coeff = .f_two },
         .{ .kind = .ac_stim, .id = 41, .pwr = mag, .exp = .f_zero, .name = "ac" },
     };
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = Lower.ground, .noise_srcs = &th });
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = Lower.ground, .lo = 0, .noise_srcs = &fl });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(1), .lo = Lower.ground, .noise_srcs = &th });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = Lower.ground, .lo = @fromBackingInt(0), .noise_srcs = &fl });
     try f.lowered.contributions.append(a, .{ .access = .flow, .hi = Lower.ground, .lo = Lower.ground, .noise_srcs = &th });
     const an = try f.analysis();
 
@@ -443,7 +443,7 @@ test "§4.6.4.3 table checks: no vector, an odd count, a non-positive frequency,
         const vals = try a.alloc(Mir.Value, cs.knots.len);
         for (cs.knots, vals) |k, *v| v.* = try f.mir.addFloatConst(a, k);
         const srcs = try a.dupe(Lower.NoiseSrc, &.{.{ .kind = cs.kind, .table = vals, .id = 1 }});
-        try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = Lower.ground, .noise_srcs = srcs });
+        try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = Lower.ground, .noise_srcs = srcs });
         const an = try f.analysis();
         const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});
         try std.testing.expectEqual(@as(usize, 0), n.rows.len);
@@ -459,7 +459,7 @@ test "§4.6.4.3 table checks: no vector, an odd count, a non-positive frequency,
         const a = f.alloc();
         const vals = [_]Mir.Value{ try f.mir.addFloatConst(a, 10), .f_zero };
         const srcs = [_]Lower.NoiseSrc{.{ .kind = .table, .table = &vals, .id = 1 }};
-        try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = Lower.ground, .noise_srcs = &srcs });
+        try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = Lower.ground, .noise_srcs = &srcs });
         const an = try f.analysis();
         const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});
         try std.testing.expectEqual(@as(usize, 0), n.refusals.items.len);
@@ -479,8 +479,8 @@ test "a parameter knot keeps its MIR values beside the defaults; a literal table
     const par = [_]Mir.Value{ fc, three };
     const s0 = [_]Lower.NoiseSrc{.{ .kind = .table, .table = &lit, .id = 1 }};
     const s1 = [_]Lower.NoiseSrc{.{ .kind = .table, .table = &par, .id = 2 }};
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1, .noise_srcs = &s0 });
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = 0, .noise_srcs = &s1 });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .noise_srcs = &s0 });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(1), .lo = @fromBackingInt(0), .noise_srcs = &s1 });
     const an = try f.analysis();
 
     const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});
@@ -501,11 +501,11 @@ test "§4.6.4.1 a generator in a potential contribution is row == col on the bra
     const th = [_]Lower.NoiseSrc{.{ .kind = .thermal, .id = 7, .pwr = pwr }};
     const fl = [_]Lower.NoiseSrc{.{ .kind = .thermal, .id = 8, .pwr = pwr }};
     const sw = [_]Lower.NoiseSrc{.{ .kind = .thermal, .id = 9, .pwr = pwr }};
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 0, .lo = 1, .noise_srcs = &th });
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = Lower.ground, .noise_srcs = &fl });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .noise_srcs = &th });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(1), .lo = Lower.ground, .noise_srcs = &fl });
     // §5.6.5 a switch branch: a potential and a flow contribution over one pair.
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = 0, .noise_srcs = &sw });
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = 0 });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(0), .noise_srcs = &sw });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(1), .lo = @fromBackingInt(0) });
     const an = try f.analysis();
     // `plan/names.zig` gave the potential branches the current unknowns 2 and 3.
     const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{ 2, names_none, 3, names_none });
@@ -533,8 +533,8 @@ test "§4.6.4.6 one table call shared by two branches is one generator: one tabl
         const good = [_]Mir.Value{ try f.mir.addFloatConst(a, 10), .f_one };
         const odd = [_]Mir.Value{ try f.mir.addFloatConst(a, 10), .f_one, .f_two };
         const srcs = [_]Lower.NoiseSrc{.{ .kind = .table, .table = if (valid) good[0..] else odd[0..], .id = 7 }};
-        try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1, .noise_srcs = &srcs });
-        try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = Lower.ground, .noise_srcs = &srcs });
+        try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .noise_srcs = &srcs });
+        try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(1), .lo = Lower.ground, .noise_srcs = &srcs });
         const an = try f.analysis();
 
         const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{});

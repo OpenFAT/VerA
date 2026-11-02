@@ -31,7 +31,7 @@ const gen_render = @import("render.zig");
 /// until first written.
 pub fn cow(self: *const Gen, id: u32) bool {
     assert(id < self.lowered.mem_arrays.items.len);
-    return self.lowered.mem_arrays.items[id].held != none_u32 and arrPlain(self, id);
+    return self.lowered.mem_arrays.items[id].held != .none and arrPlain(self, id);
 }
 
 /// Returns whether the slice being emitted stores held array `id` straight
@@ -128,7 +128,7 @@ pub fn emitArrayStmt(self: *Gen, inst: Mir.Inst, depth: u32) Error!void {
                 return self.b(" else asm volatile (\"\" : : [p] \"r\" (&a{d}) : .{{ .memory = true }});\n", .{d.array});
             }
             // §3.2 every evaluation starts it at zero.
-            if (m.held == none_u32) {
+            if (m.held == .none) {
                 if (!plain) return self.b("@memset(&a{d}, zTo(S, 0x{f}, S.con(0.0)));\n", .{ d.array, gen_mask.hex(self.arrMask(d.array), false) });
                 return self.b("@memset(&a{d}, {s});\n", .{ d.array, if (m.ty == .integer) "0" else "0.0" });
             }
@@ -136,7 +136,7 @@ pub fn emitArrayStmt(self: *Gen, inst: Mir.Inst, depth: u32) Error!void {
             // evaluation left in its `Instance` field.
             self.cur.uses.inst = true;
             float_lanes.instPin(self); // a held array is one instance's
-            const f = self.names.held_names[m.held];
+            const f = self.names.held_names[@backingInt(m.held)];
             if (plain) return self.b("p{d} = &inst.{s};\n", .{ d.array, f });
             return self.b("for (&a{d}, inst.{s}) |*zd, zs| zd.* = zTo(S, 0x{f}, S.con(zs));\n", .{ d.array, f, gen_mask.hex(self.arrMask(d.array), false) });
         },
@@ -144,7 +144,7 @@ pub fn emitArrayStmt(self: *Gen, inst: Mir.Inst, depth: u32) Error!void {
             const id = self.an.arrOf(d.arr).?;
             const m = self.lowered.mem_arrays.items[id];
             // Only a §5.10 held array has an `Instance` field to store into.
-            if (inPlace(self, id)) assert(m.held != none_u32);
+            if (inPlace(self, id)) assert(m.held != .none);
             const r = self.an.rv(self.mir.instResult(inst));
             if (self.cur.emitting_common and self.core.held_only.len != 0 and self.core.held_only[@backingInt(r)]) {
                 self.cur.uses.held = true;
@@ -165,7 +165,7 @@ pub fn emitArrayStmt(self: *Gen, inst: Mir.Inst, depth: u32) Error!void {
             const tp = gen_timepoint.tpSlotAt(self, @backingInt(self.mir.instBlock(inst)), id);
             if (tp != null) self.cur.uses.inst = true;
             if (inPlace(self, id) and gen_instance.dirtyTracked(self, id))
-                try self.b("zArrStD({s}, p{d}, &inst.{s}__dirty, ", .{ ty, id, self.names.held_names[m.held] })
+                try self.b("zArrStD({s}, p{d}, &inst.{s}__dirty, ", .{ ty, id, self.names.held_names[@backingInt(m.held)] })
             else if (inPlace(self, id))
                 try self.b("zArrSt({s}, p{d}, ", .{ ty, id })
             else if (tp) |s|

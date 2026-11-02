@@ -452,14 +452,14 @@ fn readShareFinals(self: *Lower) Oom!void {
     assert(out.items.len == 0); // runs once, last: the capacity below is the whole table
     try out.ensureTotalCapacity(self.arena, self.unit_accum.count());
     var it = self.unit_accum.keyIterator();
-    while (it.next()) |k| out.appendAssumeCapacity(.{ .row = k.row, .unit = k.unit });
+    while (it.next()) |k| out.appendAssumeCapacity(.{ .row = @fromBackingInt(k.row), .unit = k.unit });
     std.mem.sortUnstable(Lowered.ContribShare, out.items, {}, struct {
         fn lt(_: void, a: Lowered.ContribShare, b: Lowered.ContribShare) bool {
-            return a.row < b.row or (a.row == b.row and a.unit < b.unit);
+            return @backingInt(a.row) < @backingInt(b.row) or (a.row == b.row and a.unit < b.unit);
         }
     }.lt);
     for (out.items) |*sh| {
-        const pa = self.unit_accum.get(.{ .row = sh.row, .unit = sh.unit }).?;
+        const pa = self.unit_accum.get(.{ .row = @backingInt(sh.row), .unit = sh.unit }).?;
         sh.resist_val = try self.builder.readVariable(pa.resist, self.cur);
         sh.react_val = try self.builder.readVariable(pa.react, self.cur);
     }
@@ -558,8 +558,8 @@ fn smithModule(_: void, s: *std.testing.Smith) anyerror!void {
     // What a later stage indexes with is in range.
     try std.testing.expect(out.num_ports <= out.nodes.len);
     for (out.contributions.items) |c| {
-        try std.testing.expect(c.hi == ground or c.hi < out.nodes.len);
-        try std.testing.expect(c.lo == ground or c.lo < out.nodes.len);
+        try std.testing.expect(c.hi == ground or @backingInt(c.hi) < out.nodes.len);
+        try std.testing.expect(c.lo == ground or @backingInt(c.lo) < out.nodes.len);
     }
     try std.testing.expectEqual(out.held_vars.items.len, h.low.held_places.items.len);
 }

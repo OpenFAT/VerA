@@ -129,6 +129,9 @@ pub const Hierarchy = struct {
     /// §12.5 the scope of each named block that declares something, keyed by
     /// the scope it runs in and its statement (`blockScope`).
     block_scopes: std.AutoHashMapUnmanaged(struct { scope: u32, stmt: Ast.StmtId }, u32) = .empty,
+    /// Whether each statement pass one has walked holds a block with
+    /// declarations of its own (`declares`), answered once per statement.
+    declaring: std.AutoHashMapUnmanaged(Ast.StmtId, bool) = .empty,
 };
 
 /// The slot a name is stored in, or null when the design declares no such
