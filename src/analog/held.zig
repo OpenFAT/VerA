@@ -258,7 +258,7 @@ const Exposed = struct {
                 return;
             };
             // The whole variable, or an element nobody can name statically.
-            if (!x.allCells(k, ex.strOf(t))) try x.exposed(k);
+            if (!try x.allCells(k, ex.strOf(t))) try x.exposed(k);
             return;
         }
         // §4.7.2.3 an `output` actual is written by the call, not read.
@@ -296,7 +296,7 @@ const Exposed = struct {
         while (ex.tag(i) == .index) : (i = ex.lhs(i)) {
             if (ex.tag(ex.rhs(i)) == .range) return null;
             // Not through a parameter: a model card may override it (§3.4).
-            const c = lower_constfold.foldExpr(x.l, ex.rhs(i), false) orelse return null;
+            const c = (try lower_constfold.foldExpr(x.l, ex.rhs(i), false)) orelse return null;
             // A subscript with no integer names no element (E0310 when lowered).
             try idx.insert(x.l.arena, 0, c.asIntExact() orelse return null);
         }
@@ -305,7 +305,7 @@ const Exposed = struct {
 
     /// Is every §3.2.2 element of array `k` (declared `name`) assigned?
     /// False for a scalar, whose own key `read` has already tried.
-    fn allCells(x: *Exposed, k: []const u8, name: Ast.StrId) bool {
+    fn allCells(x: *Exposed, k: []const u8, name: Ast.StrId) std.mem.Allocator.Error!bool {
         const decl = x.declOf(name) orelse return false;
         if (decl.dims.len == 0) return false;
         // This walk runs before `dimsBounds` has refused a shape (E0308,
@@ -314,8 +314,8 @@ const Exposed = struct {
         // unassigned that the walk could name, so the answer is "not all".
         var cells: usize = 1;
         for (decl.dims) |d| {
-            const a = (lower_constfold.constEval(x.l, d.msb) orelse return false).asIntExact() orelse return false;
-            const b = (lower_constfold.constEval(x.l, d.lsb) orelse return false).asIntExact() orelse return false;
+            const a = ((try lower_constfold.constEval(x.l, d.msb)) orelse return false).asIntExact() orelse return false;
+            const b = ((try lower_constfold.constEval(x.l, d.lsb)) orelse return false).asIntExact() orelse return false;
             const n = std.math.cast(usize, @abs(@as(i128, a) - b) + 1) orelse return false;
             cells = std.math.mul(usize, cells, n) catch return false;
         }

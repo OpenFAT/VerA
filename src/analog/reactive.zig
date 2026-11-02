@@ -117,7 +117,7 @@ pub fn lteValue(self: *Lower, a: Ast.LteAttr) Oom!bool {
     assert(a.value == .none or self.exprValid(a.value));
     assert(a.main_tok < self.tok_starts.len or self.tok_starts.len == 0);
     if (a.value == .none) return true;
-    const c = lower_constfold.foldExpr(self, a.value, false) orelse {
+    const c = (try lower_constfold.foldExpr(self, a.value, false)) orelse {
         try self.err(a.main_tok, .E0523, "", .{});
         return true;
     };

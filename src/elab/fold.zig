@@ -54,7 +54,7 @@ pub const ParamEnv = struct {
 
     /// Resolves an identifier to a flattened scalar parameter's folded value.
     /// Asserts that `reads`, when given, has one flag per flattened parameter.
-    pub fn leaf(env: ParamEnv, e: Ast.ExprId) ?constfold.Const {
+    pub fn leaf(env: ParamEnv, e: Ast.ExprId) constfold.Error!?constfold.Const {
         const self = env.self;
         // `matchingParamsets` sizes it so, and zips it with `params` after.
         if (env.reads) |reads| assert(reads.len == self.decls.params.items.len);
@@ -76,7 +76,7 @@ pub const ParamEnv = struct {
 
     /// Flat parameter `i`'s value: a `--param` card value, else its default
     /// folded with the parameters before it.
-    fn param(env: ParamEnv, i: usize) ?constfold.Const {
+    fn param(env: ParamEnv, i: usize) constfold.Error!?constfold.Const {
         const self = env.self;
         const p = self.decls.params.items[i];
         if (!p.is_local and p.ty != .string) for (self.ctx.param_overrides) |o| {
@@ -85,12 +85,12 @@ pub const ParamEnv = struct {
             // former value dependencies cannot change this card binding
             // and must not freeze unrelated host fields as shape inputs.
             const declared = if (p.ty == .unspecified)
-                constfold.fold(self.ctx.file, p.default, ParamEnv{ .self = self, .local = false, .depth = env.depth + 1 })
+                (try constfold.fold(self.ctx.arena, self.ctx.file, p.default, ParamEnv{ .self = self, .local = false, .depth = env.depth + 1 }))
             else
                 null;
             return constfold.parameterCardValue(p.ty, declared, o.value);
         };
-        const declared = constfold.fold(self.ctx.file, p.default, ParamEnv{ .self = self, .local = false, .depth = env.depth + 1, .reads = env.reads }) orelse return null;
+        const declared = (try constfold.fold(self.ctx.arena, self.ctx.file, p.default, ParamEnv{ .self = self, .local = false, .depth = env.depth + 1, .reads = env.reads })) orelse return null;
         return constfold.parameterValue(p.ty, declared);
     }
 
@@ -107,35 +107,35 @@ pub const ParamEnv = struct {
 /// Folds a §6.2.2 instance array bound, written in the current unit's local
 /// names, to an integer; null when it does not fold or is real. A bound may
 /// read a parameter (§3.4), with this instance's overrides applied.
-pub fn constInt(self: *Flatten, e: Ast.ExprId) ?i64 {
+pub fn constInt(self: *Flatten, e: Ast.ExprId) std.mem.Allocator.Error!?i64 {
     assert(e != .none);
-    const c = constfold.fold(self.ctx.file, e, ParamEnv{ .self = self, .local = true }) orelse return null;
+    const c = (try constfold.fold(self.ctx.arena, self.ctx.file, e, ParamEnv{ .self = self, .local = true })) orelse return null;
     return if (c == .int) c.int else null;
 }
 
 /// `constInt` for an expression already in the flat namespace (a cloned
 /// declaration's range, say), so no name is renamed.
-pub fn constIntFlat(self: *Flatten, e: Ast.ExprId) ?i64 {
+pub fn constIntFlat(self: *Flatten, e: Ast.ExprId) std.mem.Allocator.Error!?i64 {
     assert(e != .none);
-    const c = constfold.fold(self.ctx.file, e, ParamEnv{ .self = self, .local = false }) orelse return null;
+    const c = (try constfold.fold(self.ctx.arena, self.ctx.file, e, ParamEnv{ .self = self, .local = false })) orelse return null;
     return if (c == .int) c.int else null;
 }
 
 /// §6.6.2 whether the generate scheme `gate` (flat names, `.none` for an
 /// instance outside any scheme) brings its instance into existence: it folds
 /// true. One that does not fold is not known to.
-pub fn gateHolds(self: *Flatten, gate: Ast.ExprId) bool {
+pub fn gateHolds(self: *Flatten, gate: Ast.ExprId) std.mem.Allocator.Error!bool {
     if (gate == .none) return true;
-    const c = constValue(self, gate, false, null) orelse return false;
+    const c = (try constValue(self, gate, false, null)) orelse return false;
     return c.isTrue();
 }
 
 /// §6.4.2 folds an override in its source namespace. When `reads` is supplied,
 /// it records which flattened parameter values an overload choice used, for
 /// the same host shape check that protects §6.6 generate selection.
-pub fn constValue(self: *Flatten, e: Ast.ExprId, local: bool, reads: ?[]bool) ?constfold.Const {
+pub fn constValue(self: *Flatten, e: Ast.ExprId, local: bool, reads: ?[]bool) std.mem.Allocator.Error!?constfold.Const {
     if (reads) |r| assert(r.len == self.decls.params.items.len);
-    return constfold.fold(self.ctx.file, e, ParamEnv{ .self = self, .local = local, .reads = reads });
+    return try constfold.fold(self.ctx.arena, self.ctx.file, e, ParamEnv{ .self = self, .local = local, .reads = reads });
 }
 
 /// Grows `Flatten.param_values` to one row per flat parameter and indexes
@@ -160,7 +160,7 @@ pub fn syncParamValues(self: *Flatten) design.Error!void {
 /// chain of `links` defaults each `d` deep needed `links * d` levels on a
 /// stack the parse reserved for `d`, and overflowed it). A parameter met
 /// again while its own default is folding is a cycle and declines.
-fn paramValue(self: *Flatten, i: usize, depth: u8) ?constfold.Const {
+fn paramValue(self: *Flatten, i: usize, depth: u8) constfold.Error!?constfold.Const {
     assert(i < self.decls.params.items.len);
     const rows = self.folds.values.items;
     assert(rows.len == self.decls.params.items.len); // `syncParamValues`
@@ -172,10 +172,11 @@ fn paramValue(self: *Flatten, i: usize, depth: u8) ?constfold.Const {
     while (self.folds.warm < i) {
         const j = self.folds.warm;
         self.folds.warm += 1;
-        _ = paramValue(self, j, depth);
+        _ = try paramValue(self, j, depth);
     }
     rows[i] = .folding;
-    const v = (ParamEnv{ .self = self, .local = false, .depth = depth }).param(i);
+    errdefer rows[i] = .unknown;
+    const v = try (ParamEnv{ .self = self, .local = false, .depth = depth }).param(i);
     rows[i] = if (v) |c| .{ .done = c } else .unknown;
     return v;
 }

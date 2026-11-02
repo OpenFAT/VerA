@@ -328,7 +328,7 @@ fn loopInstances(self: *Flatten, init: Ast.StmtId, cond: Ast.ExprId, step: Ast.S
             return x.addInt(sc.self.ctx.arena, x.mainTok(sc.cond), at);
         }
         pub fn holds(sc: @This(), at: i64) design.Error!?bool {
-            const c = fold.constValue(sc.self, try substIdent(sc.self, sc.cond, sc.gv, try sc.lit(at)), true, null) orelse return null;
+            const c = (try fold.constValue(sc.self, try substIdent(sc.self, sc.cond, sc.gv, try sc.lit(at)), true, null)) orelse return null;
             return c.isTrue();
         }
         pub fn next(sc: @This(), at: i64) design.Error!?i64 {
@@ -372,7 +372,7 @@ fn constGenvar(self: *Flatten, e: Ast.ExprId, gv: Ast.StrId, at: ?Ast.ExprId) de
     assert(gv != .none);
     assert(e != .none);
     const bound = if (at) |lit| try substIdent(self, e, gv, lit) else e;
-    const c = fold.constValue(self, bound, true, null) orelse return null;
+    const c = (try fold.constValue(self, bound, true, null)) orelse return null;
     return if (c == .int) c.int else null;
 }
 

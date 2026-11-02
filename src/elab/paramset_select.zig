@@ -39,24 +39,24 @@ const ParamsetEnv = struct {
     reads: ?[]bool,
     depth: usize = 0,
 
-    fn value(env: ParamsetEnv, i: usize) ?constfold.Const {
+    fn value(env: ParamsetEnv, i: usize) std.mem.Allocator.Error!?constfold.Const {
         // Acyclic parameter defaults visit at most one declaration per level.
         // A cycle remains lowering's diagnostic, not infinite recursion here.
         if (env.depth >= env.ps.params.len) return null;
         const p = env.ps.params[i];
         const raw = if (env.bindings[i]) |b|
-            fold.constValue(env.self, b.value, !b.flat, env.reads)
+            try fold.constValue(env.self, b.value, !b.flat, env.reads)
         else blk: {
             var next = env;
             next.depth += 1;
-            break :blk constfold.fold(env.self.ctx.file, p.default, next);
+            break :blk try constfold.fold(env.self.ctx.arena, env.self.ctx.file, p.default, next);
         };
         return constfold.parameterValue(p.ty, raw orelse return null);
     }
 
     /// Resolves an identifier naming one of the candidate's parameters to
     /// its effective value; anything else declines.
-    pub fn leaf(env: ParamsetEnv, e: Ast.ExprId) ?constfold.Const {
+    pub fn leaf(env: ParamsetEnv, e: Ast.ExprId) constfold.Error!?constfold.Const {
         const ex = &env.self.ctx.file.exprs;
         if (ex.tag(e) != .ident) return null;
         for (env.ps.params, 0..) |p, i| if (p.name == ex.strOf(e)) return env.value(i);
@@ -157,8 +157,8 @@ pub fn checkRanges(self: *Flatten) design.Error!void {
         const env: ParamsetEnv = .{ .self = self, .ps = ps, .bindings = bindings, .reads = null };
         for (ps.params) |p| for (p.ranges) |r| {
             if (r.strings != null or r.hi == .none) continue; // string set / single value
-            const lo = constfold.fold(self.ctx.file, r.lo, env) orelse continue;
-            const hi = constfold.fold(self.ctx.file, r.hi, env) orelse continue;
+            const lo = (try constfold.fold(self.ctx.arena, self.ctx.file, r.lo, env)) orelse continue;
+            const hi = (try constfold.fold(self.ctx.arena, self.ctx.file, r.hi, env)) orelse continue;
             if (lo == .str or hi == .str or lo.asReal() < hi.asReal()) continue;
             try self.err(p.main_tok, .E0347, "`{s}` of paramset `{s}`: {s} bounds {d} and {d} are not in increasing order", .{
                 self.ctx.file.str(p.name), self.ctx.file.str(ps.name), @tagName(r.kind), lo.asReal(), hi.asReal(),
@@ -261,7 +261,7 @@ fn paramsetAdmits(self: *Flatten, inst: *const Ast.Instance, ps: *const Ast.Para
     for (bindings, 0..) |*b, i| b.* = try override.parameterBinding(self, inst, ps.params, ps.aliasparams, i, path, false);
     const env: ParamsetEnv = .{ .self = self, .ps = ps, .bindings = bindings, .reads = reads };
     for (ps.params, 0..) |p, i| {
-        if (p.ranges.len != 0 and !inRanges(self, env.value(i), p.ranges, env)) return false;
+        if (p.ranges.len != 0 and !try inRanges(self, try env.value(i), p.ranges, env)) return false;
     }
     // Criterion 4, both connection spellings. A mixed or malformed list is
     // E0906 after selection (`checkConnectionShape`).
@@ -299,7 +299,7 @@ fn exposes(self: *Flatten, ps: *const Ast.ParamsetDecl, name: []const u8) bool {
 /// ponytail: a value or a bound this cannot fold counts as admissible, so a
 /// missing folder never becomes a selection error; `Lower` still judges the
 /// value it ends up with (E0361).
-fn inRanges(self: *Flatten, value: ?constfold.Const, ranges: []const Ast.ValueRange, env: ParamsetEnv) bool {
+fn inRanges(self: *Flatten, value: ?constfold.Const, ranges: []const Ast.ValueRange, env: ParamsetEnv) std.mem.Allocator.Error!bool {
     if (ranges.len == 0) return true;
     // §3.4.2: "Valid values of string parameters are indicated differently.
     // The `from` keyword may be used with a list of valid string values, or
@@ -314,8 +314,8 @@ fn inRanges(self: *Flatten, value: ?constfold.Const, ranges: []const Ast.ValueRa
     var in_from = false;
     for (ranges) |r| {
         if (r.strings != null) continue;
-        const lo = (constfold.fold(self.ctx.file, r.lo, env) orelse return true).asReal();
-        const hi = if (r.hi == .none) lo else (constfold.fold(self.ctx.file, r.hi, env) orelse return true).asReal();
+        const lo = ((try constfold.fold(self.ctx.arena, self.ctx.file, r.lo, env)) orelse return true).asReal();
+        const hi = if (r.hi == .none) lo else ((try constfold.fold(self.ctx.arena, self.ctx.file, r.hi, env)) orelse return true).asReal();
         const above = if (r.lo_inclusive) v >= lo else v > lo;
         const below = if (r.hi_inclusive) v <= hi else v < hi;
         switch (r.kind) {

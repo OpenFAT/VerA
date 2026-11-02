@@ -187,7 +187,7 @@ pub fn nodeOf(self: *Lower, e: Ast.ExprId) Oom!NodeId {
             // §5.5.2 "The index must be a constant expression, though it may
             // include genvar variables"; `tryUnrollFor` binds the genvar in
             // `consts` for each unrolled copy.
-            const c = lower_constfold.constEval(self, ex.rhs(e)) orelse {
+            const c = (try lower_constfold.constEval(self, ex.rhs(e))) orelse {
                 try self.err(self.file.exprs.mainTok(e), .E0352, "index into `{s}` is not a constant expression", .{name});
                 return ground;
             };
@@ -244,11 +244,11 @@ pub fn internNodeElem(self: *Lower, base: []const u8, i: i64) Oom!NodeId {
 /// expressions (`electrical [0:4-1] in;`, §6.5.2.2). Returns null after a diagnostic.
 pub fn foldDim(self: *Lower, d: Ast.Dim, tok: u32) Oom!?VecRange {
     assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
-    const msb = lower_constfold.shapeEval(self, d.msb) orelse {
+    const msb = (try lower_constfold.shapeEval(self, d.msb)) orelse {
         try self.err(tok, .E0352, "the msb of the range is not a constant expression", .{});
         return null;
     };
-    const lsb = lower_constfold.shapeEval(self, d.lsb) orelse {
+    const lsb = (try lower_constfold.shapeEval(self, d.lsb)) orelse {
         try self.err(tok, .E0352, "the lsb of the range is not a constant expression", .{});
         return null;
     };
@@ -313,8 +313,8 @@ pub fn vecTerminal(self: *Lower, e: Ast.ExprId, tok: u32) Oom!?VecTerm {
     };
     // §4.2.1.1: a bound that rounds to no integer (NaN, an infinity, past
     // i64) is no bound, as one that does not fold is not.
-    const a: ?i64 = if (lower_constfold.constEval(self, ex.lhs(sel))) |c| c.asIntExact() else null;
-    const b: ?i64 = if (lower_constfold.constEval(self, ex.rhs(sel))) |c| c.asIntExact() else null;
+    const a: ?i64 = if (try lower_constfold.constEval(self, ex.lhs(sel))) |c| c.asIntExact() else null;
+    const b: ?i64 = if (try lower_constfold.constEval(self, ex.rhs(sel))) |c| c.asIntExact() else null;
     if (a == null or b == null) {
         try self.err(tok, .E0352, "the part-select of `{s}` has a bound that is not a constant integer", .{name});
         return null;

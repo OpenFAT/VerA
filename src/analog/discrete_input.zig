@@ -205,9 +205,9 @@ pub fn declareDiscreteInputs(self: *Lower, module: *const Ast.ModuleDecl) Oom!vo
         if (!real) for (module.vars) |v| {
             if (v.name != t.name or v.storage != .reg or v.dims.len != 0) continue;
             const range = v.packed_range orelse break;
-            const width = lower_shape.packedShapeWidth(self, range) orelse break;
-            const m = lower_constfold.constEval(self, range.msb) orelse break;
-            const l = lower_constfold.constEval(self, range.lsb) orelse break;
+            const width = (try lower_shape.packedShapeWidth(self, range)) orelse break;
+            const m = (try lower_constfold.constEval(self, range.msb)) orelse break;
+            const l = (try lower_constfold.constEval(self, range.lsb)) orelse break;
             const right = l.asIntExact() orelse 0;
             try self.reg_ranges.put(self.arena, name, .{ .right = right, .asc = (m.asIntExact() orelse 0) < right, .width = width, .signed = v.is_signed });
             if (width <= 32) break;

@@ -35,7 +35,7 @@ pub const Aliases = std.EnumArray(Kind, ?u32);
 pub fn compose(self: Kind, file: *Ast.SourceFile, arena: std.mem.Allocator, parent: Ast.ExprId, value: Ast.ExprId, tok: u32) std.mem.Allocator.Error!Ast.ExprId {
     std.debug.assert(value != .none);
     const x = &file.exprs;
-    const real_value = if (constfold.fold(file, value, constfold.literal_env)) |v|
+    const real_value = if (try constfold.fold(arena, file, value, constfold.literal_env)) |v|
         if (v == .str) value else try x.addReal(arena, tok, v.asReal())
     else
         try binary(file, arena, .add, value, try x.addReal(arena, tok, 0), tok);

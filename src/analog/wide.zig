@@ -546,8 +546,8 @@ fn selectType(b: *Build, e: Ast.ExprId, name: []const u8) Oom!T {
     }
     const ranged = ex.tag(sub) == .range;
     const hi_e, const lo_e = if (ranged) .{ ex.lhs(sub), ex.rhs(sub) } else .{ sub, sub };
-    const hi = lower_expr_select.selectBound(l, hi_e);
-    const lo = lower_expr_select.selectBound(l, lo_e);
+    const hi = try lower_expr_select.selectBound(l, hi_e);
+    const lo = try lower_expr_select.selectBound(l, lo_e);
     if (hi == null or lo == null) {
         try b.fail(sub, "a select of `{s}` needs constant bounds", .{name});
         return .{ .w = 1 };

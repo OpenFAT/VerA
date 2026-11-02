@@ -75,7 +75,7 @@ pub fn lowerExpr(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 pub fn lowerClog2Arg(self: *Lower, e: Ast.ExprId, parent: ?constfold.IntContext) Oom!TypedValue {
     assert(e == .none or self.exprValid(e));
     if (e == .none) return poison;
-    const plan = lower_constfold.clog2Plan(self, e, parent);
+    const plan = try lower_constfold.clog2Plan(self, e, parent);
     if (plan) |p| if (!p.supported) {
         var width = p.from_width;
         for (p.operands) |operand| if (operand) |c| {

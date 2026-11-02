@@ -25,11 +25,12 @@
 //! - `pub const clog2Width = size.clog2Width`
 //! - `pub const clog2Signed = size.clog2Signed`
 //! - `pub const intPlan = size.intPlan`
+//! - `pub const Error = size.Error`
 //! - `pub fn parameterValue(ty: Ast.Type, value: Const) Const`
 //! - `pub fn parameterCardValue(ty: Ast.Type, declared: ?Const, value: f64) Const`
 //! - `pub fn firstStateRead(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, vars: []const Ast.VarDecl) std.mem.Allocator.Error!?[]const u8`
-//! - `pub fn fold(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const`
-//! - `pub fn foldSized(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const`
+//! - `pub fn fold(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?Const`
+//! - `pub fn foldSized(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?Const`
 //! - `pub const literal_env: LiteralEnv = .`
 //! - the `env` interface `fold` reads, which the private `LiteralEnv` and
 //!   `TestEnv` implement: `leaf`, `signed`, `width`
@@ -74,6 +75,8 @@ pub const clog2Width = size.clog2Width;
 pub const clog2Signed = size.clog2Signed;
 
 pub const intPlan = size.intPlan;
+
+pub const Error = size.Error;
 
 /// The `env` that knows nothing: `fold(file, e, literal_env)` folds literals
 /// and the operators over them, and declines an identifier and `>>>`.
@@ -227,24 +230,24 @@ pub fn firstStateRead(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: As
 /// operators, a lazy `?:`, and §4.3's math functions. `&&` and `||` fold both
 /// operands here (`foldSized` short-circuits), so `0 && 1/0` declines.
 ///
-/// `env` answers what the structure cannot, as three methods:
+/// `env` answers what the structure cannot, as three methods, each of
+/// which may also fail with `Error`:
 ///   leaf(e) ?Const     any tag this walk does not fold itself (an identifier)
 ///   signed(e) ?bool    an operand's signedness (`>>>`, §4.2.9 comparisons)
 ///   width(e) ?u32      a name's bit length (§4.2.9 comparisons)
 /// `literal_env` answers none of them: a fold over literals only.
-/// Out of memory for its pending operators, it answers null, as for an
-/// expression that is not constant. Asserts that `e` is `.none` or a row of
-/// `file`.
-pub fn fold(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const {
+/// The operators it has entered wait on a stack from `gpa`, freed before
+/// return. Asserts that `e` is `.none` or a row of `file`.
+pub fn fold(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?Const {
     assert(e == .none or @backingInt(e) < file.exprs.len());
-    return foldContext(file, e, env, false, null);
+    return foldContext(gpa, file, e, env, false, null);
 }
 
 /// IEEE §§5.4–5.5: a system-function operand is self-determined, but its
 /// type and size propagate into its context-dependent subexpressions.
-pub fn foldSized(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const {
+pub fn foldSized(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?Const {
     assert(e == .none or @backingInt(e) < file.exprs.len());
-    return foldContext(file, e, env, true, null);
+    return foldContext(gpa, file, e, env, true, null);
 }
 
 // ---- private ----
@@ -267,11 +270,11 @@ fn simStateName(n: []const u8) bool {
     return std.mem.startsWith(u8, n, "$dist_") or std.mem.startsWith(u8, n, "$rdist_");
 }
 
-fn foldContext(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, sized: bool, parent: ?IntContext) ?Const {
+fn foldContext(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, sized: bool, parent: ?IntContext) Error!?Const {
     if (!sized) assert(parent == null);
     const ex = &file.exprs;
     var in_place: [frames_in_place]Frame = undefined;
-    var frames: Pending(Frame) = .init(&in_place);
+    var frames: Pending(Frame) = .init(&in_place, gpa);
     defer frames.deinit();
     // The row folded next: the root, then each operand an operator asks for.
     var at: Operand = .{ .e = e, .sized = sized, .parent = parent };
@@ -279,7 +282,7 @@ fn foldContext(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, sized: 
         // Every frame is a distinct ancestor of `at`, in an acyclic store.
         assert(frames.items().len < ex.len());
         if (at.e == .none) return null;
-        const plan: ?IntPlan = if (at.sized) intPlan(file, at.e, env, at.parent) else null;
+        const plan: ?IntPlan = if (at.sized) try intPlan(gpa, file, at.e, env, at.parent) else null;
         if (plan) |p| if (!p.supported) return null;
         const first: ?Operand = switch (ex.tag(at.e)) {
             .unary, .binary, .ternary => .{ .e = ex.lhs(at.e), .sized = at.sized, .parent = if (plan) |p| p.operands[0] else null },
@@ -294,11 +297,11 @@ fn foldContext(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, sized: 
             else => null, // else: a leaf, folded whole below
         };
         if (first) |o| {
-            frames.push(.{ .e = at.e, .plan = plan, .sized = at.sized }) catch return null;
+            try frames.push(.{ .e = at.e, .plan = plan, .sized = at.sized });
             at = o;
             continue :descend;
         }
-        var value = resized(plan, leafValue(file, at.e, env) orelse return null);
+        var value = resized(plan, (try leafValue(file, at.e, env)) orelse return null);
         // Hand `value` up until an operator asks for another operand.
         while (frames.items().len > 0) {
             const f = &frames.items()[frames.items().len - 1];
@@ -309,7 +312,7 @@ fn foldContext(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, sized: 
                 at = o;
                 continue :descend;
             }
-            value = resized(f.plan, apply(file, env, f.*) orelse return null);
+            value = resized(f.plan, (try apply(gpa, file, env, f.*)) orelse return null);
             _ = frames.pop();
         }
         return value;
@@ -317,7 +320,7 @@ fn foldContext(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, sized: 
 }
 
 /// A leaf's value: a literal's, or `env.leaf`'s for every other tag.
-fn leafValue(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?Const {
+fn leafValue(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?Const {
     const ex = &file.exprs;
     return switch (ex.tag(e)) {
         .int_literal => .{ .int = ex.intValue(e) },
@@ -370,7 +373,7 @@ fn nextOperand(file: *const Ast.SourceFile, f: Frame) ?Operand {
 }
 
 /// Frame `f`'s value from its folded operands, before its own `resize`.
-fn apply(file: *const Ast.SourceFile, env: anytype, f: Frame) ?Const {
+fn apply(gpa: std.mem.Allocator, file: *const Ast.SourceFile, env: anytype, f: Frame) Error!?Const {
     const ex = &file.exprs;
     assert(f.done >= 1);
     const ctx = if (f.plan) |p| p.operands else [_]?IntContext{ null, null, null };
@@ -397,11 +400,11 @@ fn apply(file: *const Ast.SourceFile, env: anytype, f: Frame) ?Const {
                     a.int ^= std.math.minInt(i64);
                     b.int ^= std.math.minInt(i64);
                 };
-            } else if (compare and a == .int and b == .int) if (unsignedCompare(file, ex.lhs(f.e), ex.rhs(f.e), env)) |u| {
+            } else if (compare and a == .int and b == .int) if (try unsignedCompare(gpa, file, ex.lhs(f.e), ex.rhs(f.e), env)) |u| {
                 a.int = u.extend(.lhs, a.int);
                 b.int = u.extend(.rhs, b.int);
             };
-            const shift_signed = if (op != .ashr) null else if (f.sized and ctx[0] != null) ctx[0].?.signed else env.signed(ex.lhs(f.e));
+            const shift_signed = if (op != .ashr) null else if (f.sized and ctx[0] != null) ctx[0].?.signed else try size.envSigned(env, ex.lhs(f.e));
             return binary(op, a, b, shift_signed);
         },
         .ternary => {
@@ -474,7 +477,7 @@ fn testParse(arena: std.mem.Allocator, decls: []const u8, src: []const u8) !Test
 fn testFold(arena: std.mem.Allocator, src: []const u8, comptime sized: bool) !?Const {
     const t = try testParse(arena, "", src);
     const env: TestEnv = .{ .file = &t.file };
-    return if (sized) foldSized(&t.file, t.e, env) else fold(&t.file, t.e, env);
+    return if (sized) try foldSized(testing.allocator, &t.file, t.e, env) else try fold(testing.allocator, &t.file, t.e, env);
 }
 
 /// `open` `n` times, `leaf`, then `close` `n` times.
@@ -566,9 +569,9 @@ test "fold over parsed constant expressions: literals, operators, a lazy ?:, §4
     try expectInt(8, try testFold(a, "-4'sb1000", false));
     // `literal_env` folds literals and declines a name.
     const t = try testParse(a, "", "a + 1");
-    try testing.expect(fold(&t.file, t.e, literal_env) == null);
+    try testing.expect(try fold(testing.allocator, &t.file, t.e, literal_env) == null);
     const lit = try testParse(a, "", "2 * 3");
-    try expectInt(6, fold(&lit.file, lit.e, literal_env));
+    try expectInt(6, try fold(testing.allocator, &lit.file, lit.e, literal_env));
 }
 
 test "IEEE 1364-2005 §5.1.11 reductions fold over a literal at its size, or an unsized one's width" {
@@ -664,8 +667,8 @@ test "operandWidth, clog2Width and clog2Signed size an expression as §2.6.1 and
     }) |c| {
         const t = try testParse(a, "", c[0]);
         const env: TestEnv = .{ .file = &t.file };
-        try testing.expectEqual(c[1], operandWidth(&t.file, t.e, env));
-        try testing.expectEqual(c[2], clog2Width(&t.file, t.e, env));
+        try testing.expectEqual(c[1], try operandWidth(testing.allocator, &t.file, t.e, env));
+        try testing.expectEqual(c[2], try clog2Width(testing.allocator, &t.file, t.e, env));
     }
     const S = struct { []const u8, ?bool };
     for ([_]S{
@@ -681,7 +684,7 @@ test "operandWidth, clog2Width and clog2Signed size an expression as §2.6.1 and
         .{ "1.5", null },
     }) |c| {
         const t = try testParse(a, "", c[0]);
-        try testing.expectEqual(c[1], clog2Signed(&t.file, t.e, TestEnv{ .file = &t.file }));
+        try testing.expectEqual(c[1], try clog2Signed(testing.allocator, &t.file, t.e, TestEnv{ .file = &t.file }));
     }
 }
 
@@ -734,27 +737,62 @@ test "every walk holds 100,000 levels on a 1 MiB thread: depth costs heap, not n
         }
         fn walks(t: []const TestExpr) !void {
             const ors_env: TestEnv = .{ .file = &t[0].file };
-            try expectInt(1, fold(&t[0].file, t[0].e, ors_env));
-            try testing.expectEqual(@as(?u32, 40), operandWidth(&t[0].file, t[0].e, ors_env));
-            try testing.expectEqual(@as(?u32, 40), clog2Width(&t[0].file, t[0].e, ors_env));
-            try testing.expectEqual(@as(?bool, false), clog2Signed(&t[0].file, t[0].e, ors_env));
+            try expectInt(1, try fold(testing.allocator, &t[0].file, t[0].e, ors_env));
+            try testing.expectEqual(@as(?u32, 40), try operandWidth(testing.allocator, &t[0].file, t[0].e, ors_env));
+            try testing.expectEqual(@as(?u32, 40), try clog2Width(testing.allocator, &t[0].file, t[0].e, ors_env));
+            try testing.expectEqual(@as(?bool, false), try clog2Signed(testing.allocator, &t[0].file, t[0].e, ors_env));
             try testing.expectEqual(@as(?[]const u8, null), try firstStateRead(testing.allocator, &t[0].file, t[0].e, &.{}));
             // An even count of negations.
-            try expectInt(1, fold(&t[1].file, t[1].e, literal_env));
-            try testing.expectEqual(@as(?bool, true), clog2Signed(&t[1].file, t[1].e, TestEnv{ .file = &t[1].file }));
-            try expectInt(7, fold(&t[2].file, t[2].e, literal_env));
-            try testing.expectEqual(@as(?u32, 32), clog2Width(&t[2].file, t[2].e, TestEnv{ .file = &t[2].file }));
-            try expectInt(5, fold(&t[3].file, t[3].e, literal_env));
-            try expectInt(3, fold(&t[4].file, t[4].e, literal_env));
-            try expectInt(n + 1, fold(&t[5].file, t[5].e, literal_env));
+            try expectInt(1, try fold(testing.allocator, &t[1].file, t[1].e, literal_env));
+            try testing.expectEqual(@as(?bool, true), try clog2Signed(testing.allocator, &t[1].file, t[1].e, TestEnv{ .file = &t[1].file }));
+            try expectInt(7, try fold(testing.allocator, &t[2].file, t[2].e, literal_env));
+            try testing.expectEqual(@as(?u32, 32), try clog2Width(testing.allocator, &t[2].file, t[2].e, TestEnv{ .file = &t[2].file }));
+            try expectInt(5, try fold(testing.allocator, &t[3].file, t[3].e, literal_env));
+            try expectInt(3, try fold(testing.allocator, &t[4].file, t[4].e, literal_env));
+            try expectInt(n + 1, try fold(testing.allocator, &t[5].file, t[5].e, literal_env));
             try testing.expectEqualStrings("$abstime", (try firstStateRead(testing.allocator, &t[6].file, t[6].e, &.{})).?);
             // 5001 four-bit ones: 5001 mod 16 at four bits, 5001 on the carrier.
-            try expectInt(9, foldSized(&t[7].file, t[7].e, TestEnv{ .file = &t[7].file }));
-            try expectInt(5001, fold(&t[7].file, t[7].e, literal_env));
+            try expectInt(9, try foldSized(testing.allocator, &t[7].file, t[7].e, TestEnv{ .file = &t[7].file }));
+            try expectInt(5001, try fold(testing.allocator, &t[7].file, t[7].e, literal_env));
         }
     };
     var result: anyerror!void = {};
     const thread = try std.Thread.spawn(.{ .stack_size = 1 << 20 }, Run.on, .{ &[_]TestExpr{ ors, negs, elses, thens, calls, sums, state, sized }, &result });
     thread.join();
     try result;
+}
+
+test "every walk out of memory is error.OutOfMemory, never the null of an unknown answer" {
+    // Oracle: the allocator's own failure. A null here would read as "not
+    // constant" or "unknown" and change the caller's verdict with no error.
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // 1,000 levels spill every walk's in-place stack (`Pending`), so each
+    // takes at least two allocations from the failing allocator.
+    const chain = try nested(a, "", "40'd1", " | 1", 1000);
+    // `(<chain>) < u`: an unsigned operand, so `unsignedCompare` sizes the chain.
+    const cmp = try testParse(a, "", try std.mem.concat(a, u8, &.{ "(", chain, ") < u" }));
+    const Walk = enum { fold, fold_sized, operand_width, clog2_width, clog2_signed, int_plan, unsigned_compare, first_state_read };
+    for (std.enums.values(Walk)) |walk| for ([_]usize{ 0, 1 }) |fail_index| {
+        var failing: std.testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+        const gpa = failing.allocator();
+        const f = &cmp.file;
+        const e = f.exprs.lhs(cmp.e);
+        const env: TestEnv = .{ .file = f };
+        const held = switch (walk) {
+            .fold => testing.expectError(error.OutOfMemory, fold(gpa, f, e, env)),
+            .fold_sized => testing.expectError(error.OutOfMemory, foldSized(gpa, f, e, env)),
+            .operand_width => testing.expectError(error.OutOfMemory, operandWidth(gpa, f, e, env)),
+            .clog2_width => testing.expectError(error.OutOfMemory, clog2Width(gpa, f, e, env)),
+            .clog2_signed => testing.expectError(error.OutOfMemory, clog2Signed(gpa, f, e, env)),
+            .int_plan => testing.expectError(error.OutOfMemory, intPlan(gpa, f, e, env, null)),
+            .unsigned_compare => testing.expectError(error.OutOfMemory, unsignedCompare(gpa, f, e, f.exprs.rhs(cmp.e), env)),
+            .first_state_read => testing.expectError(error.OutOfMemory, firstStateRead(gpa, f, e, &.{})),
+        };
+        held catch |err| {
+            std.debug.print("{t} at fail_index {d}: not error.OutOfMemory\n", .{ walk, fail_index });
+            return err;
+        };
+    };
 }

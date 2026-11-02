@@ -244,7 +244,7 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         try vals.append(self.arena, if (tv.ty == .string) tv.v else try self.toReal(tv));
     }
     if (std.mem.eql(u8, name, "ddt"))
-        return .{ .v = try opDdt(self, ex.mainTok(e), vals.items[0], opAbstol(self, args, 1), try lower_reactive.opSiteLte(self, e)), .ty = .real };
+        return .{ .v = try opDdt(self, ex.mainTok(e), vals.items[0], try opAbstol(self, args, 1), try lower_reactive.opSiteLte(self, e)), .ty = .real };
     if (std.mem.eql(u8, name, "idt"))
         return .{ .v = try opIdt(self, e, vals.items), .ty = .real };
     const callee = if (std.mem.eql(u8, name, "absdelay") and try absdelayQuad(self, e)) "absdelay$quad" else name;
@@ -268,7 +268,7 @@ pub fn opDdt(self: *Lower, tok: u32, x: Mir.Value, abstol: f64, lte: bool) Oom!M
 /// the emitted kernel; otherwise reports E0524 and returns false.
 pub fn interpQuad(self: *Lower, a: Ast.LteAttr) Oom!bool {
     if (a.value == .none) return false;
-    const c = lower_constfold.foldExpr(self, a.value, false) orelse {
+    const c = (try lower_constfold.foldExpr(self, a.value, false)) orelse {
         try self.err(a.main_tok, .E0524, "the value depends on the model card", .{});
         return false;
     };
@@ -294,7 +294,7 @@ pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Va
         try self.err(self.mir.cur_tok, .E0505, "`{s}()`", .{name});
         return null;
     }
-    if (natureAbstol(self, e)) |t| return try self.mir.addFloatConst(self.arena, t);
+    if (try natureAbstol(self, e)) |t| return try self.mir.addFloatConst(self.arena, t);
     // A `.banned` §5.5.3 reference has no value and gets its E0359 here.
     const tv = try lower_expr.lowerExpr(self, e);
     if (tv.ty != .string and !try lower_static.isStaticValue(self, tv.v)) {
@@ -307,7 +307,7 @@ pub fn lowerAbstolArg(self: *Lower, name: []const u8, e: Ast.ExprId) Oom!?Mir.Va
 /// Resolves `e` as `net.potential.attr` or `net.flow.attr` through the net's
 /// discipline, or returns null when it is a §6.8 hierarchical name instead.
 /// `abstol` comes from `DisciplineInfo`, where a §3.6.2.3 discipline override is applied.
-pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
+pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) std.mem.Allocator.Error!?NatureRef {
     assert(e == .none or self.exprValid(e));
     const parts = self.file.exprs.nameParts(e);
     if (parts.len != 3) return null;
@@ -338,7 +338,7 @@ pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
     const nat = if (is_potential) d.potential else d.flow;
     if (nat == .none) return null;
     const v = self.file.natureAttrExpr(nat, attr) orelse return .{ .banned = attr };
-    return .{ .value = lower_constfold.constEval(self, v) orelse return .{ .banned = attr } };
+    return .{ .value = (try lower_constfold.constEval(self, v)) orelse return .{ .banned = attr } };
 }
 
 /// Appends a vector argument to `out` as `<count>, e0, e1, ...`: a §4.5.11/§4.5.12
@@ -387,7 +387,7 @@ pub fn appendVectorArg(self: *Lower, out: *std.ArrayList(Mir.Value), a: Ast.Expr
             // caller's `<count>, elements` slice stays well formed.
             var ends: [2]i64 = undefined;
             for ([2]Ast.ExprId{ ex.lhs(sel), ex.rhs(sel) }, &ends) |b, *end| {
-                const c = lower_constfold.shapeEval(self, b) orelse {
+                const c = (try lower_constfold.shapeEval(self, b)) orelse {
                     try self.err(ex.mainTok(b), .E0308, "in the part select of `{s}`", .{name});
                     try out.append(self.arena, try self.mir.addIntConst(self.arena, 0));
                     return true;
@@ -428,7 +428,7 @@ fn opIdt(self: *Lower, e: Ast.ExprId, vals: []const Mir.Value) Oom!Mir.Value {
     // VCO's phase drifts with the rounding of |s|. Upgrade: a host that re-bases
     // the unknown on each wrap.
     const x = vals[0];
-    const s = try lower_node.opStateNode(self, "idt", opAbstol(self, self.file.exprs.args(e), abstolSlot("idt").?));
+    const s = try lower_node.opStateNode(self, "idt", try opAbstol(self, self.file.exprs.args(e), abstolSlot("idt").?));
     const v = try lower_node.probe(self, s);
     // An argument that reads no unknown has no loop to force it, and the
     // undefined DC output takes the 0 an ic of 0 gives, which keeps the
@@ -483,10 +483,10 @@ fn readsUnknown(self: *Lower, v: Mir.Value) Oom!bool {
 /// The tolerance of an operator's unknown: its §4.5.3/§4.5.4 abstol or nature
 /// argument in `slot`, folded at the parameters' declared defaults, else the
 /// 1e-6 an undisciplined net gets.
-fn opAbstol(self: *Lower, args: []const Ast.ExprId, slot: usize) f64 {
+fn opAbstol(self: *Lower, args: []const Ast.ExprId, slot: usize) std.mem.Allocator.Error!f64 {
     if (slot >= args.len or args[slot] == .none) return 1e-6;
-    if (natureAbstol(self, args[slot])) |t| return t;
-    const c = lower_constfold.constEval(self, args[slot]) orelse return 1e-6;
+    if (try natureAbstol(self, args[slot])) |t| return t;
+    const c = (try lower_constfold.constEval(self, args[slot])) orelse return 1e-6;
     return if (c == .str) 1e-6 else c.asReal();
 }
 
@@ -535,7 +535,7 @@ fn abstolSlot(name: []const u8) ?usize {
 
 /// The abstol a bare `nature_identifier` or `net.potential.abstol` in a tolerance
 /// slot stands for, or null. A variable or parameter with the same name wins (§2.8).
-fn natureAbstol(self: *Lower, e: Ast.ExprId) ?f64 {
+fn natureAbstol(self: *Lower, e: Ast.ExprId) std.mem.Allocator.Error!?f64 {
     assert(e != .none); // `lowerAbstolArg` refuses an omitted slot
     assert(self.exprValid(e));
     const ex = &self.file.exprs;
@@ -544,7 +544,7 @@ fn natureAbstol(self: *Lower, e: Ast.ExprId) ?f64 {
     if (ex.tag(e) == .hier_ident) {
         // A `.banned` attribute is diagnosed by `lowerExpr`, which every caller
         // falls through to; returning null here is what routes it there.
-        const r = natureAttrRef(self, e) orelse return null;
+        const r = (try natureAttrRef(self, e)) orelse return null;
         return switch (r) {
             .value => |c| switch (c) {
                 .real, .int => c.asReal(),
@@ -562,7 +562,7 @@ fn natureAbstol(self: *Lower, e: Ast.ExprId) ?f64 {
         if (n.name != id) continue;
         // Reached only for a nature `checkNatureTable` already refused (§3.6.1.2
         // makes `abstol` mandatory); answering "a nature" avoids a second E0314.
-        return lower_discipline.natureOf(self, id).abstol orelse 0;
+        return (try lower_discipline.natureOf(self, id)).abstol orelse 0;
     }
     return null;
 }
@@ -621,7 +621,7 @@ fn checkFilterArgBounds(self: *Lower, name: []const u8, args: []const Ast.ExprId
 
     for (rules) |r| {
         if (r.i >= args.len or args[r.i] == .none) continue;
-        const c = lower_constfold.constEval(self, args[r.i]) orelse continue;
+        const c = (try lower_constfold.constEval(self, args[r.i])) orelse continue;
         if (c == .str) continue; // a type error, not a range one
         const v = c.asReal();
         if (r.want.holds(v)) continue;
@@ -631,7 +631,7 @@ fn checkFilterArgBounds(self: *Lower, name: []const u8, args: []const Ast.ExprId
     // §4.5.10: "The optional direction indicator shall evaluate to an integer
     // expression +1, -1, or 0." An enumeration, not a range.
     if (std.mem.eql(u8, name, "last_crossing") and args.len > 1 and args[1] != .none) {
-        if (lower_constfold.constEval(self, args[1])) |c| {
+        if (try lower_constfold.constEval(self, args[1])) |c| {
             const v = c.asReal();
             if (c != .str and (v != @round(v) or @abs(v) > 1))
                 try self.err(self.file.exprs.mainTok(args[1]), .E0516, "`last_crossing()` direction indicator shall be +1, -1 or 0, got {d}", .{v});

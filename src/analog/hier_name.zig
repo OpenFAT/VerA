@@ -226,7 +226,7 @@ pub fn checkAliasCall(self: *Lower, e: Ast.ExprId, name: []const u8, args: []con
     // (string literal or string parameter) containing a hierarchical reference
     // to a continuous node." `constEval` admits exactly those two spellings.
     const target = blk: {
-        if (args.len > 1) if (lower_constfold.constEval(self, args[1])) |c| switch (c) {
+        if (args.len > 1) if (try lower_constfold.constEval(self, args[1])) |c| switch (c) {
             .str => |s| break :blk s,
             else => {},
         };
@@ -270,8 +270,8 @@ pub fn lowerSimprobe(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         try self.err(self.file.exprs.mainTok(e), .E0809, "`$simprobe` takes an instance name and a parameter name", .{});
         return poison;
     }
-    const inst = lower_sysfunc_args.constStrArg(self, args[0]);
-    const param = lower_sysfunc_args.constStrArg(self, args[1]);
+    const inst = try lower_sysfunc_args.constStrArg(self, args[0]);
+    const param = try lower_sysfunc_args.constStrArg(self, args[1]);
     if (inst == null or param == null) return lowerSimprobeRuntime(self, e, inst, param);
     // §9.16: "the simulator will look for an instance called inst_name in
     // the parent of the current instance i.e. a sibling of the instance

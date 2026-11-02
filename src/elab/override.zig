@@ -205,8 +205,8 @@ pub fn parameterBinding(self: *Flatten, inst: *const Ast.Instance, params: []con
 /// every operator over them, through the shared constant kernel, so `1/2` is
 /// §4.2.4's integer division as in lowering. This literal-only helper checks
 /// §9.18 domains without freezing host inputs; selection uses ParamsetEnv.
-pub fn constReal(self: *Flatten, e: Ast.ExprId) ?f64 {
-    const c = constfold.fold(self.ctx.file, e, constfold.literal_env) orelse return null;
+pub fn constReal(self: *Flatten, e: Ast.ExprId) std.mem.Allocator.Error!?f64 {
+    const c = (try constfold.fold(self.ctx.arena, self.ctx.file, e, constfold.literal_env)) orelse return null;
     return if (c == .str) null else c.asReal();
 }
 
@@ -220,7 +220,7 @@ pub fn checkSystemParam(self: *Flatten, kind: hier_param.Kind, tok: u32, e: Ast.
         try self.err(tok, .E0363, "`{s}` override reads `{s}`", .{ kind.name(), what });
         return true;
     }
-    const v = constReal(self, e) orelse {
+    const v = (try constReal(self, e)) orelse {
         if (kind.constrained()) try self.out.system_checks.append(self.ctx.arena, .{
             .kind = kind,
             .value = e,

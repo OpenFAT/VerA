@@ -114,7 +114,7 @@ pub fn eventRef(self: *Lower, e: Ast.ExprId) Oom!?EventRef {
     var buf: [lower_shape.max_stack_dims]i64 = undefined;
     const idx = try lower_shape.subscriptBuf(self, &buf, bounds.len);
     const constant = for (chain.subs, idx) |s, *o| {
-        const c = lower_constfold.constEval(self, s) orelse break false;
+        const c = (try lower_constfold.constEval(self, s)) orelse break false;
         o.* = c.asIntExact() orelse break false;
     } else true;
     if (constant) {

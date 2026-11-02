@@ -71,7 +71,7 @@ pub fn lowerIndex(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
         // `foldExpr(.., false)`, not `constEval`: a §3.4 parameter is
         // overridable by the model card, so folding `a[n-1]` through `n`'s
         // default would bake one element into the device for every card.
-        if (lower_constfold.foldExpr(self, s, false)) |c| {
+        if (try lower_constfold.foldExpr(self, s, false)) |c| {
             // §4.2.1.1 converts a real subscript by rounding to the nearest
             // integer; an infinity, a NaN, or a magnitude past i64 has none, so
             // the subscript names no element: E0310, as for a constant
@@ -116,9 +116,9 @@ pub fn lowerIndex(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
 }
 
 /// A select bound: a constant the folder can make an integer of, or null.
-pub fn selectBound(self: *Lower, e: Ast.ExprId) ?i64 {
+pub fn selectBound(self: *Lower, e: Ast.ExprId) std.mem.Allocator.Error!?i64 {
     assert(e == .none or self.exprValid(e));
-    const c = lower_constfold.foldExpr(self, e, false) orelse return null;
+    const c = (try lower_constfold.foldExpr(self, e, false)) orelse return null;
     assert(e != .none); // `.none` folds to nothing
     return c.asIntExact();
 }
@@ -197,7 +197,7 @@ fn lowerRegSelect(self: *Lower, e: Ast.ExprId, name: []const u8, src: union(enum
         return poison;
     }
     const a: i64, const b: i64 = bounds: {
-        if (selectBound(self, hi_e)) |ka| if (selectBound(self, lo_e)) |kb| break :bounds .{ ka, kb };
+        if (try selectBound(self, hi_e)) |ka| if (try selectBound(self, lo_e)) |kb| break :bounds .{ ka, kb };
         try self.err(ex.mainTok(sub), .E0329, "a select of `{s}` read from the analog context needs constant bounds", .{name});
         return poison;
     };
@@ -280,7 +280,7 @@ fn discreteElem(self: *Lower, name: []const u8, lo: i64, hi: i64, sub: Ast.ExprI
             return l.param_values.items[pi];
         }
     };
-    if (lower_constfold.constEval(self, sub)) |c| if (c.asIntExact()) |k| {
+    if (try lower_constfold.constEval(self, sub)) |c| if (c.asIntExact()) |k| {
         if (k < lo or k > hi) return .{ .v = try self.mir.addIntConst(self.arena, 0), .ty = .integer };
         return .{ .v = try elem.read(self, name, k), .ty = .integer };
     };

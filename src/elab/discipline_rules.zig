@@ -180,7 +180,7 @@ fn naturesCompatible(file: *const Ast.SourceFile, a: Ast.StrId, b: Ast.StrId) bo
 }
 
 /// §3.6.1.2 a nature's `units` string, inherited (§3.6.1.1): what
-/// `natureOf(...).units` answers, without the `Lower` that `abstol` needs.
+/// `(try natureOf(...)).units` answers, without the `Lower` that `abstol` needs.
 fn unitsOf(file: *const Ast.SourceFile, name: Ast.StrId) ?[]const u8 {
     const v = file.natureAttrExpr(name, "units") orelse return null;
     if (file.exprs.tag(v) != .str_literal) return null;

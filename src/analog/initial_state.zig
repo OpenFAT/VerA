@@ -69,7 +69,7 @@ fn collectInitialStmt(self: *Lower, id: Ast.StmtId) Oom!void {
                 return;
             }
             const name = self.file.str(ex.strOf(a.target));
-            if (lower_constfold.constEval(self, a.value) == null) {
+            if ((try lower_constfold.constEval(self, a.value)) == null) {
                 var b = self.errWith(tok, .E0433);
                 b.msg("`{s}` is assigned a value that is not constant", .{name});
                 b.note(

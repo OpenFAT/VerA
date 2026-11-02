@@ -46,7 +46,7 @@ pub fn timepointOn(self: *Lower, a: Ast.LteAttr) Oom!bool {
     assert(a.value == .none or self.exprValid(a.value));
     assert(self.tp_cur == null); // `lowerStmt` asks only outside a cached statement
     if (a.value != .none) {
-        const c = lower_constfold.foldExpr(self, a.value, false) orelse {
+        const c = (try lower_constfold.foldExpr(self, a.value, false)) orelse {
             try self.err(a.main_tok, .E0529, "", .{});
             return false;
         };

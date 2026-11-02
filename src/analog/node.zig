@@ -414,7 +414,7 @@ fn collectNodeAbstol(self: *Lower, name: []const u8, abstol: f64) void {
 fn recordNodeset(self: *Lower, node: NodeId, e: Ast.ExprId, tok: u32, name: []const u8) Oom!void {
     assert(self.nodeValid(node));
     assert(e == .none or self.exprValid(e));
-    const c = lower_constfold.constEval(self, e) orelse {
+    const c = (try lower_constfold.constEval(self, e)) orelse {
         var b = self.errWith(tok, .E0365);
         b.msg("the initializer of `{s}` is not a constant expression", .{name});
         b.note("§3.6.3.2 gives it to the analog solver as a nodeset value for the potential of `{s}`, which is fixed before the solve starts", .{name});
