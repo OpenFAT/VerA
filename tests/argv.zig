@@ -41,8 +41,15 @@ const known: []const struct { row: []const u8, why: []const u8 } = &.{};
 /// units (CreateProcessW), the paths of vera and its input included.
 const big_len = if (builtin.os.tag == .windows) 24 * 1024 else 128 * 1024 - 1 - 64; // os: Windows' command-line limit
 
-/// A row that runs longer than this hangs.
-const timeout_s = 60;
+/// A row that runs longer than this hangs. It is a hang check, not a speed
+/// check: an `--emit-so` row compiles a device, and on a loaded machine (CI, or
+/// several worktrees building at once) that alone ran past a minute.
+const timeout_s = 600;
+
+/// The rows run at once: half the CPUs, at most 8, so the table does not
+/// oversubscribe the machine it shares (19 rows timed out at load 55 when it
+/// ran one per CPU).
+const hands_max = 8;
 
 /// The inputs a line runs on, written into the scratch dir. Null: no input.
 const inputs = [_]?struct { name: []const u8, text: []const u8, builds: bool }{
@@ -107,7 +114,7 @@ pub fn main(init: std.process.Init) !u8 {
     // The rows share nothing but the scratch dir's inputs, which none writes.
     var pool: Pool = .{ .arena = arena, .io = io, .dir = dir, .rows = table.items };
     var group: Io.Group = .init;
-    const hands = @max(1, std.Thread.getCpuCount() catch 1);
+    const hands = std.math.clamp((std.Thread.getCpuCount() catch 2) / 2, 1, hands_max);
     for (0..hands) |_| group.concurrent(io, Pool.work, .{&pool}) catch break;
     pool.work();
     try group.await(io);
