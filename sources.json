@@ -336,5 +336,30 @@
       "url": "https://github.com/OpenFAT/VerA/releases/download/v0.22.0/vera-v0.22.0-x86_64-linux-gnu.tar.gz"
     },
     "zig": "0.18.0-dev.349+d924f83bf"
+  },
+  "0.23.0": {
+    "aarch64-darwin": {
+      "sha256": "29ab460e65ed4de6bf8277fb68b01b6a281e48b59db497a4456f647cd6d5bda6",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.23.0/vera-v0.23.0-aarch64-macos.tar.gz"
+    },
+    "aarch64-linux": {
+      "sha256": "3bc595b74ceb6a8a7bac2bfcd07e7a6ba4a9268982788285d82cadc50d93c149",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.23.0/vera-v0.23.0-aarch64-linux-gnu.tar.gz"
+    },
+    "contract": {
+      "archive": true,
+      "sha256": "d72a9952a49ea705acccceada820778dfe6322a9e6a979d16a9858a62bc09aa0",
+      "url": "https://github.com/OpenFAT/VerA/archive/refs/tags/v0.23.0.tar.gz"
+    },
+    "date": "2026-11-02",
+    "x86_64-darwin": {
+      "sha256": "a851f2cda4a13917b143c4e8e30e8735f87149b1f43310154db9d98b88d67cd9",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.23.0/vera-v0.23.0-x86_64-macos.tar.gz"
+    },
+    "x86_64-linux": {
+      "sha256": "e3acbdccfddf320898257cee7b83a3ccc659542d20d9f6da4557a76bc589337a",
+      "url": "https://github.com/OpenFAT/VerA/releases/download/v0.23.0/vera-v0.23.0-x86_64-linux-gnu.tar.gz"
+    },
+    "zig": "0.18.0-dev.349+d924f83bf"
   }
 }
