@@ -10,7 +10,7 @@
 //! - `pub fn splitContribution(self: *Lower, rhs: Ast.ExprId) Oom!Split`
 //! - `pub fn addSite(self: *Lower, idx: u32, ps: PendingSite, neg: bool) Oom!void`
 //! - `pub fn opSiteLte(self: *Lower, e: Ast.ExprId) Oom!bool`
-//! - `pub fn stampOpRow(self: *Lower, tok: u32, s: u32, f: Mir.Value, q: Mir.Value, q_neg: bool, lte: bool) Oom!void`
+//! - `pub fn stampOpRow(self: *Lower, tok: u32, s: Lower.NodeId, f: Mir.Value, q: Mir.Value, q_neg: bool, lte: bool) Oom!void`
 //! - `pub fn lteValue(self: *Lower, a: Ast.LteAttr) Oom!bool`
 //! - `pub fn coeffIsConst(self: *const Lower, v: Mir.Value) bool`
 
@@ -74,7 +74,7 @@ pub fn addSite(self: *Lower, idx: u32, ps: PendingSite, neg: bool) Oom!void {
     try self.builder.writeVariable(p, self.cur, ps.charge);
     try self.site_places.append(self.arena, p);
     try self.out.charge_sites.append(self.arena, .{
-        .contrib = idx,
+        .contrib = @fromBackingInt(idx),
         .sign = if (ps.negate != neg) -1.0 else 1.0,
         .lte = ps.lte,
         .tok = ps.tok,
@@ -96,7 +96,7 @@ pub fn opSiteLte(self: *Lower, e: Ast.ExprId) Oom!bool {
 /// stamped with sign -1 when `q_neg`. The resistive half starts as V(s) and
 /// the site ASSIGNS it, so a card-conditional arm that is off leaves the row
 /// `s = 0`, not an empty one that makes the system singular.
-pub fn stampOpRow(self: *Lower, tok: u32, s: u32, f: Mir.Value, q: Mir.Value, q_neg: bool, lte: bool) Oom!void {
+pub fn stampOpRow(self: *Lower, tok: u32, s: Lower.NodeId, f: Mir.Value, q: Mir.Value, q_neg: bool, lte: bool) Oom!void {
     assert(self.valueValid(f));
     assert(self.valueValid(q));
     assert(self.blockValid(self.cur));

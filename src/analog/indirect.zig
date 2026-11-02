@@ -6,7 +6,7 @@
 //!
 //! Contents:
 //! - `pub fn lowerIndirect(self: *Lower, tok: u32, lhs: Ast.ExprId, probe_e: Ast.ExprId, eqn: Ast.ExprId) Oom!void`
-//! - `pub fn indirectOn(self: *const Lower, hi: u32, lo: u32) bool`
+//! - `pub fn indirectOn(self: *const Lower, hi: Lower.NodeId, lo: Lower.NodeId) bool`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -93,7 +93,7 @@ pub fn lowerIndirect(self: *Lower, tok: u32, lhs: Ast.ExprId, probe_e: Ast.ExprI
 
 /// Reports whether an indirect contribution (§5.6.7) already defines the
 /// unordered pair (`hi`, `lo`): §5.6.7.2 then refuses a `<+` on it.
-pub fn indirectOn(self: *const Lower, hi: u32, lo: u32) bool {
+pub fn indirectOn(self: *const Lower, hi: Lower.NodeId, lo: Lower.NodeId) bool {
     assert(self.nodeValid(hi));
     assert(self.nodeValid(lo));
     return self.contrib_state.indirect.contains(lower_source_check.pairKey(hi, lo));
@@ -148,7 +148,7 @@ test "lower: §5.6.7 indirect contribution is a nullor entry, one per statement"
     for (h.low.out.contributions.items) |c| {
         try std.testing.expectEqual(Lower.Kind.indirect, c.kind);
         try std.testing.expectEqual(Lower.Access.potential, c.access);
-        try std.testing.expectEqual(@as(u32, 0), c.hi); // out
+        try std.testing.expectEqual(@as(u32, 0), @backingInt(c.hi)); // out
         try std.testing.expectEqual(Lower.ground, c.lo);
         try std.testing.expectEqual(Mir.Value.f_zero, c.react_val);
     }

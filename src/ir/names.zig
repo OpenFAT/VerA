@@ -326,7 +326,7 @@ fn contribTarget(w: *std.Io.Writer, lowered: *const Lowered, c: Lowered.Contribu
         .potential => "V",
         .flow => "I",
     });
-    for ([2]u32{ c.hi, c.lo }) |n| {
+    for ([2]Lowered.NodeId{ c.hi, c.lo }) |n| {
         try w.writeByte('_');
         // §1.3.1.1 ground is not a `nodes` row. "0" cannot collide: a real
         // net's leading digit is escaped.
@@ -402,8 +402,8 @@ test "inserting a contribution for a different target renames nothing" {
     const a = f.arena.allocator();
 
     // I(drain,source) and V(gate,gnd)
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 2 });
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = Lowered.ground });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(2) });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = Lowered.ground });
 
     var before: std.ArrayList([]const u8) = .empty;
     try names(&f, &before);
@@ -411,7 +411,7 @@ test "inserting a contribution for a different target renames nothing" {
     try std.testing.expectEqualStrings("mymod__analog__V_gate_0", before.items[1]);
 
     // Every pre-existing name must come back byte-identical.
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 1, .lo = 2 });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(1), .lo = @fromBackingInt(2) });
 
     var after: std.ArrayList([]const u8) = .empty;
     try names(&f, &after);
@@ -485,7 +485,7 @@ test "§9.17 kernel-control units drop the `$` and stay after the operator units
     defer f.deinit();
     const a = f.arena.allocator();
 
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 2 });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(2) });
     const slew = try f.mir.internString(a, "slew");
     const bs = try f.mir.internString(a, "$bound_step");
     const disc = try f.mir.internString(a, "$discontinuity");
@@ -608,9 +608,9 @@ test "contribution targets: ground is 0, a net is sanitized, a `_`-join collisio
 
     // I(<net "0">) and V(a_b, c), V(a, b_c): the last two join to the same
     // `V_a_b_c`, and `disambig` keeps their names apart.
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = Lowered.ground });
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = 2 });
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 3, .lo = 4 });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = Lowered.ground });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(2) });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(3), .lo = @fromBackingInt(4) });
 
     var got: std.ArrayList([]const u8) = .empty;
     try names(&f, &got);
@@ -629,7 +629,7 @@ test "the allocating spellers fail cleanly at every allocation" {
     try f.init(&nets);
     defer f.deinit();
     const a = f.alloc();
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 2 });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(2) });
     _ = try f.mir.emitCall(a, .entry, try f.mir.internString(a, "slew"), &.{});
 
     try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {

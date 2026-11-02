@@ -684,7 +684,7 @@ test "each refusal names its reason: no algorithm, an unknown one, a flow probe,
     try f.init(&.{ "a", "b", "flow(a,b)" });
     defer f.deinit();
     const a = f.alloc();
-    f.lowered.nodes.items(.kind)[2] = .{ .branch_flow = 0 };
+    f.lowered.nodes.items(.kind)[2] = .{ .branch_flow = @fromBackingInt(0) };
     const vab = try f.mir.emit(a, .entry, .fsub, &.{ try f.probe(0), try f.probe(1) });
     const pnj = try f.mir.addStrConst(a, "pnjlim");
     const vt = try f.mir.addFloatConst(a, 0.025);

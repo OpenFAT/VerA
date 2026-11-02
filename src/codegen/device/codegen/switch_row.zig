@@ -72,12 +72,12 @@ pub fn emitSwitchRow(self: *Gen, i: usize, c: Lower.Contribution, flag: Mir.Valu
     // whatever the row held before, unless the guard states them.
     if (guard) |k| {
         if (!react) {
-            try guardTerm(self, c.hi, u, 1, k);
-            try guardTerm(self, c.lo, u, -1, k);
-            try guardTerm(self, u, c.hi, 1, k);
-            try guardTerm(self, u, c.lo, -1, k);
+            try guardTerm(self, @backingInt(c.hi), u, 1, k);
+            try guardTerm(self, @backingInt(c.lo), u, -1, k);
+            try guardTerm(self, u, @backingInt(c.hi), 1, k);
+            try guardTerm(self, u, @backingInt(c.lo), -1, k);
         }
-    } else gen_mask.orIn(self.jac.deriv_reads, try gen_stamps.bits(self, &.{ u, c.hi, c.lo }, &.{}));
+    } else gen_mask.orIn(self.jac.deriv_reads, try gen_stamps.bits(self, &.{ u, @backingInt(c.hi), @backingInt(c.lo) }, &.{}));
     stamp_lin.linDynamic(self, u);
     const d: u32 = if (split) 4 else 2;
     if (split) {
@@ -96,17 +96,17 @@ pub fn emitSwitchRow(self: *Gen, i: usize, c: Lower.Contribution, flag: Mir.Valu
         try self.b("const ib = x[@intFromEnum(U.{s})];\n", .{self.names.u_names[u]});
         // Guarded: the constant is `guardTerm`'s, not an unconditional `lin`.
         const col: ?u32 = if (guard == null) u else null;
-        try gen_stamps.stamp(self, d, c.hi, .add, "ib", try gen_stamps.bits(self, &.{u}, &.{}), col);
-        try gen_stamps.stamp(self, d, c.lo, .sub, "ib", try gen_stamps.bits(self, &.{u}, &.{}), col);
+        try gen_stamps.stamp(self, d, @backingInt(c.hi), .add, "ib", try gen_stamps.bits(self, &.{u}, &.{}), col);
+        try gen_stamps.stamp(self, d, @backingInt(c.lo), .sub, "ib", try gen_stamps.bits(self, &.{u}, &.{}), col);
         try self.ind(d);
-        gen_stamps.patRow(self, @intCast(u), try gen_stamps.bits(self, &.{ u, c.hi, c.lo }, &.{try switchRowDeps(self, i, c, react)}));
+        gen_stamps.patRow(self, @intCast(u), try gen_stamps.bits(self, &.{ u, @backingInt(c.hi), @backingInt(c.lo) }, &.{try switchRowDeps(self, i, c, react)}));
         try gen_stamps.rowSet(self, u);
         try self.b("S.sel(", .{});
         try coreRef(self, flag);
         try self.b(", ", .{});
-        try gen_stamps.nodeVoltage(self, c.hi);
+        try gen_stamps.nodeVoltage(self, @backingInt(c.hi));
         try self.b(".sub(", .{});
-        try gen_stamps.nodeVoltage(self, c.lo);
+        try gen_stamps.nodeVoltage(self, @backingInt(c.lo));
         try self.b(").sub(c), ", .{});
         try switchElse(self, partner, react);
         try self.b(")", .{});
@@ -132,8 +132,8 @@ pub fn emitSwitchRow(self: *Gen, i: usize, c: Lower.Contribution, flag: Mir.Valu
         try switchOpen(self, partner, react);
         try self.b(";\n", .{});
         const deps = try switchRowDeps(self, i, c, react);
-        try gen_stamps.stamp(self, 3, c.hi, .add, "flow", deps, null);
-        try gen_stamps.stamp(self, 3, c.lo, .sub, "flow", deps, null);
+        try gen_stamps.stamp(self, 3, @backingInt(c.hi), .add, "flow", deps, null);
+        try gen_stamps.stamp(self, 3, @backingInt(c.lo), .sub, "flow", deps, null);
         try self.ind(2);
         try self.b("}}\n", .{});
         assert(std.mem.endsWith(u8, self.out.items, "}\n"));
@@ -176,7 +176,7 @@ fn guardOf(self: *const Gen, i: usize) ?u32 {
 fn guardTerm(self: *Gen, row: u32, col: u32, g: f64, k: u32) Error!void {
     assert(k < self.topo.cpairs.len);
     assert(!std.math.isNan(g));
-    if (row == Lower.ground or col == Lower.ground) return;
+    if (row == @backingInt(Lower.ground) or col == @backingInt(Lower.ground)) return;
     try self.jac.guarded.append(self.arena, .{ .row = row, .col = col, .g = g, .c = 0, .when = k });
     assert(self.jac.guarded.items.len != 0);
 }

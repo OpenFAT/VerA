@@ -338,7 +338,7 @@ pub fn emitAcceptBody(self: *Gen, acc: gen_state.Accept) Error!void {
     for (self.lowered.held_vars.items, 0..) |h, i| {
         const k = self.core.held_idx[i];
         assert(k == none_u32 or k < self.core.lo_vals.len);
-        if (h.ty == .string and h.array == none_u32 and k != none_u32) {
+        if (h.ty == .string and h.array == .none and k != none_u32) {
             try self.w("    const zs{d} = ", .{i});
             try cg_strcap.emitHeldCopy(self, i);
             try self.w("m.f{d});\n", .{k});
@@ -354,13 +354,13 @@ pub fn emitAcceptBody(self: *Gen, acc: gen_state.Accept) Error!void {
                 try self.w("    inst.{s} = zwZero({d});\n", .{ n, h.width })
             else
                 try self.w("    inst.{s} = 0;\n", .{n});
-        } else if (h.array != none_u32) {
+        } else if (h.array != .none) {
             // §3.2.2 a held array's core field is already its plain values;
             // an in-place one is already in `inst`.
-            if (render_array.inPlace(self, h.array)) continue;
+            if (render_array.inPlace(self, @backingInt(h.array))) continue;
             try self.w("    inst.{s} = m.f{d};\n", .{ n, k });
-            if (gen_instance.dirtyTracked(self, h.array))
-                try self.w("    inst.{s}__dirty = .{{ 0, {d} }};\n", .{ n, self.lowered.mem_arrays.items[h.array].len - 1 });
+            if (gen_instance.dirtyTracked(self, @backingInt(h.array)))
+                try self.w("    inst.{s}__dirty = .{{ 0, {d} }};\n", .{ n, self.lowered.mem_arrays.items[@backingInt(h.array)].len - 1 });
         } else {
             // The core field is typed by `vty`, not the declared type, and
             // the two can disagree (a join left at `.real`). The declared

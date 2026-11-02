@@ -148,7 +148,7 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
             return poison;
         }
         try lower_hier_name.refuseRuntime(self, self.file.exprs.mainTok(args[1]), t.hi, t.lo);
-        const u: u32 = switch (t.access) {
+        const u: Lower.NodeId = switch (t.access) {
             .potential => t.hi,
             // Peek, never mint: "If the expression does not depend explicitly on
             // the unknown, then ddx() returns zero (0)." A branch current enters an
@@ -158,7 +158,7 @@ pub fn lowerFilter(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
             .flow => self.out.flow_unknowns.get(.{ .hi = t.hi, .lo = t.lo }) orelse
                 return .{ .v = .f_zero, .ty = .real },
         };
-        const d = try self.call("ddx", &.{ f, try self.mir.addIntConst(self.arena, u) });
+        const d = try self.call("ddx", &.{ f, try self.mir.addIntConst(self.arena, @backingInt(u)) });
         // §1.3.1.2 again: `ddx(f, I(n,p))` differentiates with respect to the
         // negation of the one canonical unknown, so the derivative negates too.
         // A potential probe reaches here only in the single-net form, which the
@@ -325,7 +325,7 @@ pub fn natureAttrRef(self: *Lower, e: Ast.ExprId) ?NatureRef {
         else
             self.port_branches.get(net) orelse return null;
         if (idx == ground) return null;
-        break :blk self.out.nodes.items(.disc)[idx];
+        break :blk self.out.nodes.items(.disc)[@backingInt(idx)];
     };
     const attr = self.file.str(parts[2]);
 

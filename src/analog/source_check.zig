@@ -8,11 +8,11 @@
 //!
 //! Contents:
 //! - `pub fn checkProbeBranches(self: *Lower) Oom!void`
-//! - `pub fn pairKey(hi: u32, lo: u32) u64`
+//! - `pub fn pairKey(hi: NodeId, lo: NodeId) u64`
 //! - `pub const HierPotential = struct`
 //! - `pub fn checkHierParallel(self: *Lower, lhs: Ast.ExprId, target: Target) Oom!bool`
 //! - `pub fn checkSourceLoops(self: *Lower) Oom!void`
-//! - `pub fn samePair(a_hi: u32, a_lo: u32, b_hi: u32, b_lo: u32) bool`
+//! - `pub fn samePair(a_hi: NodeId, a_lo: NodeId, b_hi: NodeId, b_lo: NodeId) bool`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -24,9 +24,10 @@ const Target = lower_branch.Target;
 const Oom = Lower.Oom;
 const unnamed_branch = Lower.unnamed_branch;
 const ground = Lower.ground;
+const NodeId = Lower.NodeId;
 
 /// §5.6.8.1 one potential `<+` written through hierarchical net references.
-pub const HierPotential = struct { hi: u32, lo: u32, unit: u32, tok: u32 };
+pub const HierPotential = struct { hi: NodeId, lo: NodeId, unit: u32, tok: u32 };
 
 /// §1.3.1: "The potential and flow of a probe branch may not both appear in
 /// expressions in a given module." §5.4.2.1 states it as the ban — "using both
@@ -79,8 +80,10 @@ pub fn checkProbeBranches(self: *Lower) Oom!void {
 /// `samePair`'s unordered pair as one map key.
 /// `hi == lo` is a branch whose two ends are one node: legal for a named
 /// branch, and for one a shorted instance port makes (`c u1(a, a)`).
-pub fn pairKey(hi: u32, lo: u32) u64 {
-    const key = @as(u64, @min(hi, lo)) << 32 | @max(hi, lo);
+pub fn pairKey(hi: NodeId, lo: NodeId) u64 {
+    const h = @backingInt(hi);
+    const l = @backingInt(lo);
+    const key = @as(u64, @min(h, l)) << 32 | @max(h, l);
     assert(key >> 32 <= key & 0xffff_ffff); // the low word is the larger row
     return key;
 }
@@ -147,8 +150,8 @@ pub fn checkSourceLoops(self: *Lower) Oom!void {
     const n_nodes: u32 = @intCast(self.out.nodes.len + 1); // the last row is ground
     const Ix = struct {
         n: u32,
-        fn of(ix: @This(), node: u32) u32 {
-            return if (node == ground) ix.n - 1 else node;
+        fn of(ix: @This(), node: NodeId) u32 {
+            return if (node == ground) ix.n - 1 else @backingInt(node);
         }
     };
     const ix: Ix = .{ .n = n_nodes };
@@ -219,7 +222,7 @@ pub fn checkSourceLoops(self: *Lower) Oom!void {
 /// §5.6.7.2 "the same pair of analog nets (or any of its parallel branches)" —
 /// unordered, since (a,b) and (b,a) are the same pair with opposite reference
 /// directions (§1.3.1.2).
-pub fn samePair(a_hi: u32, a_lo: u32, b_hi: u32, b_lo: u32) bool {
+pub fn samePair(a_hi: NodeId, a_lo: NodeId, b_hi: NodeId, b_lo: NodeId) bool {
     const same = (a_hi == b_hi and a_lo == b_lo) or (a_hi == b_lo and a_lo == b_hi);
     if (same) assert(pairKey(a_hi, a_lo) == pairKey(b_hi, b_lo)); // the two spellings of one pair key alike
     return same;
@@ -266,8 +269,10 @@ test find {
 
 test samePair {
     // §5.6.7.2/§1.3.1.2: (a,b) and (b,a) are one pair of nets.
-    try std.testing.expect(samePair(1, 2, 2, 1));
-    try std.testing.expect(samePair(1, 2, 1, 2));
-    try std.testing.expect(!samePair(1, 2, 1, 3));
-    try std.testing.expect(samePair(4, ground, ground, 4));
+    const n1: NodeId = @fromBackingInt(1);
+    const n2: NodeId = @fromBackingInt(2);
+    try std.testing.expect(samePair(n1, n2, n2, n1));
+    try std.testing.expect(samePair(n1, n2, n1, n2));
+    try std.testing.expect(!samePair(n1, n2, n1, @fromBackingInt(3)));
+    try std.testing.expect(samePair(@fromBackingInt(4), ground, ground, @fromBackingInt(4)));
 }

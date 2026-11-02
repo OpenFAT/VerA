@@ -19,7 +19,7 @@
 //! - `pub fn natureOf(self: *Lower, name: Ast.StrId) NatureAttrs`
 //! - `pub fn disciplineDecl(self: *const Lower, name: []const u8) ?*const Ast.DisciplineDecl`
 //! - `pub fn nodeDisciplineConflict(self: *const Lower, an: []const u8, bn: []const u8) ?[]const u8`
-//! - `pub fn checkNetCompat(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void`
+//! - `pub fn checkNetCompat(self: *Lower, tok: u32, hi: Lower.NodeId, lo: Lower.NodeId) Oom!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -331,13 +331,13 @@ pub fn nodeDisciplineConflict(self: *const Lower, an: []const u8, bn: []const u8
 /// Reports E0355 when nodes `hi` and `lo` have incompatible disciplines. Used for
 /// access-function arguments (LRM §3.11), branch terminals (§3.12) and port
 /// connections (§7.4.3).
-pub fn checkNetCompat(self: *Lower, tok: u32, hi: u32, lo: u32) Oom!void {
+pub fn checkNetCompat(self: *Lower, tok: u32, hi: Lower.NodeId, lo: Lower.NodeId) Oom!void {
     assert(self.nodeValid(hi));
     assert(self.nodeValid(lo));
     // §1.3.1.1: ground is the global reference, not a second net; `V(p)` spans one discipline.
     if (hi == ground or lo == ground) return;
-    const an = self.out.nodes.items(.disc)[hi];
-    const bn = self.out.nodes.items(.disc)[lo];
+    const an = self.out.nodes.items(.disc)[@backingInt(hi)];
+    const bn = self.out.nodes.items(.disc)[@backingInt(lo)];
     // A net with no discipline is E0337's to report.
     if (an.len == 0 or bn.len == 0) return;
     const why = nodeDisciplineConflict(self, an, bn) orelse return;

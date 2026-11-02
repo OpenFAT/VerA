@@ -37,7 +37,7 @@ fn passes(gpa: std.mem.Allocator) !void {
     const ev = try mir.emit(a, e, .fmul, &.{ p, seed });
     _ = try mir.emitJump(a, e, j);
     const out = try mir.emitPhi(a, j, &.{ .{ .block = t, .value = tv }, .{ .block = e, .value = ev } });
-    try lw.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 0, .resist_val = out });
+    try lw.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(0), .resist_val = out });
 
     if (try held.prune(a, &mir, &lw)) |keep| std.debug.assert(keep.len == 1);
     _ = try ifconv.run(a, &mir, .pure, null);

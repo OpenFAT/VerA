@@ -34,8 +34,8 @@ const gen_instance = @import("instance.zig");
 /// GPU stack, and the coupled lines' at 307-612 KB (#82).
 pub fn tpInPlace(self: *const Gen, sl: Lowered.TpSlot) bool {
     assert(self.arr_s.len == self.lowered.mem_arrays.items.len);
-    if (sl.array == none_u32 or !render_array.cow(self, sl.array)) return false;
-    assert(sl.array < self.lowered.mem_arrays.items.len);
+    if (sl.array == .none or !render_array.cow(self, @backingInt(sl.array))) return false;
+    assert(@backingInt(sl.array) < self.lowered.mem_arrays.items.len);
     // The slot's field exists only when the full core carries the final
     // version (`emitTpFields`); a slice's `plan.lo_idx` is its own.
     const v = self.an.rv(sl.final);
@@ -98,7 +98,7 @@ pub fn tpSlotAt(self: *const Gen, bi: u32, id: u32) ?struct { b: u32, k: u32 } {
     if (b == none_u32) return null;
     assert(b < self.lowered.timepoints.items.len);
     for (self.lowered.timepoints.items[b].slots, 0..) |sl, k| {
-        if (sl.array == id and tpInPlace(self, sl)) return .{ .b = b, .k = @intCast(k) };
+        if (@backingInt(sl.array) == id and tpInPlace(self, sl)) return .{ .b = b, .k = @intCast(k) };
     }
     return null;
 }
@@ -121,23 +121,23 @@ pub fn emitTpFills(self: *Gen, bi: u32, depth: u32) Error!void {
             // after the join reads that version, so the miss arm's version
             // (which `p<id>` holds there) is computed too.
             if (!hitEmitted(self, @intCast(b), @intCast(k))) continue;
-            const m = self.lowered.mem_arrays.items[sl.array];
-            assert(m.held != none_u32); // `tpInPlace` holds only a held array.
+            const m = self.lowered.mem_arrays.items[@backingInt(sl.array)];
+            assert(m.held != .none); // `tpInPlace` holds only a held array.
             const ty = if (m.ty == .integer) "i64" else "f64";
             self.cur.uses.inst = true;
             try self.ind(depth);
             // `updateState`'s slice stores the array in its field
             // (`render.inPlace`): a hit's cached version is copied there.
-            if (render_array.inPlace(self, sl.array)) {
-                assert(m.held < self.names.held_names.len);
-                const f = self.names.held_names[m.held];
-                if (gen_instance.dirtyTracked(self, sl.array))
-                    try self.b("zTpHeld({s}, {d}, &inst.{s}, &p{d}, &inst.{s}__dirty);\n", .{ ty, m.len, f, sl.array, f })
+            if (render_array.inPlace(self, @backingInt(sl.array))) {
+                assert(@backingInt(m.held) < self.names.held_names.len);
+                const f = self.names.held_names[@backingInt(m.held)];
+                if (gen_instance.dirtyTracked(self, @backingInt(sl.array)))
+                    try self.b("zTpHeld({s}, {d}, &inst.{s}, &p{d}, &inst.{s}__dirty);\n", .{ ty, m.len, f, @backingInt(sl.array), f })
                 else
-                    try self.b("zTpHeld({s}, {d}, &inst.{s}, &p{d}, null);\n", .{ ty, m.len, f, sl.array });
+                    try self.b("zTpHeld({s}, {d}, &inst.{s}, &p{d}, null);\n", .{ ty, m.len, f, @backingInt(sl.array) });
                 continue;
             }
-            try self.b("zTpFill({s}, {d}, &inst.tp{d}_s{d}, &p{d});\n", .{ ty, m.len, b, k, sl.array });
+            try self.b("zTpFill({s}, {d}, &inst.tp{d}_s{d}, &p{d});\n", .{ ty, m.len, b, k, @backingInt(sl.array) });
         }
     }
 }
@@ -155,8 +155,8 @@ pub fn emitTpFields(self: *Gen) Error!void {
         for (t.slots, 0..) |sl, k| {
             // A slot nothing reads after the statement is not queued (`plan_jobs`).
             if (gen_dispatch.coreIdx(self, self.an.rv(sl.final)) == null) continue;
-            if (sl.array != none_u32) {
-                const m = self.lowered.mem_arrays.items[sl.array];
+            if (sl.array != .none) {
+                const m = self.lowered.mem_arrays.items[@backingInt(sl.array)];
                 try self.w("    tp{d}_s{d}: [{d}]{s} = @splat(0), // {s}\n", .{ b, k, m.len, if (m.ty == .integer) "i64" else "f64", sl.name });
             } else {
                 if (sl.ty == .wide)
@@ -191,7 +191,7 @@ pub fn emitTpHelpers(self: *Gen) Error!void {
             const fk = gen_dispatch.coreIdx(self, self.an.rv(sl.final)) orelse continue;
             // The core already left it in its slot (`emitTpFills`).
             if (tpInPlace(self, sl)) continue;
-            const val = sl.array == none_u32 and sl.ty == .real;
+            const val = sl.array == .none and sl.ty == .real;
             try self.w("        inst.tp{d}_s{d} = m.f{d}{s};\n", .{ b, k, fk, if (val) ".val()" else "" });
         }
         try self.w("        inst.tp{d}_t = sim.t;\n        inst.tp{d}_k = zTpKey(sim);\n    }}\n", .{ b, b });

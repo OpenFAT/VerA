@@ -9,12 +9,12 @@
 //!
 //! Contents:
 //! - `pub const Target = struct`
-//! - `pub fn portBranchOf(self: *Lower, e: Ast.ExprId) Oom!?u32`
+//! - `pub fn portBranchOf(self: *Lower, e: Ast.ExprId) Oom!?NodeId`
 //! - `pub fn branchOf(self: *Lower, e: Ast.ExprId) Oom!?Target`
-//! - `pub fn accessOn(self: *Lower, e: Ast.ExprId, name: []const u8, global: Access, hi: u32, lo: u32) Oom!Access`
+//! - `pub fn accessOn(self: *Lower, e: Ast.ExprId, name: []const u8, global: Access, hi: NodeId, lo: NodeId) Oom!Access`
 //! - `pub const generic_potential = "potential"`
 //! - `pub const generic_flow = "flow"`
-//! - `pub fn checkAccessMatch(self: *Lower, e: Ast.ExprId, name: []const u8, access: Access, node: u32) Oom!void`
+//! - `pub fn checkAccessMatch(self: *Lower, e: Ast.ExprId, name: []const u8, access: Access, node: NodeId) Oom!void`
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -32,6 +32,8 @@ const lower_node_ref = @import("node_ref.zig");
 const Oom = Lower.Oom;
 const unnamed_branch = Lower.unnamed_branch;
 const ground = Lower.ground;
+const NodeId = Lower.NodeId;
+const BranchId = Lower.BranchId;
 const Access = Lower.Access;
 
 /// A resolved access. `hi`/`lo` are in CANONICAL order (`hi < lo` as `nodes`
@@ -49,14 +51,14 @@ const Access = Lower.Access;
 /// (which rebuilds the `flow(a,b)` name from `hi`/`lo`) sees one spelling.
 pub const Target = struct {
     access: Access,
-    hi: u32,
-    lo: u32,
+    hi: NodeId,
+    lo: NodeId,
     neg: bool = false,
     /// §5.4.1 the branch this reference names — a `BranchInfo.id` for a declared
     /// name, `unnamed_branch` for the pair's one implicit branch. Carried beside
     /// the pair rather than instead of it: the pair is what codegen stamps and
     /// what §5.6.7.2's "or any of its parallel branches" is stated over.
-    br: u32 = unnamed_branch,
+    br: BranchId = unnamed_branch,
     /// §5.4.1/§5.6.8.1: an unnamed branch belongs to the module instance it
     /// is written in ("a new unnamed branch is created in the module
     /// containing the direct contribution statements"), so two instances
@@ -80,7 +82,7 @@ pub const generic_flow = "flow";
 /// The port a §3.12.1 port branch names, when the single argument of an access
 /// function is one. `null` for everything else, including a two-argument
 /// access — a port branch is a name, never a pair.
-pub fn portBranchOf(self: *Lower, e: Ast.ExprId) Oom!?u32 {
+pub fn portBranchOf(self: *Lower, e: Ast.ExprId) Oom!?NodeId {
     assert(e == .none or self.exprValid(e));
     assert(self.file.exprs.tag(e) == .branch_access);
     if (self.file.exprs.rhs(e) != .none) return null;
@@ -183,14 +185,14 @@ pub fn branchOf(self: *Lower, e: Ast.ExprId) Oom!?Target {
 /// signal-flow `discipline current; potential Current;`), so for a name in
 /// `access_both` the net's discipline decides; the global map's answer would
 /// depend on declaration order. `global` is that answer for every other name.
-pub fn accessOn(self: *Lower, e: Ast.ExprId, name: []const u8, global: Access, hi: u32, lo: u32) Oom!Access {
+pub fn accessOn(self: *Lower, e: Ast.ExprId, name: []const u8, global: Access, hi: NodeId, lo: NodeId) Oom!Access {
     assert(e == .none or self.exprValid(e));
     assert(self.nodeValid(hi));
     assert(self.nodeValid(lo));
     if (!self.access_both.contains(name)) return global;
     const node = if (hi == ground) lo else hi;
     if (node == ground) return global;
-    const dname = (try portDiscipline(self, e)) orelse self.out.nodes.items(.disc)[node];
+    const dname = (try portDiscipline(self, e)) orelse self.out.nodes.items(.disc)[@backingInt(node)];
     const info = self.out.disciplines.get(dname) orelse return global;
     if (std.mem.eql(u8, info.potential_access, name)) return .potential;
     if (std.mem.eql(u8, info.flow_access, name)) return .flow;
@@ -207,11 +209,11 @@ pub fn accessOn(self: *Lower, e: Ast.ExprId, name: []const u8, global: Access, h
 ///  - E0501 with no suggestion: the discipline binds no nature for this half
 ///    (natureless, or `I` on a signal-flow `voltage`; §1.3.4).
 ///  - E0501 with a suggestion: the §3.6.1.2 name mismatch.
-pub fn checkAccessMatch(self: *Lower, e: Ast.ExprId, name: []const u8, access: Access, node: u32) Oom!void {
+pub fn checkAccessMatch(self: *Lower, e: Ast.ExprId, name: []const u8, access: Access, node: NodeId) Oom!void {
     assert(e == .none or self.exprValid(e));
     assert(self.nodeValid(node));
     if (node == ground or self.design.local_accesses.contains(e)) return;
-    const dname = (try portDiscipline(self, e)) orelse self.out.nodes.items(.disc)[node];
+    const dname = (try portDiscipline(self, e)) orelse self.out.nodes.items(.disc)[@backingInt(node)];
     if (dname.len == 0) {
         var b = self.errWith(self.file.exprs.mainTok(e), .E0337);
         b.msg("`{s}` has no discipline, so `{s}` names nothing on it", .{ lower_node.nodeName(self, node), name });
@@ -300,13 +302,13 @@ fn branchKey(self: *Lower, buf: *[lower_shape.elem_key_len]u8, e: Ast.ExprId) Oo
     };
 }
 
-fn canonical(access: Access, hi: u32, lo: u32, br: u32, unit: u32) Target {
+fn canonical(access: Access, hi: NodeId, lo: NodeId, br: BranchId, unit: u32) Target {
     assert(access == .potential or access == .flow);
-    const t: Target = if (hi <= lo)
+    const t: Target = if (@backingInt(hi) <= @backingInt(lo))
         .{ .access = access, .hi = hi, .lo = lo, .br = br, .unit = unit }
     else
         .{ .access = access, .hi = lo, .lo = hi, .neg = true, .br = br, .unit = unit };
-    assert(t.hi <= t.lo);
+    assert(@backingInt(t.hi) <= @backingInt(t.lo));
     return t;
 }
 
@@ -352,14 +354,14 @@ fn portDiscipline(self: *Lower, e: Ast.ExprId) Oom!?[]const u8 {
 
 test canonical {
     // §1.3.1.2: `I(5,2)` is `I(2,5)` with the sign flipped.
-    const t = canonical(.flow, 5, 2, unnamed_branch, 7);
-    try std.testing.expectEqual(@as(u32, 2), t.hi);
-    try std.testing.expectEqual(@as(u32, 5), t.lo);
+    const t = canonical(.flow, @fromBackingInt(5), @fromBackingInt(2), unnamed_branch, 7);
+    try std.testing.expectEqual(@as(NodeId, @fromBackingInt(2)), t.hi);
+    try std.testing.expectEqual(@as(NodeId, @fromBackingInt(5)), t.lo);
     try std.testing.expect(t.neg);
     try std.testing.expectEqual(@as(u32, 7), t.unit);
     // `ground` is above every row, so a single-net access is already canonical.
-    const v = canonical(.potential, 3, ground, unnamed_branch, 0);
-    try std.testing.expectEqual(@as(u32, 3), v.hi);
+    const v = canonical(.potential, @fromBackingInt(3), ground, unnamed_branch, 0);
+    try std.testing.expectEqual(@as(NodeId, @fromBackingInt(3)), v.hi);
     try std.testing.expectEqual(ground, v.lo);
     try std.testing.expect(!v.neg);
     // Equal terminals (two `ground` nets, §1.3.1.1) are not reversed.

@@ -510,8 +510,8 @@ test "lower: contribution splits into resistive and reactive parts" {
     try std.testing.expectEqual(@as(usize, 1), h.low.out.contributions.items.len);
     const c = h.low.out.contributions.items[0];
     try std.testing.expectEqual(Access.flow, c.access);
-    try std.testing.expectEqual(@as(u32, 0), c.hi);
-    try std.testing.expectEqual(@as(u32, 1), c.lo);
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(c.hi));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(c.lo));
     // …and §5.6.1.2 splits them: the guarded g*V is resistive, ddt(c*V) is not.
     const resist = h.mir.resolveAlias(c.resist_val);
     const react = h.mir.resolveAlias(c.react_val);
@@ -653,15 +653,15 @@ test "lower: §5.4.3 repeated I(<p>) is one unknown, appended after the ports" {
     try std.testing.expectEqual(@as(u32, 2), h.low.out.num_ports);
     try std.testing.expectEqual(@as(usize, 2), h.low.out.port_probes.items.len);
     // Deduped by port, in first-probe order, and never inside `num_ports`.
-    try std.testing.expectEqual(@as(u32, 0), h.low.out.port_probes.items[0].port);
-    try std.testing.expectEqual(@as(u32, 1), h.low.out.port_probes.items[1].port);
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(h.low.out.port_probes.items[0].port));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(h.low.out.port_probes.items[1].port));
     for (h.low.out.port_probes.items) |pp| {
-        try std.testing.expect(pp.u >= h.low.out.num_ports);
+        try std.testing.expect(@backingInt(pp.u) >= h.low.out.num_ports);
         // The kind tag, which codegen's `isFlowUnknown` reads. Not the
         // `"flow(<"` spelling: §2.8.1 lets a net be declared `\flow(<p>)`.
         // The spelling the host sees is pinned by codegen.zig's "the `U` block
         // is the SPELLING contract" test.
-        try std.testing.expectEqual(pp.port, h.low.out.nodes.items(.kind)[pp.u].port_flow);
+        try std.testing.expectEqual(pp.port, h.low.out.nodes.items(.kind)[@backingInt(pp.u)].port_flow);
     }
     try std.testing.expectEqualStrings("flow(<a>)", Lower.nodeName(&h.low, h.low.out.port_probes.items[0].u));
 }
@@ -724,7 +724,7 @@ test "lower: §5.6.1.3 a kind mismatch REPLACES the retained value, and §5.4.2.
         defer g.deinit();
         _ = try g.low.lowerFile();
         // `p` and `n` are `nodes` rows 0 and 1, so the branch is that pair.
-        try std.testing.expectEqual(c.unknown, g.low.out.flow_unknowns.contains(.{ .hi = 0, .lo = 1 }));
+        try std.testing.expectEqual(c.unknown, g.low.out.flow_unknowns.contains(.{ .hi = @fromBackingInt(0), .lo = @fromBackingInt(1) }));
     }
 }
 

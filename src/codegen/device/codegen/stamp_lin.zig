@@ -26,7 +26,7 @@ const Error = codegen.Error;
 /// whose lanes are already marked.
 pub fn linTerm(self: *Gen, row: u32, col: u32, k: f64) Error!void {
     assert(!std.math.isNan(k)); // NaN would poison `jac_const`.
-    if (row == Lower.ground or col == Lower.ground) return;
+    if (row == @backingInt(Lower.ground) or col == @backingInt(Lower.ground)) return;
     const l = self.jac.lin[@intFromBool(self.jac.react)];
     if (l.len == 0) return;
     assert(row < l.len);
@@ -40,7 +40,7 @@ pub fn linTerm(self: *Gen, row: u32, col: u32, k: f64) Error!void {
 
 /// Records that row `row` is assigned a term with no recorded unknown in it.
 pub fn linClear(self: *Gen, row: u32) void {
-    assert(row != Lower.ground);
+    assert(row != @backingInt(Lower.ground));
     const l = self.jac.lin[@intFromBool(self.jac.react)];
     if (l.len == 0) return;
     l[row].clearRetainingCapacity();
@@ -58,7 +58,7 @@ pub fn linClear(self: *Gen, row: u32) void {
 /// Records that row `row` is assigned `V(hi) − V(lo) − <core value>`: §5.6's branch
 /// relation, and §5.4.2.1's zero-potential flow probe.
 pub fn linBranch(self: *Gen, row: u32, hi: u32, lo: u32) Error!void {
-    assert(row != Lower.ground);
+    assert(row != @backingInt(Lower.ground));
     assert(row < self.names.n_u);
     linClear(self, row);
     try linTerm(self, row, hi, 1);
@@ -89,7 +89,7 @@ pub fn linPortProbe(self: *Gen, u: u32, port: u32, with_x: bool) Error!void {
 /// Records that row `row` is about to be written under a runtime condition:
 /// its constants may not survive, so each of their columns keeps a lane.
 pub fn linDynamic(self: *Gen, row: u32) void {
-    assert(row != Lower.ground);
+    assert(row != @backingInt(Lower.ground));
     const l = self.jac.lin[@intFromBool(self.jac.react)];
     if (l.len == 0) return;
     for (l[row].items) |t| {

@@ -31,7 +31,7 @@ const logic: Options = .{ .digital = &.{ "a", "y" }, .source = "buf.va" };
 /// Appends the unconditional direct contribution `I(hi, lo) <+ resist +
 /// ddt(react)`.
 fn addFlow(f: *Fixture, hi: u32, lo: u32, resist: Mir.Value, react: Mir.Value) !void {
-    try f.lowered.contributions.append(f.alloc(), .{ .access = .flow, .hi = hi, .lo = lo, .resist_val = resist, .react_val = react, .wrote_val = .f_one });
+    try f.lowered.contributions.append(f.alloc(), .{ .access = .flow, .hi = @fromBackingInt(hi), .lo = @fromBackingInt(lo), .resist_val = resist, .react_val = react, .wrote_val = .f_one });
 }
 
 /// Builds `four` with `I(y, vss) <+ V(y) - V(a)`: y settles at V(a).
@@ -315,7 +315,7 @@ test "emit refuses what it cannot abstract, naming it" {
         defer f.deinit();
         try f.init(&four);
         f.lowered.num_ports = 4;
-        try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 1, .lo = 0, .wrote_val = .f_one });
+        try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(0), .wrote_val = .f_one });
         try expectRefused(&f, logic, "must be referred to a supply or ground");
     }
     {
@@ -325,7 +325,7 @@ test "emit refuses what it cannot abstract, naming it" {
         defer f.deinit();
         try f.init(&four);
         f.lowered.num_ports = 4;
-        try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 2, .lo = 1, .resist_val = try f.mir.addFloatConst(f.alloc(), 0.2), .wrote_val = .f_one });
+        try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = @fromBackingInt(2), .lo = @fromBackingInt(1), .resist_val = try f.mir.addFloatConst(f.alloc(), 0.2), .wrote_val = .f_one });
         try expectRefused(&f, logic, "drives its first node");
     }
     {
@@ -390,7 +390,7 @@ test "emit: a potential row §5.6.1.3 discards on every path leaves the flow in 
     defer g.deinit();
     try g.init(&four);
     g.lowered.num_ports = 4;
-    try g.lowered.contributions.append(g.alloc(), .{ .access = .potential, .hi = 1, .lo = 3, .wrote_val = .f_zero });
+    try g.lowered.contributions.append(g.alloc(), .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(3), .wrote_val = .f_zero });
     try addFlow(&g, 1, 3, try g.mir.emit(g.alloc(), .entry, .fsub, &.{ try g.probe(1), try g.probe(0) }), .f_zero);
     try std.testing.expectEqualStrings(want, try emitOk(&g, logic));
 }
@@ -410,7 +410,7 @@ test "emit: a §5.6.5 switch branch follows whichever quantity this assignment r
     g.lowered.num_ports = 4;
     const b = g.alloc();
     const on = try g.mir.emit(b, .entry, .fgt, &.{ try g.probe(0), try g.mir.addFloatConst(b, 0.9) });
-    try g.lowered.contributions.append(b, .{ .access = .potential, .hi = 1, .lo = 3, .resist_val = try g.mir.addFloatConst(b, 1.8), .wrote_val = on });
+    try g.lowered.contributions.append(b, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(3), .resist_val = try g.mir.addFloatConst(b, 1.8), .wrote_val = on });
     try addFlow(&g, 1, 3, try g.probe(1), .f_zero);
     try std.testing.expectEqualStrings(want, try emitOk(&g, logic));
 }
@@ -523,7 +523,7 @@ test "emit: a supply contribution against a supply is the supply itself" {
     defer f.deinit();
     try buffer(&f);
     const want = try emitOk(&f, logic);
-    try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 2, .lo = 3, .resist_val = try f.mir.addFloatConst(f.alloc(), 1.8), .wrote_val = .f_one });
+    try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = @fromBackingInt(2), .lo = @fromBackingInt(3), .resist_val = try f.mir.addFloatConst(f.alloc(), 1.8), .wrote_val = .f_one });
     try std.testing.expectEqualStrings(want, try emitOk(&f, logic));
 }
 
@@ -578,7 +578,7 @@ test "emit refuses a node whose law or value it cannot pin down" {
         f.lowered.num_ports = 4;
         const b = f.alloc();
         const on = try f.mir.emit(b, .entry, .fgt, &.{ try f.probe(1), try f.mir.addFloatConst(b, 0.9) });
-        try f.lowered.contributions.append(b, .{ .access = .potential, .hi = 1, .lo = 3, .resist_val = try f.mir.addFloatConst(b, 1.8), .wrote_val = on });
+        try f.lowered.contributions.append(b, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(3), .resist_val = try f.mir.addFloatConst(b, 1.8), .wrote_val = on });
         try addFlow(&f, 1, 3, try f.probe(1), .f_zero);
         try expectRefused(&f, logic, "depends on its own value");
     }
@@ -588,7 +588,7 @@ test "emit refuses a node whose law or value it cannot pin down" {
         defer f.deinit();
         try f.init(&four);
         f.lowered.num_ports = 4;
-        try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = 1, .lo = 3, .resist_val = try f.mir.addFloatConst(f.alloc(), std.math.inf(f64)), .wrote_val = .f_one });
+        try f.lowered.contributions.append(f.alloc(), .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(3), .resist_val = try f.mir.addFloatConst(f.alloc(), std.math.inf(f64)), .wrote_val = .f_one });
         try expectRefused(&f, logic, "its settled potential is not finite");
     }
     {

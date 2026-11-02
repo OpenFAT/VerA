@@ -41,7 +41,7 @@ pub const Topology = struct {
     /// The `FreeFlow` for the pair `(hi, lo)`, if that branch has one. The
     /// pair is ordered: `(lo, hi)` is another branch. O(free flows).
     pub fn freeFlowOf(self: Topology, hi: u32, lo: u32) ?FreeFlow {
-        assert(hi != lo or hi == Lower.ground);
+        assert(hi != lo or hi == @backingInt(Lower.ground));
         for (self.free_flows) |f| if (f.hi == hi and f.lo == lo) return f;
         return null;
     }
@@ -189,7 +189,7 @@ pub fn flowIsMerged(self: Input, j: usize) bool {
 pub fn flowOnlySignalFlowNet(self: Input, c: Lower.Contribution) ?u32 {
     assert(c.access == .flow);
     if (c.access != .flow or c.kind != .direct) return null;
-    for ([_]u32{ c.hi, c.lo }) |n| {
+    for ([_]u32{ @backingInt(c.hi), @backingInt(c.lo) }) |n| {
         if (n >= self.lowered.nodes.len) continue; // ground
         switch (self.lowered.nodes.items(.dir)[n]) {
             .input, .output => {},
@@ -238,7 +238,7 @@ fn freeFlows(self: Input, branch_u: []const u32) Error![]const FreeFlow {
     var out: std.ArrayList(FreeFlow) = .empty;
     var it = self.lowered.flow_unknowns.iterator();
     while (it.next()) |e| {
-        const u: u32 = e.value_ptr.*;
+        const u: u32 = @backingInt(e.value_ptr.*);
         // A potential/indirect source already pins this current.
         if (std.mem.findScalar(u32, branch_u, u) != null) continue;
         var sourced = false;
@@ -254,8 +254,8 @@ fn freeFlows(self: Input, branch_u: []const u32) Error![]const FreeFlow {
         if (signal_flow) continue;
         try out.append(self.arena, .{
             .u = u,
-            .hi = e.key_ptr.hi,
-            .lo = e.key_ptr.lo,
+            .hi = @backingInt(e.key_ptr.hi),
+            .lo = @backingInt(e.key_ptr.lo),
             .sourced = sourced,
         });
     }
@@ -433,19 +433,22 @@ fn collapsePairs(self: Input, branch_u: []const u32) Error![]CollapsePair {
         // onto a real unknown (§1.3.1.1 ground has none). The host
         // resolves aliases in ascending unknown order, so the target
         // must precede both movers.
-        const hi_free = c.hi != Lower.ground and c.hi >= np;
-        const lo_free = c.lo != Lower.ground and c.lo >= np;
+        const hi = @backingInt(c.hi);
+        const lo = @backingInt(c.lo);
+        const gnd = @backingInt(Lower.ground);
+        const hi_free = hi != gnd and hi >= np;
+        const lo_free = lo != gnd and lo >= np;
         if (!hi_free and !lo_free) continue;
-        const victim: u32 = if (hi_free and lo_free) @max(c.hi, c.lo) else if (hi_free) c.hi else c.lo;
-        const target: u32 = if (hi_free and lo_free) @min(c.hi, c.lo) else if (hi_free) c.lo else c.hi;
-        if (target == Lower.ground) continue;
+        const victim: u32 = if (hi_free and lo_free) @max(hi, lo) else if (hi_free) hi else lo;
+        const target: u32 = if (hi_free and lo_free) @min(hi, lo) else if (hi_free) lo else hi;
+        if (target == gnd) continue;
         if (target >= victim or target >= fu) continue;
         // The host aliases in ascending unknown order (above): the target
         // precedes both movers, and is never the ground.
         assert(target < victim);
         assert(target < fu);
         assert(victim >= np);
-        assert(victim != Lower.ground); // a free end is never the ground
+        assert(victim != gnd); // a free end is never the ground
         try out.append(self.arena, .{ .victim = victim, .target = target, .flow_u = fu, .flag = ret.runtime, .card = cardOnly(self, ret.runtime) });
     }
     assert(out.items.len <= self.lowered.contributions.items.len);
@@ -465,7 +468,7 @@ fn switchPairs(f: *Fixture, flag_of: enum { param, temperature, probe }, probe_f
     };
     const flag = try f.mir.emit(a, .entry, .select, &.{ try f.mir.emit(a, .entry, .fgt, &.{ x, .f_zero }), .f_one, .f_zero });
     if (probe_flow) _ = try f.probe(3);
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = 2, .wrote_val = flag });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(2), .wrote_val = flag });
     const an = try f.analysis();
     return collapsePairs(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{3});
 }
@@ -475,19 +478,19 @@ test "a probed flow no source defines is free; one a potential source drives is 
     try f.init(&.{ "a", "b", "flow(a,b)", "flow(b,0)" });
     defer f.deinit();
     const a = f.alloc();
-    f.lowered.nodes.items(.kind)[2] = .{ .branch_flow = 0 };
-    f.lowered.nodes.items(.kind)[3] = .{ .branch_flow = 1 };
-    try f.lowered.flow_unknowns.put(a, .{ .hi = 0, .lo = 1 }, 2);
-    try f.lowered.flow_unknowns.put(a, .{ .hi = 1, .lo = Lower.ground }, 3);
+    f.lowered.nodes.items(.kind)[2] = .{ .branch_flow = @fromBackingInt(0) };
+    f.lowered.nodes.items(.kind)[3] = .{ .branch_flow = @fromBackingInt(1) };
+    try f.lowered.flow_unknowns.put(a, .{ .hi = @fromBackingInt(0), .lo = @fromBackingInt(1) }, @fromBackingInt(2));
+    try f.lowered.flow_unknowns.put(a, .{ .hi = @fromBackingInt(1), .lo = Lower.ground }, @fromBackingInt(3));
     // I(a,b) <+ …  sources the (a,b) flow; V(b) <+ …  drives (b,0)'s current.
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1 });
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = Lower.ground });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1) });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = Lower.ground });
     const an = try f.analysis();
 
     const t = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, &.{ none_u32, 3 });
     try std.testing.expectEqual(@as(usize, 1), t.free_flows.len);
     try std.testing.expectEqual(FreeFlow{ .u = 2, .hi = 0, .lo = 1, .sourced = true }, t.free_flows[0]);
-    try std.testing.expectEqual(@as(?FreeFlow, null), t.freeFlowOf(1, Lower.ground));
+    try std.testing.expectEqual(@as(?FreeFlow, null), t.freeFlowOf(1, @backingInt(Lower.ground)));
     // No runtime-retained potential row, so nothing collapses.
     try std.testing.expectEqual(@as(usize, 0), t.cpairs.len);
 }
@@ -502,12 +505,12 @@ test "free flows come out in unknown order, unsourced when only probed, and skip
     f.lowered.nodes.items(.disc)[2] = "current";
     f.lowered.nodes.items(.dir)[2] = .output;
     // Inserted highest unknown first: the hash map's order is not the answer.
-    try f.lowered.flow_unknowns.put(a, .{ .hi = 2, .lo = Lower.ground }, 5);
-    try f.lowered.flow_unknowns.put(a, .{ .hi = 0, .lo = 1 }, 4);
-    try f.lowered.flow_unknowns.put(a, .{ .hi = 1, .lo = 0 }, 3);
+    try f.lowered.flow_unknowns.put(a, .{ .hi = @fromBackingInt(2), .lo = Lower.ground }, @fromBackingInt(5));
+    try f.lowered.flow_unknowns.put(a, .{ .hi = @fromBackingInt(0), .lo = @fromBackingInt(1) }, @fromBackingInt(4));
+    try f.lowered.flow_unknowns.put(a, .{ .hi = @fromBackingInt(1), .lo = @fromBackingInt(0) }, @fromBackingInt(3));
     // I(a,b) <+ … sources (a,b); (b,a) is only probed; I(o) <+ … writes o's own row.
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1 });
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 2, .lo = Lower.ground });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1) });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(2), .lo = Lower.ground });
     const an = try f.analysis();
     const in: Input = .{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered };
 
@@ -526,8 +529,8 @@ test "isFlowUnknown answers the quantity, not the spelling" {
     try f.init(&.{ "flow(p,n)", "ib", "ip", "st", "sig" });
     defer f.deinit();
     const a = f.alloc();
-    f.lowered.nodes.items(.kind)[1] = .{ .branch_flow = 0 };
-    f.lowered.nodes.items(.kind)[2] = .{ .port_flow = 0 };
+    f.lowered.nodes.items(.kind)[1] = .{ .branch_flow = @fromBackingInt(0) };
+    f.lowered.nodes.items(.kind)[2] = .{ .port_flow = @fromBackingInt(0) };
     f.lowered.nodes.items(.kind)[3] = .{ .op_state = 1e-6 };
     try f.lowered.disciplines.put(a, "current", .{ .has_flow = true });
     f.lowered.nodes.items(.disc)[4] = "current";
@@ -551,9 +554,9 @@ test "§5.6.1.3 retention reads the folded flag; a runtime flag merges its switc
     const sel = try f.mir.emit(a, .entry, .fgt, &.{ try f.probe(0), .f_zero });
     // 0: V(a,b) retained by a runtime flag; 1: I(a,b) its §5.6.5 partner;
     // 2: I(a,b) on a named branch, not the partner.
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 0, .lo = 1, .wrote_val = sel });
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1, .wrote_val = .f_one });
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1, .br = 5, .wrote_val = .zero });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .wrote_val = sel });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .wrote_val = .f_one });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1), .br = @fromBackingInt(5), .wrote_val = .zero });
     const an = try f.analysis();
     const in: Input = .{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered };
     const cs = f.lowered.contributions.items;

@@ -204,7 +204,7 @@ fn narrowHeldLanes(g: *Gen) void {
     if (g.core.eval_need.len == 0 or display_ddx) return;
     assert(g.core.eval_need.len == g.an.nv);
     for (g.arr_s, 0..) |*s, id| {
-        if (!s.* or g.lowered.mem_arrays.items[id].held == none_u32) continue;
+        if (!s.* or g.lowered.mem_arrays.items[id].held == .none) continue;
         s.* = for (g.an.i_op, 0..) |op, ii| {
             if (op != .fload) continue;
             const arr: Mir.Value = @fromBackingInt(@intCast(g.mir.insts.items(.a)[ii]));

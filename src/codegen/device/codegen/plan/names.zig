@@ -115,7 +115,7 @@ pub fn plan(in: Input, n_unit_modes: usize) Error!Names {
         // node pair, the identity §5.4.1 gives the branch, never by the
         // `flow(hi,lo)` spelling (a plain net named `gnd` would collide with
         // §1.3.1.1's reference node).
-        var found: u32 = if (lowered.flow_unknowns.get(.{ .hi = c.hi, .lo = c.lo })) |u| u else none_u32;
+        var found: u32 = if (lowered.flow_unknowns.get(.{ .hi = c.hi, .lo = c.lo })) |u| @backingInt(u) else none_u32;
         // Already the current of an earlier source: two sources in one branch
         // need two currents. ponytail: a prefix scan, O(contributions²) worst.
         if (found != none_u32 and std.mem.findScalar(u32, self.branch_u[0..i], found) != null) found = none_u32;
@@ -223,10 +223,10 @@ test "a potential source gets a branch current; two on one branch get two" {
     defer f.deinit();
     const a = f.alloc();
     // I(a,b) <+ …  (no unknown), V(a,b) <+ …  twice (two currents), V(b) <+ …
-    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = 0, .lo = 1 });
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 0, .lo = 1 });
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 0, .lo = 1 });
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = Lowered.ground });
+    try f.lowered.contributions.append(a, .{ .access = .flow, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1) });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1) });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1) });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = Lowered.ground });
     const an = try f.analysis();
 
     const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, 4);
@@ -247,13 +247,13 @@ test "a probed branch's flow slot is reused; an indirect source gets one too; a 
     try f.init(&.{ "a", "b", "flow(a,b)", "flow(b,a)" });
     defer f.deinit();
     const a = f.alloc();
-    f.lowered.nodes.items(.kind)[3] = .{ .branch_flow = 1 };
-    try f.lowered.flow_unknowns.put(a, .{ .hi = 1, .lo = 0 }, 3);
+    f.lowered.nodes.items(.kind)[3] = .{ .branch_flow = @fromBackingInt(1) };
+    try f.lowered.flow_unknowns.put(a, .{ .hi = @fromBackingInt(1), .lo = @fromBackingInt(0) }, @fromBackingInt(3));
     // V(b,a) <+ …: lowering's slot 3 is its current; no new unknown.
-    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = 1, .lo = 0 });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .hi = @fromBackingInt(1), .lo = @fromBackingInt(0) });
     // §5.6.7 V(a,b) : … == …: an indirect source on (a,b) has no slot, and
     // the spelling `flow(a,b)` is taken by net 2, so it becomes `flow(a,b)#1`.
-    try f.lowered.contributions.append(a, .{ .access = .potential, .kind = .indirect, .hi = 0, .lo = 1 });
+    try f.lowered.contributions.append(a, .{ .access = .potential, .kind = .indirect, .hi = @fromBackingInt(0), .lo = @fromBackingInt(1) });
     const an = try f.analysis();
 
     const n = try plan(.{ .arena = a, .mir = &f.mir, .an = &an, .lowered = &f.lowered }, 2);
