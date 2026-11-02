@@ -432,11 +432,6 @@ pub fn declareEvents(r: *Run, events: []const Ast.EventDecl) Error!void {
 /// run in `scope`, a scope with its declarations, made in pass one so a
 /// hierarchical name compiled first (`b.mod_1.x` from a sibling block) finds
 /// them. `compile` enters the scope `block_scopes` records.
-// ponytail: a name is found by climbing every scope around it (`lookupAt`,
-// `specOf`), so a nest n named blocks deep that names a variable at each
-// level compiles in O(n^2): 16,000 levels take 3.5 s in ReleaseFast. A
-// per-scope column to the nearest scope that declares something, if such a
-// nest ever matters.
 pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
     assert(scope < r.hier.scopes.items.len);
     if (s == .none) return;
@@ -483,6 +478,9 @@ pub fn blockScope(r: *Run, scope: u32, s: Ast.StmtId) Error!u32 {
         const slot = try mintVar(r, v);
         if (automatic) try r.routines.auto_slots.put(r.arena, slot, {});
     }
+    // No name is bound here, so a search for one starts further out.
+    if (b.params.len == 0 and b.events.len == 0 and b.vars.len == 0)
+        try r.hier.empty.put(r.arena, at, r.hier.empty.get(scope) orelse scope);
     assert(r.hier.scopes.items[at].parent == scope);
     assert(r.hier.block_scopes.get(.{ .scope = scope, .stmt = s }).? == at);
     return at;
@@ -597,29 +595,31 @@ test "blockScopes refuses a statement nest past its thread's stack with E0241, n
     try std.testing.expect(std.mem.find(u8, messages.written(), "exhausts the 4 MiB stack") != null);
 }
 
-test "a nest of named blocks that declare nothing elaborates in time linear in its depth" {
+test "a nest of named blocks that declare nothing elaborates in time linear in its depth, naming a variable at each level or not" {
     // Oracle: a time bound between a linear and a quadratic cost. Each of
-    // the n named blocks is a scope; a walk of the nest below each one, as
-    // v0.22.0's `declares` was, is n^2/2 statement visits, which took 24.5 s
-    // here in a Debug build, and the linear walk took 1.1 s. 20,000 levels
-    // elaborate within `runGuarded`'s smallest stack (256 MiB on Windows;
-    // 30,000 do not).
+    // the n named blocks is a scope. Here, in a Debug build, a walk of the
+    // nest below each one (v0.22.0's `declares`) took 24.5 s, and a lookup
+    // of `x` that climbs every empty scope above it took 67 s; the linear
+    // forms take 0.35 s and 0.57 s. 20,000 levels elaborate within
+    // `runGuarded`'s smallest stack (256 MiB on Windows; 30,000 do not).
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const n = 20_000;
-    var src: std.ArrayList(u8) = .empty;
-    try src.appendSlice(a, "module m; initial ");
-    for (0..n) |i| try src.print(a, "begin : b{d} ", .{i});
-    try src.appendSlice(a, "$display(\"ok\");");
-    for (0..n) |_| try src.appendSlice(a, " end");
-    try src.appendSlice(a, " endmodule");
-    const io = std.testing.io;
-    const t0: std.Io.Timestamp = .now(io, .awake);
-    var bag = diag.Bag.init(a);
-    var out = std.Io.Writer.Allocating.init(a);
-    _ = try root.elaborate(a, src.items, .{}, &bag, &out.writer);
-    const ns = t0.durationTo(.now(io, .awake)).nanoseconds;
-    try std.testing.expect(!bag.failed());
-    try std.testing.expect(ns < 8 * std.time.ns_per_s);
+    for ([_][]const u8{ "", "x = x + 1; " }) |level| {
+        var src: std.ArrayList(u8) = .empty;
+        try src.appendSlice(a, "module m; integer x; initial ");
+        for (0..n) |i| try src.print(a, "begin : b{d} {s}", .{ i, level });
+        try src.appendSlice(a, "$display(\"ok\");");
+        for (0..n) |_| try src.appendSlice(a, " end");
+        try src.appendSlice(a, " endmodule");
+        const io = std.testing.io;
+        const t0: std.Io.Timestamp = .now(io, .awake);
+        var bag = diag.Bag.init(a);
+        var out = std.Io.Writer.Allocating.init(a);
+        _ = try root.elaborate(a, src.items, .{}, &bag, &out.writer);
+        const ns = t0.durationTo(.now(io, .awake)).nanoseconds;
+        try std.testing.expect(!bag.failed());
+        try std.testing.expect(ns < 8 * std.time.ns_per_s);
+    }
 }

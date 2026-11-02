@@ -129,6 +129,11 @@ pub const Hierarchy = struct {
     /// §12.5 the scope of each named block, keyed by the scope it runs in
     /// and its statement (`blockScope`).
     block_scopes: std.AutoHashMapUnmanaged(struct { scope: u32, stmt: Ast.StmtId }, u32) = .empty,
+    /// The scope of each named block that declares nothing, to the nearest
+    /// scope around it that may: `names` and `prim_names` hold nothing for
+    /// it, so a search for a name steps over it (`declaring`), and a nest n
+    /// blocks deep costs a lookup one step, not n.
+    empty: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 };
 
 /// The slot a name is stored in, or null when the design declares no such
@@ -273,7 +278,7 @@ pub fn slotType(self: *const Run, at: u32) compile.Type {
 pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
     assert(scope < self.hier.scopes.items.len);
     assert(tok < self.starts.len);
-    var s = scope;
+    var s = declaring(self, scope);
     while (true) {
         if (self.hier.names.get(.{ .scope = s, .str = str })) |at| {
             // Elaboration's constant contexts (a range over a parameter
@@ -283,7 +288,7 @@ pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
         const info = self.hier.scopes.items[s];
         if (!info.lexical) return null;
         assert(info.parent != s); // A lexical scope has an enclosing one.
-        s = info.parent;
+        s = declaring(self, info.parent);
     }
 }
 
@@ -292,25 +297,25 @@ pub fn lookupAt(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) ?u32 {
 pub fn instanceHides(self: *const Run, scope: u32, str: Ast.StrId, tok: u32) bool {
     assert(scope < self.hier.scopes.items.len);
     assert(tok < self.starts.len);
-    var s = scope;
+    var s = declaring(self, scope);
     while (true) {
         if (self.hier.names.contains(.{ .scope = s, .str = str })) return false;
         if (self.hier.prim_names.get(.{ .scope = s, .str = str })) |at| if (at <= tok) return true;
         const info = self.hier.scopes.items[s];
         if (!info.lexical) return false;
-        s = info.parent;
+        s = declaring(self, info.parent);
     }
 }
 
 /// Returns the slot `str` names in `scope` or a scope around it, or null.
 pub fn lookup(self: *const Run, scope: u32, str: Ast.StrId) ?u32 {
     assert(scope < self.hier.scopes.items.len);
-    var s = scope;
+    var s = declaring(self, scope);
     while (true) {
         if (self.hier.names.get(.{ .scope = s, .str = str })) |at| return at;
         const info = self.hier.scopes.items[s];
         if (!info.lexical) return null;
-        s = info.parent;
+        s = declaring(self, info.parent);
     }
 }
 
@@ -321,11 +326,11 @@ pub fn lookup(self: *const Run, scope: u32, str: Ast.StrId) ?u32 {
 /// parameters, so it shares its instance's types.
 pub fn specOf(self: *const Run, scope: u32) u32 {
     assert(scope < self.hier.scopes.items.len);
-    var s = scope;
+    var s = declaring(self, scope);
     while (s < self.hier.scopes.items.len) {
         const info = self.hier.scopes.items[s];
         if (!info.lexical or info.index != null) break;
-        s = info.parent;
+        s = declaring(self, info.parent);
     }
     assert(s < self.hier.scopes.items.len);
     return s;
@@ -334,8 +339,8 @@ pub fn specOf(self: *const Run, scope: u32) u32 {
 /// The instance a (possibly nested) scope belongs to.
 pub fn instanceOf(self: *const Run, scope: u32) u32 {
     assert(scope < self.hier.scopes.items.len);
-    var s = scope;
-    while (self.hier.scopes.items[s].lexical) s = self.hier.scopes.items[s].parent;
+    var s = declaring(self, scope);
+    while (self.hier.scopes.items[s].lexical) s = declaring(self, self.hier.scopes.items[s].parent);
     assert(!self.hier.scopes.items[s].lexical);
     return s;
 }
@@ -414,9 +419,21 @@ pub fn indexedArray(self: *Run, e: Ast.ExprId) Error!?Array {
 /// declaration of one name in one scope fails at `tok` (E1100).
 pub fn bind(self: *Run, name: Ast.StrId, at: u32, tok: u32) Error!void {
     assert(tok < self.starts.len);
+    assert(!self.hier.empty.contains(self.scope)); // `blockScope` judged it empty.
     const entry = try self.hier.names.getOrPut(self.arena, .{ .scope = self.scope, .str = name });
     if (entry.found_existing) return self.fail(tok, "duplicate digital variable", .{});
     entry.value_ptr.* = at;
     try self.hier.bound_at.put(self.arena, entry.key_ptr.*, tok);
     assert(self.hier.names.get(.{ .scope = self.scope, .str = name }).? == at);
+}
+
+// ---- private ----
+
+/// `scope`, or for a named block that declares nothing the nearest scope
+/// around it that may (`Hierarchy.empty`): where a search for a name begins.
+fn declaring(self: *const Run, scope: u32) u32 {
+    assert(scope < self.hier.scopes.items.len);
+    const s = self.hier.empty.get(scope) orelse return scope;
+    assert(!self.hier.empty.contains(s)); // One step reaches it.
+    return s;
 }
