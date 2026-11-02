@@ -163,7 +163,7 @@ pub fn lowerParamDecl(self: *Lower, decl: *const Ast.ParamDecl) Oom!void {
     // point or the simulation state, which has no value a model card could
     // carry (`parameter real bad = $abstime;` would read 0.0). Reported and
     // then lowered anyway, like E0347.
-    if (constfold.firstStateRead(self.file, decl.default, if (self.module) |m| m.vars else &.{})) |what| {
+    if (try constfold.firstStateRead(self.arena, self.file, decl.default, if (self.module) |m| m.vars else &.{})) |what| {
         try self.err(decl.main_tok, .E0363, "`{s}` reads `{s}`", .{ name, what });
     }
     if (oomrInDefault(self, decl.default)) |h|
