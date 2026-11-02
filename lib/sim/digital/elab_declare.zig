@@ -432,6 +432,11 @@ pub fn declareEvents(r: *Run, events: []const Ast.EventDecl) Error!void {
 /// run in `scope`, a scope with its declarations, made in pass one so a
 /// hierarchical name compiled first (`b.mod_1.x` from a sibling block) finds
 /// them. `compile` enters the scope `block_scopes` records.
+// ponytail: a name is found by climbing every scope around it (`lookupAt`,
+// `specOf`), so a nest n named blocks deep that names a variable at each
+// level compiles in O(n^2): 16,000 levels take 3.5 s in ReleaseFast. A
+// per-scope column to the nearest scope that declares something, if such a
+// nest ever matters.
 pub fn blockScopes(r: *Run, scope: u32, s: Ast.StmtId) Error!void {
     assert(scope < r.hier.scopes.items.len);
     if (s == .none) return;
