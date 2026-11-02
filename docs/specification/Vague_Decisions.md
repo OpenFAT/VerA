@@ -350,7 +350,7 @@ summary and has a **Status** line naming what landed.
 - **Why vague**: CLAUSE-AUDIT §4.1 read 7.3.2 as making x/z legal analog display operands, which would make E0130 a refusal of legal source. `s01_SPEC.md` read the refusal as correct.
 - **Options**: (a) x/z display operands are legal in analog, so the row is `missing`; (b) an x/z value reaching an analog operand other than a 7.3.2 comparison is an error, so the row is `verified on the prohibition`.
 - **Decision**: `DECIDED:` (b). 7.3.2 lists the only constructs through which x/z may be accessed, and says any other operand that yields x/z "is an error". Its own `converter` example marks `var1 = 1'bx;` and `V(anet) <+ 1'bz;` as errors. A `$display` argument is an ordinary operand. 17.1.1.4 still governs the digital context.
-- **VerA today**: the refusal matches (E0130, `src/ir/lower.zig:500`, `src/analog/expr.zig:105`; `ch07_mixed_signal/x_literal_unsupported.va`, `xz_contribution_rejected.va`). But E0130's explanation (`lib/diag/code.zig:819-829`) says it is "not a claim that the literal is forbidden by full Verilog-AMS", which contradicts this reading. No fixture tests a display operand. CHANGE NEEDED: (1) rewrite E0130's explanation so that it cites 7.3.2 as a prohibition when the operand is not a 7.3.2 comparison; (2) add `reject_display_x_operand_analog.va` (`$display("%b", 1'bx)`, `//! reject E0130`) with a legal `1'b1` neighbour; (3) re-score CLAUSE-AUDIT 17.1-06 and close §7.5 item 1. Patch, since diagnostic wording is not in AGENTS.md §3's minor list.
+- **VerA today**: the refusal matches (E0130, `src/ir/lower.zig:500`, `src/analog/expr.zig:105`; `ch07_mixed_signal/x_literal_unsupported.va`, `xz_contribution_rejected.va`). But E0130's explanation (`lib/diag/codes/class01a.zig:358-370`) says it is "not a claim that the literal is forbidden by full Verilog-AMS", which contradicts this reading. No fixture tests a display operand. CHANGE NEEDED: (1) rewrite E0130's explanation so that it cites 7.3.2 as a prohibition when the operand is not a 7.3.2 comparison; (2) add `reject_display_x_operand_analog.va` (`$display("%b", 1'bx)`, `//! reject E0130`) with a legal `1'b1` neighbour; (3) re-score CLAUSE-AUDIT 17.1-06 and close §7.5 item 1. Patch, since diagnostic wording is not in AGENTS.md §3's minor list.
 - **Measure impact**: A (+1), C (7.3.2 refusal paired with its legal neighbour). B row 17.1.1.4 is unaffected because it is digital.
 
 ### VD-018: `d09_91` and excess `$readmem` data
@@ -514,7 +514,7 @@ summary and has a **Status** line naming what landed.
 - **Why vague**: the grammar derives `posedge` with any operand, including a continuous `V(p)`, but no sentence gives an edge of a continuous signal a meaning. 1364 9.7.2 defines edges only as four-state transitions (0 to 1, x, z and so on).
 - **Options**: (a) refuse an edge whose operand is not discrete; (b) define it as a `cross` with direction ±1 at some threshold; (c) apply 1364's real-to-bit conversion to the operand.
 - **Decision**: `DECIDED:` (a). 5.10.5 and 7.3.6.2 place `posedge`/`negedge` among the digital events, and the analog way to detect an edge is `cross` (5.10.3.1), which has a threshold and tolerances that a bare edge cannot express. Options (b) and (c) would each invent a threshold the standard never gives. A grammatical construct with no semantics is refused by name rather than given an invented meaning.
-- **VerA today**: E0704 "posedge/negedge is digital-only" (`src/analog/event.zig:191-193`, `lib/diag/code.zig:4781`). `annex_c_analog_subset/digital_event_control_rejected.va` and `ch07_mixed_signal/contribution_under_a_digital_event_rejected.va` pin it, and the legal digital-operand neighbour is `ch07_mixed_signal/posedge_in_an_analog_event_control.va`. No change.
+- **VerA today**: E0704 "posedge/negedge is digital-only" (`src/analog/event.zig:191-193`, `lib/diag/codes/class07.zig:42`). `annex_c_analog_subset/digital_event_control_rejected.va` and `ch07_mixed_signal/contribution_under_a_digital_event_rejected.va` pin it, and the legal digital-operand neighbour is `ch07_mixed_signal/posedge_in_an_analog_event_control.va`. No change.
 - **Measure impact**: none.
 
 ### VD-035: A module-level `string` variable
@@ -724,7 +724,7 @@ summary and has a **Status** line naming what landed.
 - **Why vague**: the clause gives no phase (compile or run time) and no form for the error. A compiled device has no I/O channel.
 - **Options**: compile-time only, which misses runtime zeros; a runtime result such as 0 or the dividend, which is silent; a runtime report or trap.
 - **Decision**: `DECIDED:` a divisor that is provably zero is E0601 at compile time. A zero found at run time is E0601 plus exit 1 in an executable, and a trap in a device with no host I/O. This is the only reading in which "shall be an error" is never silent. An operand that is never evaluated does not fail.
-- **VerA today**: `src/prove/domain.zig`, `src/codegen/device/codegen/render_op.zig` `imodFn`, E0601 text at `lib/diag/code.zig:4526`. Fixtures `ch04_expressions/modulus_by_zero_rejected.va`, `modulo_integer_dynamic_zero.va`, `modulo_integer_unused_zero.va` and the legal neighbours. No change.
+- **VerA today**: `src/prove/domain.zig`, `src/codegen/device/codegen/render_op.zig` `imodFn`, E0601 text at `lib/diag/codes/class06.zig:13`. Fixtures `ch04_expressions/modulus_by_zero_rejected.va`, `modulo_integer_dynamic_zero.va`, `modulo_integer_unused_zero.va` and the legal neighbours. No change.
 - **Measure impact**: none.
 
 ### VD-056: Real modulus by a runtime zero yields NaN
@@ -734,7 +734,7 @@ summary and has a **Status** line naming what landed.
 - **Why vague**: the error sentence names no operand type. The real formula divides by b, so IEEE arithmetic gives NaN, and that makes NaN look like an acceptable "defined" result.
 - **Options**: (a) NaN at run time (today), with W0650 only for losing the finiteness proof; (b) the same runtime report or trap as the integer path.
 - **Decision**: `DECIDED:` (b). The error sentence comes before the real formula and covers both types, and VerA already reads it that way at compile time: `real_modulus_zero_rejected.va` pins E0601 for `5.5 % 0.0`. Treating a runtime real zero differently from a compile-time one is a silent wrong answer, and a NaN in a Newton residual surfaces far from its cause.
-- **VerA today**: E0601's explain text (`lib/diag/code.zig:4541-4542`) says "real `%`: x % 0.0 is NaN, IEEE-defined". `CHANGE NEEDED:` route a real `%` whose divisor is not provably nonzero through the same runtime E0601 report or trap as `imodFn`. Add a `modulo_real_dynamic_zero.va` rejection-at-run-time fixture beside a legal real-modulus neighbour. Update E0601's explain text and the IMPLEMENTATION note. **Minor**, because emitted device text changes.
+- **VerA today**: E0601's explain text (`lib/diag/codes/class06.zig:17-40`) says "real `%`: x % 0.0 is NaN, IEEE-defined". `CHANGE NEEDED:` route a real `%` whose divisor is not provably nonzero through the same runtime E0601 report or trap as `imodFn`. Add a `modulo_real_dynamic_zero.va` rejection-at-run-time fixture beside a legal real-modulus neighbour. Update E0601's explain text and the IMPLEMENTATION note. **Minor**, because emitted device text changes.
 - **Measure impact**: A (one new fixture). C: §4.2.4's real half becomes two-way at run time.
 
 ### VD-057: `idt` with no `ic`: the starting constant c
@@ -800,7 +800,7 @@ summary and has a **Status** line naming what landed.
 - **Why vague**: which names a tool supports beyond the table is the tool's choice.
 - **Options**: support vendor names (`pss`, `hb`, `pac`); none.
 - **Decision**: `DECIDED:` none. VerA's hosts run only Table 4-22's columns. Any other name is false, as the sentence requires, with no diagnostic: a Spectre-only branch such as `analysis("pss")` is portable source and must compile quietly.
-- **VerA today**: `src/codegen/device/codegen/call.zig:896-920` (`analysisMatch`). Fixture `ch04_expressions/analysis_transient.va`. A non-literal argument is already E-coded (`lib/diag/code.zig:4511`). No change.
+- **VerA today**: `src/codegen/device/codegen/call.zig:896-920` (`analysisMatch`). Fixture `ch04_expressions/analysis_transient.va`. A non-literal argument is already E-coded (E0574, `lib/diag/codes/class05b.zig:379`). No change.
 - **Measure impact**: none.
 
 ### VD-064: The small-signal analysis name
@@ -945,7 +945,7 @@ summary and has a **Status** line naming what landed.
 - **Why vague**: the table states allowed values but no "shall be an error" and no point at which a value is checked. A value set on a host card is known only at card time.
 - **Options**: check only literals at compile time (today); check card-dependent values when the host writes the card; trust the host.
 - **Decision**: `DECIDED:` check at card time. An "allowed values" column is a constraint, and a value outside it, such as `$mfactor = 0`, silently zeroes or flips a device. Card time (`derive`, which runs once per card write) costs nothing per `eval`. The device should report the offending name in the way `checkShape` already reports one, and a host that ignores the report stays the host's choice. §3.4.2 `from`/`exclude` range checks for host-written cards are their own entry point, `checkRange` (VD-125, #80).
-- **VerA today**: E0890 for literals only (`lib/diag/code.zig:5003`). There is no card-time check: `src/codegen/device/codegen/model.zig` `derive` and `card_checks.zig` `checkShape` validate nothing about domains. `CHANGE NEEDED:` emit a card-time domain check, either a `checkCard(model) ?[]const u8` returning the first parameter out of Table 9-29's domain or the same check inside `derive`, together with a host test such as `tests/geometry_host.zig` that writes `$mfactor = 0` and expects the name back. **Minor**, because emitted device text changes.
+- **VerA today**: E0890 for literals only (`lib/diag/codes/class08a.zig:178`). There is no card-time check: `src/codegen/device/codegen/model.zig` `derive` and `card_checks.zig` `checkShape` validate nothing about domains. `CHANGE NEEDED:` emit a card-time domain check, either a `checkCard(model) ?[]const u8` returning the first parameter out of Table 9-29's domain or the same check inside `derive`, together with a host test such as `tests/geometry_host.zig` that writes `$mfactor = 0` and expects the name back. **Minor**, because emitted device text changes.
 - **Measure impact**: A (a new host test, under `zig build test`). C: §9.18 gains a runtime invalid-input test.
 
 ## 5. Implementation-defined choices: IEEE 1364 (Vague_Decisions.md §6, §3)
