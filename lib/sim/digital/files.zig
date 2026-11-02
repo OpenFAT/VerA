@@ -26,6 +26,7 @@
 //! arguments (and, for queues, `Run.tasks.queues`) out.
 //! Clauses: §17.2 file input and output, §17.2.3 string output, §17.5
 //! programmable logic arrays, §17.6 stochastic queues, §17.9 distributions.
+
 const std = @import("std");
 const assert = std.debug.assert;
 const Front = @import("frontend");
@@ -53,15 +54,6 @@ const scanAssign = scanf.scanAssign;
 const scanCall = scanf.scanCall;
 const scanContext = scanf.scanContext;
 const text = system.text;
-
-/// A `Run`'s own descriptor table `t` (`Run.tasks.files`) as a
-/// `contract.FileIo`: `file_kernels`, the table an analog device instance
-/// runs, so both engines answer §17.2 one way (IEEE 1364-2005 §17.2.1's
-/// encodings: an mcd's bit 0 is standard output, an fd has bit 31 set and
-/// 0..2 are the standard streams).
-pub fn own(t: *ZfTable) contract.FileIo {
-    return .{ .ctx = t, .open = fk.zFOpen, .close = fk.zFClose, .put = fk.zFPut, .getc = fk.zFGetc, .ungetc = fk.zFUngetc, .tell = fk.zFTell, .seek = fk.zFSeek, .eof = fk.zFEof, .err = fk.zFError, .new_analysis = fk.zFNewAnalysis };
-}
 
 /// The §17.2 functions an expression can call.
 pub const FileFn = enum { fopen, fgetc, ungetc, fgets, fscanf, fread, ftell, fseek, rewind, feof, ferror, sscanf };
@@ -147,6 +139,15 @@ pub const FakeFile = struct {
     }
     const io: contract.FileIo = .{ .ctx = &pos, .open = open, .close = close, .put = put, .getc = getc, .ungetc = ungetc, .tell = tell, .seek = seek, .eof = eof };
 };
+
+/// A `Run`'s own descriptor table `t` (`Run.tasks.files`) as a
+/// `contract.FileIo`: `file_kernels`, the table an analog device instance
+/// runs, so both engines answer §17.2 one way (IEEE 1364-2005 §17.2.1's
+/// encodings: an mcd's bit 0 is standard output, an fd has bit 31 set and
+/// 0..2 are the standard streams).
+pub fn own(t: *ZfTable) contract.FileIo {
+    return .{ .ctx = t, .open = fk.zFOpen, .close = fk.zFClose, .put = fk.zFPut, .getc = fk.zFGetc, .ungetc = fk.zFUngetc, .tell = fk.zFTell, .seek = fk.zFSeek, .eof = fk.zFEof, .err = fk.zFError, .new_analysis = fk.zFNewAnalysis };
+}
 
 /// A descriptor is "a 32-bit value" (§17.2.1): its low 32 bits, however the
 /// variable holding it is signed (`integer fd` is the clause's own example).

@@ -14,7 +14,6 @@
 
 const std = @import("std");
 const Lowered = @import("ir").Lowered;
-const ground: u32 = @backingInt(@import("ir").Lowered.ground);
 const abi = @import("abi.zig");
 const analog = @import("analog.zig");
 const schema = @import("schema.zig");
@@ -34,6 +33,8 @@ pub const ValueError = error{ NoAnalysis, NoSolution, Unknowable, SmallSignal };
 
 /// §11.6.7 a quantity's "real value" and "imaginary value".
 pub const Value = struct { re: f64, im: f64 = 0 };
+
+const ground: u32 = @backingInt(@import("ir").Lowered.ground);
 
 /// §12.10's own string buffers, real and imaginary.
 var analog_buf: [2][analog_len]u8 = undefined;

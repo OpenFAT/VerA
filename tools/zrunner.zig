@@ -4,15 +4,51 @@
 //!
 //! Every test runs on a fresh `std.testing.allocator` and `std.testing.io`,
 //! as the stock 0.17 runner sets them up. Clauses: none (tooling).
+//!
+//! Contents:
+//! - `pub const vera_validate_contract`
+//! - `pub const TestResult = union`
+//! - `pub fn Test.wrap(test_fn: TestFn) Test`
+//! - `pub fn FileReporter.init(threaded: *std.Io.Threaded, file: std.Io.File, buffer: []u8) !FileReporter`
+//! - `pub fn fuzz(context: anytype, comptime testOne: fn (@TypeOf(context), *std.testing.Smith) anyerror!void, options: std.testing.FuzzInputOptions) anyerror!void`
+//! - `pub fn main(init: std.process.Init.Minimal) !void`
+//! - `pub fn run(arena: *std.heap.ArenaAllocator, io: std.Io, environ: std.process.Environ, process_name: []const u8, reporter: *FileReporter, results_path: ?[]const u8) !void`
 
 const std = @import("std");
 const assert = std.debug.assert;
 const builtin = @import("builtin");
 const TestFn = std.lang.TestFn;
+const Duration = std.Io.Duration;
 
 /// Every test artifact runs `contract`'s conformance checks (opt-in
 /// elsewhere, `contract.validating`), so a contract regression fails CI.
 pub const vera_validate_contract = true;
+
+/// The outcome of one test.
+pub const TestResult = union(enum) {
+    passed: struct { @"test": Test, duration: Duration, is_mem_leak: bool },
+    failed: struct { @"test": Test, duration: Duration, err: anyerror, stack_trace: []const u8, is_mem_leak: bool },
+    /// An `xfail(...)` test that failed, as it says it does.
+    xfailed: struct { @"test": Test, is_mem_leak: bool },
+
+    /// The test this result is for, whatever its outcome.
+    pub fn @"test"(self: TestResult) Test {
+        return switch (self) {
+            .passed => |result| result.@"test",
+            .failed => |result| result.@"test",
+            .xfailed => |result| result.@"test",
+        };
+    }
+
+    /// Whether `std.testing.allocator` reported a leak.
+    fn isMemoryLeak(self: TestResult) bool {
+        return switch (self) {
+            .passed => |result| result.is_mem_leak,
+            .failed => |result| result.is_mem_leak,
+            .xfailed => |result| result.is_mem_leak,
+        };
+    }
+};
 
 /// `error.SkipZigTest` is a failure (AGENTS.md: unsupported fails and never
 /// skips): a test that cannot run on a target is left out of that target's
@@ -31,183 +67,6 @@ var fuzz_calls: u64 = 0;
 comptime {
     assert(fuzz_runs > 0);
     assert(fuzz_max_len > 0);
-}
-
-/// `std.testing.fuzz` resolves to this (`@import("root").fuzz`). A plain test
-/// run is not coverage-guided, so it replays the corpus, the empty input and
-/// `fuzz_runs` seeded random inputs: a property test with `Smith` as the
-/// generator. Deterministic: the seed is the call's ordinal, so a failure
-/// replays, and the failing input is printed in hex. Coverage-guided runs use
-/// `zig build fuzz --fuzz`, which takes the stock runner.
-pub fn fuzz(
-    context: anytype,
-    comptime testOne: fn (@TypeOf(context), *std.testing.Smith) anyerror!void,
-    options: std.testing.FuzzInputOptions,
-) anyerror!void {
-    for (options.corpus) |input| try fuzzOne(context, testOne, input);
-    try fuzzOne(context, testOne, "");
-    var prng: std.Random.DefaultPrng = .init(0x5eed_f022 +% fuzz_calls);
-    fuzz_calls += 1;
-    var buf: [fuzz_max_len]u8 = undefined;
-    for (0..fuzz_runs) |_| {
-        const input = buf[0..prng.random().uintAtMost(usize, fuzz_max_len)];
-        prng.random().bytes(input);
-        try fuzzOne(context, testOne, input);
-    }
-}
-
-fn fuzzOne(
-    context: anytype,
-    comptime testOne: fn (@TypeOf(context), *std.testing.Smith) anyerror!void,
-    input: []const u8,
-) anyerror!void {
-    var smith: std.testing.Smith = .{ .in = input };
-    testOne(context, &smith) catch |err| {
-        std.debug.print("fuzz: input of {d} bytes failed with {t}: {x}\n", .{ input.len, err, input });
-        return err;
-    };
-}
-
-/// Runs this artifact's tests (`run`). Its own allocations are leak-checked:
-/// a leak in the runner itself is `unreachable`.
-pub fn main(init: std.process.Init.Minimal) !void {
-    var gpa: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
-    defer if (gpa.deinit() != 0) unreachable;
-
-    var threaded: std.Io.Threaded = .init(gpa.allocator(), .{ .environ = init.environ });
-    defer threaded.deinit();
-
-    var args = try init.args.iterateAllocator(gpa.allocator());
-    defer args.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    defer arena.deinit();
-
-    const process_name = args.next() orelse unreachable;
-    var results_path: ?[]const u8 = null;
-    while (args.next()) |arg| {
-        if (std.mem.cutPrefix(u8, arg, "--results=")) |path| results_path = path else return error.UnknownArgument;
-    }
-
-    var io_buffer: [2048]u8 = undefined;
-    var reporter: FileReporter = try .init(&threaded, std.Io.File.stdout(), &io_buffer);
-    try run(&arena, threaded.io(), init.environ, process_name, &reporter, results_path);
-}
-
-/// Runs every test of `builtin.test_functions` in order and writes the report
-/// to `reporter`. Exits the process with status 1 when a test failed or
-/// leaked, and returns only when every test passed or was an expected failure. Results
-/// and stack traces live in `arena`.
-pub fn run(
-    arena: *std.heap.ArenaAllocator,
-    io: std.Io,
-    environ: std.process.Environ,
-    process_name: []const u8,
-    reporter: *FileReporter,
-    results_path: ?[]const u8,
-) !void {
-    const tests: []const TestFn = builtin.test_functions;
-
-    var report = Report{
-        .process_name = process_name,
-        .test_results = try arena.allocator().alloc(TestResult, tests.len),
-    };
-
-    try reporter.writeTitle(report.process_name, tests.len);
-    try runTests(arena, io, environ, tests, &report);
-    // Write before the failure exit, preserving expected failures.
-    // Each artifact has its own file; parallel runs never share a writer.
-    if (results_path) |path| {
-        if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
-        var out: std.Io.Writer.Allocating = .init(arena.allocator());
-        for (report.test_results) |result| {
-            const name = result.@"test"().test_fn.name;
-            if (std.mem.findAny(u8, name, "\t\r\n") != null) return error.InvalidTestName;
-            const status: []const u8 = if (result.isMemoryLeak()) "fail" else switch (result) {
-                .passed => "pass",
-                .failed => "fail",
-                .xfailed => "xfail",
-            };
-            try out.writer.print("{s}\t{s}\n", .{ status, name });
-        }
-        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = out.written() });
-    }
-    try writeTestResults(arena, reporter, report);
-    try reporter.writeSummary(
-        report.passed_count,
-        report.failed_count,
-        report.xfail_count,
-        report.total_duration,
-        report.is_mem_leak,
-    );
-    if (report.failed_count != 0 or report.is_mem_leak) {
-        // The report above went to stdout, which `zig build` shows only for a
-        // step that writes no failure of its own; name every failure on
-        // stderr too, so a CI log says which test it was.
-        for (report.test_results) |r| switch (r) {
-            .failed => |f| std.debug.print("FAIL {s}.{s}: {s}\n", .{ f.@"test".namespace, f.@"test".name, @errorName(f.err) }),
-            .passed => |p| if (p.is_mem_leak) std.debug.print("LEAK {s}.{s}\n", .{ p.@"test".namespace, p.@"test".name }),
-            .xfailed => |x| if (x.is_mem_leak) std.debug.print("LEAK {s}.{s}\n", .{ x.@"test".namespace, x.@"test".name }),
-        };
-        std.process.exit(1);
-    }
-}
-
-fn runTests(
-    arena: *std.heap.ArenaAllocator,
-    io: std.Io,
-    environ: std.process.Environ,
-    tests: []const TestFn,
-    report: *Report,
-) !void {
-    if (tests.len == 0) return;
-
-    const total_start = std.Io.Clock.Timestamp.now(io, .awake);
-    for (tests, 0..) |test_fn, idx| {
-        const t = Test.wrap(test_fn);
-
-        report.test_results[idx] = try t.run(arena, io, environ);
-        switch (report.test_results[idx]) {
-            .passed => report.passed_count += 1,
-            .failed => report.failed_count += 1,
-            .xfailed => report.xfail_count += 1,
-        }
-        report.is_mem_leak = report.is_mem_leak or report.test_results[idx].isMemoryLeak();
-    }
-    // Every test counted exactly once.
-    assert(report.passed_count + report.failed_count + report.xfail_count == tests.len);
-    const total_end = std.Io.Clock.Timestamp.now(io, .awake);
-    report.total_duration = total_start.durationTo(total_end).raw;
-}
-
-fn writeTestResults(
-    arena: *std.heap.ArenaAllocator,
-    reporter: *FileReporter,
-    report: Report,
-) !void {
-    const alloc = arena.allocator();
-    // Insertion-ordered, so namespaces print in the order their first test
-    // ran and two runs of one artifact print the same report.
-    var grouped_tests: std.array_hash_map.String(std.ArrayList(TestResult)) = .empty;
-    for (report.test_results) |test_result| {
-        const gop = try grouped_tests.getOrPut(alloc, test_result.@"test"().namespace);
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(alloc, test_result);
-    }
-
-    var written: usize = 0;
-    var itr = grouped_tests.iterator();
-    while (itr.next()) |group| {
-        assert(group.value_ptr.items.len > 0);
-        try reporter.writeNamespace(group.key_ptr.*);
-        for (group.value_ptr.items) |test_result| {
-            try reporter.writeTestName(test_result.@"test"().name);
-            try reporter.writeTestResult(test_result);
-        }
-        written += group.value_ptr.items.len;
-    }
-    // Grouping neither drops nor repeats a result.
-    assert(written == report.test_results.len);
 }
 
 /// One test and the namespace it was declared in.
@@ -314,32 +173,6 @@ const Test = struct {
     }
 };
 
-/// The outcome of one test.
-pub const TestResult = union(enum) {
-    passed: struct { @"test": Test, duration: Duration, is_mem_leak: bool },
-    failed: struct { @"test": Test, duration: Duration, err: anyerror, stack_trace: []const u8, is_mem_leak: bool },
-    /// An `xfail(...)` test that failed, as it says it does.
-    xfailed: struct { @"test": Test, is_mem_leak: bool },
-
-    /// The test this result is for, whatever its outcome.
-    pub fn @"test"(self: TestResult) Test {
-        return switch (self) {
-            .passed => |result| result.@"test",
-            .failed => |result| result.@"test",
-            .xfailed => |result| result.@"test",
-        };
-    }
-
-    /// Whether `std.testing.allocator` reported a leak.
-    fn isMemoryLeak(self: TestResult) bool {
-        return switch (self) {
-            .passed => |result| result.is_mem_leak,
-            .failed => |result| result.is_mem_leak,
-            .xfailed => |result| result.is_mem_leak,
-        };
-    }
-};
-
 /// The outcome of every test in one artifact.
 const Report = struct {
     process_name: []const u8,
@@ -352,8 +185,6 @@ const Report = struct {
     total_duration: Duration = .zero,
     is_mem_leak: bool = false,
 };
-
-const Duration = std.Io.Duration;
 
 /// Writes the test report to a file, optionally coloured.
 const FileReporter = struct {
@@ -506,6 +337,185 @@ const FileReporter = struct {
         try t.setColor(.reset);
     }
 };
+
+/// `std.testing.fuzz` resolves to this (`@import("root").fuzz`). A plain test
+/// run is not coverage-guided, so it replays the corpus, the empty input and
+/// `fuzz_runs` seeded random inputs: a property test with `Smith` as the
+/// generator. Deterministic: the seed is the call's ordinal, so a failure
+/// replays, and the failing input is printed in hex. Coverage-guided runs use
+/// `zig build fuzz --fuzz`, which takes the stock runner.
+pub fn fuzz(
+    context: anytype,
+    comptime testOne: fn (@TypeOf(context), *std.testing.Smith) anyerror!void,
+    options: std.testing.FuzzInputOptions,
+) anyerror!void {
+    for (options.corpus) |input| try fuzzOne(context, testOne, input);
+    try fuzzOne(context, testOne, "");
+    var prng: std.Random.DefaultPrng = .init(0x5eed_f022 +% fuzz_calls);
+    fuzz_calls += 1;
+    var buf: [fuzz_max_len]u8 = undefined;
+    for (0..fuzz_runs) |_| {
+        const input = buf[0..prng.random().uintAtMost(usize, fuzz_max_len)];
+        prng.random().bytes(input);
+        try fuzzOne(context, testOne, input);
+    }
+}
+
+/// Runs this artifact's tests (`run`). Its own allocations are leak-checked:
+/// a leak in the runner itself is `unreachable`.
+pub fn main(init: std.process.Init.Minimal) !void {
+    var gpa: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    defer if (gpa.deinit() != 0) unreachable;
+
+    var threaded: std.Io.Threaded = .init(gpa.allocator(), .{ .environ = init.environ });
+    defer threaded.deinit();
+
+    var args = try init.args.iterateAllocator(gpa.allocator());
+    defer args.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer arena.deinit();
+
+    const process_name = args.next() orelse unreachable;
+    var results_path: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (std.mem.cutPrefix(u8, arg, "--results=")) |path| results_path = path else return error.UnknownArgument;
+    }
+
+    var io_buffer: [2048]u8 = undefined;
+    var reporter: FileReporter = try .init(&threaded, std.Io.File.stdout(), &io_buffer);
+    try run(&arena, threaded.io(), init.environ, process_name, &reporter, results_path);
+}
+
+/// Runs every test of `builtin.test_functions` in order and writes the report
+/// to `reporter`. Exits the process with status 1 when a test failed or
+/// leaked, and returns only when every test passed or was an expected failure. Results
+/// and stack traces live in `arena`.
+pub fn run(
+    arena: *std.heap.ArenaAllocator,
+    io: std.Io,
+    environ: std.process.Environ,
+    process_name: []const u8,
+    reporter: *FileReporter,
+    results_path: ?[]const u8,
+) !void {
+    const tests: []const TestFn = builtin.test_functions;
+
+    var report = Report{
+        .process_name = process_name,
+        .test_results = try arena.allocator().alloc(TestResult, tests.len),
+    };
+
+    try reporter.writeTitle(report.process_name, tests.len);
+    try runTests(arena, io, environ, tests, &report);
+    // Write before the failure exit, preserving expected failures.
+    // Each artifact has its own file; parallel runs never share a writer.
+    if (results_path) |path| {
+        if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
+        var out: std.Io.Writer.Allocating = .init(arena.allocator());
+        for (report.test_results) |result| {
+            const name = result.@"test"().test_fn.name;
+            if (std.mem.findAny(u8, name, "\t\r\n") != null) return error.InvalidTestName;
+            const status: []const u8 = if (result.isMemoryLeak()) "fail" else switch (result) {
+                .passed => "pass",
+                .failed => "fail",
+                .xfailed => "xfail",
+            };
+            try out.writer.print("{s}\t{s}\n", .{ status, name });
+        }
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = out.written() });
+    }
+    try writeTestResults(arena, reporter, report);
+    try reporter.writeSummary(
+        report.passed_count,
+        report.failed_count,
+        report.xfail_count,
+        report.total_duration,
+        report.is_mem_leak,
+    );
+    if (report.failed_count != 0 or report.is_mem_leak) {
+        // The report above went to stdout, which `zig build` shows only for a
+        // step that writes no failure of its own; name every failure on
+        // stderr too, so a CI log says which test it was.
+        for (report.test_results) |r| switch (r) {
+            .failed => |f| std.debug.print("FAIL {s}.{s}: {s}\n", .{ f.@"test".namespace, f.@"test".name, @errorName(f.err) }),
+            .passed => |p| if (p.is_mem_leak) std.debug.print("LEAK {s}.{s}\n", .{ p.@"test".namespace, p.@"test".name }),
+            .xfailed => |x| if (x.is_mem_leak) std.debug.print("LEAK {s}.{s}\n", .{ x.@"test".namespace, x.@"test".name }),
+        };
+        std.process.exit(1);
+    }
+}
+
+// ---- private ----
+
+fn fuzzOne(
+    context: anytype,
+    comptime testOne: fn (@TypeOf(context), *std.testing.Smith) anyerror!void,
+    input: []const u8,
+) anyerror!void {
+    var smith: std.testing.Smith = .{ .in = input };
+    testOne(context, &smith) catch |err| {
+        std.debug.print("fuzz: input of {d} bytes failed with {t}: {x}\n", .{ input.len, err, input });
+        return err;
+    };
+}
+
+fn runTests(
+    arena: *std.heap.ArenaAllocator,
+    io: std.Io,
+    environ: std.process.Environ,
+    tests: []const TestFn,
+    report: *Report,
+) !void {
+    if (tests.len == 0) return;
+
+    const total_start = std.Io.Clock.Timestamp.now(io, .awake);
+    for (tests, 0..) |test_fn, idx| {
+        const t = Test.wrap(test_fn);
+
+        report.test_results[idx] = try t.run(arena, io, environ);
+        switch (report.test_results[idx]) {
+            .passed => report.passed_count += 1,
+            .failed => report.failed_count += 1,
+            .xfailed => report.xfail_count += 1,
+        }
+        report.is_mem_leak = report.is_mem_leak or report.test_results[idx].isMemoryLeak();
+    }
+    // Every test counted exactly once.
+    assert(report.passed_count + report.failed_count + report.xfail_count == tests.len);
+    const total_end = std.Io.Clock.Timestamp.now(io, .awake);
+    report.total_duration = total_start.durationTo(total_end).raw;
+}
+
+fn writeTestResults(
+    arena: *std.heap.ArenaAllocator,
+    reporter: *FileReporter,
+    report: Report,
+) !void {
+    const alloc = arena.allocator();
+    // Insertion-ordered, so namespaces print in the order their first test
+    // ran and two runs of one artifact print the same report.
+    var grouped_tests: std.array_hash_map.String(std.ArrayList(TestResult)) = .empty;
+    for (report.test_results) |test_result| {
+        const gop = try grouped_tests.getOrPut(alloc, test_result.@"test"().namespace);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(alloc, test_result);
+    }
+
+    var written: usize = 0;
+    var itr = grouped_tests.iterator();
+    while (itr.next()) |group| {
+        assert(group.value_ptr.items.len > 0);
+        try reporter.writeNamespace(group.key_ptr.*);
+        for (group.value_ptr.items) |test_result| {
+            try reporter.writeTestName(test_result.@"test"().name);
+            try reporter.writeTestResult(test_result);
+        }
+        written += group.value_ptr.items.len;
+    }
+    // Grouping neither drops nor repeats a result.
+    assert(written == report.test_results.len);
+}
 
 // zrunner is the runner, not a module under test, so no artifact collects
 // these; `zig test tools/zrunner.zig` runs them on the stock runner.

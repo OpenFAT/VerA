@@ -1,3 +1,8 @@
+//! VerA's build graph: `module_specs` -> the `vera` executable and the steps
+//! that check and test it (`check`, `test`, `suite`, `test-<module>`,
+//! `conformance`, `fuzz`, ...; `TESTING.md` maps them to tiers). Clauses:
+//! none (build wiring).
+
 const std = @import("std");
 const Build = std.Build;
 const Module = Build.Module;
@@ -39,6 +44,29 @@ const M = struct {
     fn make(m: M, root: []const u8, imports: []const Import) *Module {
         return m.b.createModule(.{ .root_source_file = m.b.path(root), .target = m.target, .optimize = m.optimize, .imports = imports });
     }
+};
+
+/// The vera that generates test devices, and whether its runs are keyed on
+/// their inputs alone (`-Dva-cache`).
+const Gen = struct { exe: *Build.Step.Compile, copy: *Build.Step.UpdateSourceFiles, cached: bool };
+
+/// Every `tests/host/*_host.zig`, once per `//! device <path>` line: a path
+/// under `tests/conformance`, or `tests/host/...` for a device only VerA's
+/// host judges (the suite holds only tests any tool can be judged on). A
+/// `//! display emit` line builds the devices `--display=emit`.
+const HostTest = struct { host: []const u8, va: []const u8, emit: bool };
+
+/// A `.c` fixture with `//! design` (relative to the `.c`), plus its `//! stdout|stderr|xfail` lines;
+/// `//! exit 1` is a refusal, whose message is the `.expected.stderr.txt` beside it;
+/// `//@ protect-keys F` (relative to the `.c`) reaches the host as `$VERA_PROTECT_KEYS`.
+const VpiRun = struct {
+    c: []const u8,
+    design: []const u8 = "",
+    protect_keys: ?[]const u8 = null,
+    stdout: []const u8 = "",
+    stderr: ?[]const u8 = null,
+    xfail: ?[]const u8 = null,
+    refuse: ?[]const u8 = null,
 };
 
 pub fn build(b: *Build) void {
@@ -735,9 +763,7 @@ pub fn build(b: *Build) void {
     }
 }
 
-/// The vera that generates test devices, and whether its runs are keyed on
-/// their inputs alone (`-Dva-cache`).
-const Gen = struct { exe: *Build.Step.Compile, copy: *Build.Step.UpdateSourceFiles, cached: bool };
+// ---- private ----
 
 /// A run of the generating vera on `src` (build-root relative). Cached, vera
 /// runs from a fixed copy under zig-out/gen named by a plain string, so the Run's
@@ -808,12 +834,6 @@ fn addIncludes(b: *Build, run: *Run, src: []const u8) void {
         }
     }
 }
-
-/// Every `tests/host/*_host.zig`, once per `//! device <path>` line: a path
-/// under `tests/conformance`, or `tests/host/...` for a device only VerA's
-/// host judges (the suite holds only tests any tool can be judged on). A
-/// `//! display emit` line builds the devices `--display=emit`.
-const HostTest = struct { host: []const u8, va: []const u8, emit: bool };
 
 fn hostTests(b: *Build) []const HostTest {
     var found: std.ArrayList(HostTest) = .empty;
@@ -890,19 +910,6 @@ fn vpiHost(b: *Build, m: M, mods: []const Import, vera: *Module, sim: *Module, d
     mod.addImport("sim_sources", simSources(b));
     return b.addLibrary(.{ .name = "vera-vpi", .linkage = .static, .root_module = mod });
 }
-
-/// A `.c` fixture with `//! design` (relative to the `.c`), plus its `//! stdout|stderr|xfail` lines;
-/// `//! exit 1` is a refusal, whose message is the `.expected.stderr.txt` beside it;
-/// `//@ protect-keys F` (relative to the `.c`) reaches the host as `$VERA_PROTECT_KEYS`.
-const VpiRun = struct {
-    c: []const u8,
-    design: []const u8 = "",
-    protect_keys: ?[]const u8 = null,
-    stdout: []const u8 = "",
-    stderr: ?[]const u8 = null,
-    xfail: ?[]const u8 = null,
-    refuse: ?[]const u8 = null,
-};
 
 fn vpiRuns(b: *Build) []const VpiRun {
     var runs: std.ArrayList(VpiRun) = .empty;
