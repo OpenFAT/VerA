@@ -38,6 +38,7 @@ const Mir = @import("ir").Mir;
 const Lower = @import("Lower.zig");
 const lower_discrete_mark = @import("discrete_mark.zig");
 const lower_constfold = @import("constfold.zig");
+const lower_lvalue = @import("lvalue.zig");
 const lower_sysfunc_context = @import("sysfunc_context.zig");
 const Edge = lower_discrete_mark.Edge;
 const Oom = Lower.Oom;
@@ -521,8 +522,7 @@ fn regWrites(self: *Lower, funcs: []const Ast.FuncDecl, id: Ast.StmtId, sh: *Sha
         if (t == .none) continue;
         const name = self.file.str(ex.strOf(t));
         if (sh.hides(name)) continue;
-        const reg = if (self.vars.get(name)) |v| v.regWidth() != null else if (self.arrays.get(name)) |arr| (if (arr.mem) |m| m.reg_width != null else false) else false;
-        if (reg) try self.err(ex.mainTok(t), .E0316, "`{s}` is a reg: an analog procedural assignment targets an integer, real or string (§5.7)", .{name});
+        if (lower_lvalue.isReg(self, name)) try self.err(ex.mainTok(t), .E0316, "`{s}` is a reg: an analog procedural assignment targets an integer, real or string (§5.7)", .{name});
     }
     const Walk = struct {
         l: *Lower,

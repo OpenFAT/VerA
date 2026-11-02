@@ -247,6 +247,7 @@ pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) O
         if (isMemArray(self, decl.name, ty)) {
             const place = try declareMemArray(self, name, dims, ty, !hold);
             self.arrays.getPtr(name).?.mem.?.reg_width = reg_width;
+            self.arrays.getPtr(name).?.reg = reg_width != null;
             // Only memory-backed storage has a start to skip: a scalar or a
             // scalarized element is an SSA value whose zero costs nothing,
             // and a zero is one of the values an unwritten read may see.
@@ -273,7 +274,7 @@ pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) O
             }
             return;
         }
-        try declareArray(self, name, .{ .dims = dims, .ty = ty });
+        try declareArray(self, name, .{ .dims = dims, .ty = ty, .reg = reg_width != null });
         // §3.3's own example is `string names[1:3] = '{"first","middle","last"}`:
         // the declaration takes an initializer like a §3.4.4 array parameter.
         // The pattern is positional from the left bound, following the declared

@@ -1267,3 +1267,49 @@ test "a call with more operands than its 24-bit count holds is E1021, and one wi
     try expectBodyCode("analog I(p) <+ laplace_nd(V(p), '{16777216{1.0}}, '{1.0});", .E1021);
     try expectBodyCode("analog I(p) <+ laplace_nd(V(p), '{4{1.0}}, '{1.0});", null);
 }
+
+/// Lowers a one-port module with `decls` and the analog `body`, and fails
+/// unless exactly one error, E0316, is reported.
+fn expectOnlyE0316(decls: []const u8, body: []const u8) !void {
+    const src = try std.testing.allocator.print(
+        \\module m(p);
+        \\  inout p; electrical p;
+        \\{s}
+        \\  analog begin
+        \\{s}
+        \\    I(p) <+ V(p);
+        \\  end
+        \\endmodule
+    , .{ decls, body });
+    defer std.testing.allocator.free(src);
+    var h: Lower.Harness = undefined;
+    try h.init(std.testing.allocator, src);
+    defer h.deinit();
+    _ = try h.lower();
+    if (h.count(.E0316) == 1 and h.bag.err_count == 1) return;
+    std.debug.print("want exactly one E0316, got:\n", .{});
+    h.dump();
+    std.debug.print("source:\n{s}\n", .{src});
+    return error.TestUnexpectedResult;
+}
+
+test "§5.7 an analog write to a bit or part of a reg is E0316 and nothing else" {
+    // Oracle: §5.7, one error per statement. A select of a `reg` is not an
+    // array index (§3.2.2), so E0311 or E0309 beside E0316 is a second,
+    // wrong verdict on the same target.
+    try expectOnlyE0316("  reg [39:0] r;", "    r[38:8] = 1;");
+    try expectOnlyE0316("  reg [7:0] b;", "    b[3] = 1;");
+    try expectOnlyE0316("  parameter integer hi = 6, lo = 2;\n  reg [7:0] b;", "    b[hi:lo] = 1;");
+    try expectOnlyE0316("  reg [39:0] r;", "    r[8+:4] = 1;");
+}
+
+test "§5.7 an analog write to an element of a reg array is E0316 and nothing else" {
+    // Oracle: §5.7 names "an element of an integer, real or string array";
+    // an array of `reg`s (IEEE 1364-2005 §4.9) is none, whether a constant
+    // subscript scalarizes it or a run-time one keeps it in memory. A
+    // constant-indexed element write compiled with no diagnostic, and a
+    // part-select of one added E0356.
+    try expectOnlyE0316("  reg [7:0] m [0:3];", "    m[1] = 1;");
+    try expectOnlyE0316("  reg [7:0] m [0:3];", "    m[1][3:0] = 1;");
+    try expectOnlyE0316("  reg [7:0] m [0:3];\n  integer k;", "    k = 2;\n    m[k] = 1;");
+}
