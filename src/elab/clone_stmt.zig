@@ -102,11 +102,15 @@ pub fn cloneStmt(self: *Flatten, id: Ast.StmtId) design.Error!Ast.StmtId {
             .is_generate = v.is_generate,
         } },
         .case_stmt => |v| blk: {
+            // Each arm is read again: cloning a body appends arms and lists,
+            // which moves `v.arms` when the source row is this file's own.
             const arms = try self.ctx.arena.alloc(Ast.CaseArm, v.arms.len);
-            for (v.arms, arms) |src, *o| {
-                const labels = try self.ctx.arena.alloc(Ast.ExprId, src.labels.len);
-                for (src.labels, labels) |l, *ol| ol.* = try clone_expr.cloneExpr(self, l);
-                o.* = .{ .labels = labels, .body = try cloneStmt(self, src.body) };
+            for (arms, 0..) |*o, k| {
+                const src = file.stmt(id).case_stmt.arms[k];
+                const from = file.caseLabels(src);
+                const labels = try self.ctx.arena.alloc(Ast.ExprId, from.len);
+                for (from, labels) |l, *ol| ol.* = try clone_expr.cloneExpr(self, l);
+                o.* = .{ .labels = try file.addCaseLabels(self.ctx.arena, labels), .body = try cloneStmt(self, src.body) };
             }
             break :blk .{ .case_stmt = .{
                 .kind = v.kind,

@@ -216,7 +216,7 @@ pub fn constReal(self: *Flatten, e: Ast.ExprId) ?f64 {
 /// instead (`Design.system_checks`), under the name `path$kind`.
 pub fn checkSystemParam(self: *Flatten, kind: hier_param.Kind, tok: u32, e: Ast.ExprId, path: []const u8) design.Error!bool {
     assert(e != .none);
-    if (constfold.firstStateRead(self.ctx.file, e, self.decls.vars.items)) |what| {
+    if (try constfold.firstStateRead(self.ctx.arena, self.ctx.file, e, self.decls.vars.items)) |what| {
         try self.err(tok, .E0363, "`{s}` override reads `{s}`", .{ kind.name(), what });
         return true;
     }

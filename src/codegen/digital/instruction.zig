@@ -76,9 +76,9 @@ pub fn instruction(em: *Emitter, pc: u32) Error!void {
             try em.print(";\n", .{});
             // A case of only `default` reads its scrutinee and nothing else.
             for (case.arms) |arm| {
-                if (arm.labels.len != 0) break;
+                if (r.file.caseLabels(arm).len != 0) break;
             } else try em.print("            _ = v;\n", .{});
-            for (case.arms, 0..) |arm, i| for (arm.labels) |lb| {
+            for (case.arms, 0..) |arm, i| for (r.file.caseLabels(arm)) |lb| {
                 try em.print("            if (L.caseMatch(.{t}, v, ", .{case.kind});
                 try expr.caseLabel(em, lb, c.ty, case.kind);
                 try em.print(")) continue :sw {d};\n", .{r.program.case_targets.items[c.targets + i]});

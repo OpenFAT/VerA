@@ -214,7 +214,7 @@ const Exposed = struct {
                 var dflt = false;
                 for (c.arms) |arm| {
                     try arms.append(self.arena, arm.body);
-                    dflt = dflt or arm.labels.len == 0;
+                    dflt = dflt or self.file.caseLabels(arm).len == 0;
                 }
                 if (!dflt) try arms.append(self.arena, .none);
                 try x.alts(arms.items);

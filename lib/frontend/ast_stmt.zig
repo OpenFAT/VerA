@@ -7,6 +7,8 @@
 //! - `pub const Timing = enum`
 //! - `pub const Stmt = union(enum)`: `JumpKind`
 //! - `pub const BlockId = enum(u32)`
+//! - `pub const ExprList = enum(u32)`
+//! - `pub const ArmRange = struct`
 //! - `pub const StmtRow = row:`
 //! - `pub const ProcContinuous = enum(u8)`
 //! - `pub const CaseKind = enum(u8)`
@@ -55,7 +57,9 @@ pub const Timing = enum {
 
 /// Statement node (LRM §5), the value `SourceFile.stmt` returns. The pool
 /// stores each one as a `StmtRow`, with a `.block`'s `SeqBlock` kept in
-/// `SourceFile.blocks`; build one and hand it to `SourceFile.addStmt`.
+/// `SourceFile.blocks`, a case's arms in `SourceFile.arms` and a system
+/// task's arguments in `SourceFile.stmt_lists`; build one and hand it to
+/// `SourceFile.addStmt`, which copies both slices.
 pub const Stmt = union(enum) {
     /// A.6.4 `analog_statement_or_null ::= ... | ;`
     empty,
@@ -109,7 +113,7 @@ pub const Stmt = union(enum) {
         is_generate: bool = false,
     },
     /// §5.8.3 case (A.6.7), and Syntax 6-8 `case_generate_construct` when
-    /// `is_generate`. An arm with `labels.len == 0` is `default`.
+    /// `is_generate`. An arm whose `labels` list is empty is `default`.
     case_stmt: struct {
         kind: CaseKind = .normal,
         scrutinee: ExprId,
@@ -152,21 +156,38 @@ pub const Stmt = union(enum) {
 /// Handle into `SourceFile.blocks`, the §5.3.2 blocks of the statement pool.
 pub const BlockId = enum(u32) { _ };
 
+/// Handle of an `ExprId` list in `SourceFile.stmt_lists`: a case arm's
+/// labels, a system task's arguments. Lists number on from an overlay's
+/// base's, as `StmtId`s do.
+pub const ExprList = enum(u32) { _ };
+
+/// `len` consecutive `SourceFile.arms` rows from `start`, numbered on from an
+/// overlay's base's.
+pub const ArmRange = struct { start: u32, len: u32 };
+
 /// The stored form of a `Stmt`: the same arms, except that `.block` holds a
-/// `BlockId` into `SourceFile.blocks`. A `SeqBlock` is 104 bytes and every
-/// other arm at most 24, so keeping blocks out of the row makes a row 32
-/// bytes instead of 112 (8,239 rows on psp103, 1,806 of them blocks).
+/// `BlockId` into `SourceFile.blocks`, `.case_stmt` an `ArmRange` and
+/// `.sys_task` an `ExprList`. A `SeqBlock` is 104 bytes and every other arm
+/// at most 20 once its slices are handles, so a row is 24 bytes where it
+/// was 112 with blocks inline and 32 with slices (8,239 rows on psp103,
+/// 1,806 of them blocks).
 pub const StmtRow = row: {
     const u = @typeInfo(Stmt).@"union";
     var types = u.field_types[0..u.field_types.len].*;
     types[std.meta.fieldIndex(Stmt, "block").?] = BlockId;
+    types[std.meta.fieldIndex(Stmt, "case_stmt").?] = CaseRow;
+    types[std.meta.fieldIndex(Stmt, "sys_task").?] = TaskRow;
     break :row @Union(.auto, u.tag_type.?, u.field_names, &types, u.field_attrs);
 };
 
-// Budget: the widest non-block arm (24 B) plus the tag; `SeqBlock`, the arm
-// kept out of the row, is the 104 B `StmtRow`'s doc names.
+// Budget: the widest arm, `.assign`'s four ids and four one-byte fields
+// (20 B), plus the tag; no row holds a slice or a pointer. `SeqBlock`, the
+// arm kept out of the row, is the 104 B `StmtRow`'s doc names.
 comptime {
-    assert(@sizeOf(StmtRow) <= 32);
+    assert(@sizeOf(@FieldType(Stmt, "assign")) <= 20);
+    assert(@sizeOf(CaseRow) <= 16);
+    assert(@sizeOf(TaskRow) == 8);
+    assert(@sizeOf(StmtRow) <= 24);
     assert(@sizeOf(SeqBlock) <= 104);
 }
 
@@ -178,9 +199,10 @@ pub const ProcContinuous = enum(u8) { none, assign, deassign, force, release };
 /// accept them and lowering can diagnose them precisely.
 pub const CaseKind = enum(u8) { normal, casex, casez };
 
-/// §5.8.3 one case arm. `labels.len == 0` ⇒ `default`.
+/// §5.8.3 one case arm. `labels` comes from `SourceFile.addCaseLabels` and
+/// reads back through `SourceFile.caseLabels`; an empty list ⇒ `default`.
 pub const CaseArm = struct {
-    labels: []const ExprId,
+    labels: ExprList,
     body: StmtId,
 };
 
@@ -246,6 +268,17 @@ pub const Edge = enum {
     branch,
 };
 
+/// `Stmt.case_stmt` as a row stores it.
+const CaseRow = struct {
+    kind: CaseKind,
+    scrutinee: ExprId,
+    arms: ArmRange,
+    is_generate: bool,
+};
+
+/// `Stmt.sys_task` as a row stores it.
+const TaskRow = struct { name: StrId, args: ExprList };
+
 /// One `stmtEdges` callback, as a test records it.
 const Visit = union(enum) {
     expr: struct { e: ExprId, edge: Edge },
@@ -305,7 +338,7 @@ pub fn stmtEdges(self: *const SourceFile, id: StmtId, v: anytype) !void {
         .case_stmt => |s| {
             try v.expr(s.scrutinee, .read);
             for (s.arms) |arm| {
-                for (arm.labels) |l| try v.expr(l, .read);
+                for (self.caseLabels(arm)) |l| try v.expr(l, .read);
                 try v.stmt(arm.body);
             }
         },
@@ -543,7 +576,7 @@ test "stmtEdges: every other arm, operands then children in source order" {
     try expectEdges(&f, try f.addStmt(gpa, .{ .contribute = .{ .lhs = br, .rhs = b } }, 0), &.{ branch, read(b) });
     try expectEdges(&f, try f.addStmt(gpa, .{ .indirect = .{ .lhs = br, .probe = b, .eqn = c } }, 0), &.{ branch, read(b), read(c) });
     try expectEdges(&f, try f.addStmt(gpa, .{ .if_stmt = .{ .cond = a, .then_s = s0, .else_s = .none } }, 0), &.{ read(a), .{ .stmt = s0 }, .{ .stmt = .none } });
-    const arms = [_]CaseArm{ .{ .labels = &.{ b, c }, .body = s0 }, .{ .labels = &.{}, .body = s1 } };
+    const arms = [_]CaseArm{ .{ .labels = try f.addCaseLabels(gpa, &.{ b, c }), .body = s0 }, .{ .labels = try f.addCaseLabels(gpa, &.{}), .body = s1 } };
     try expectEdges(&f, try f.addStmt(gpa, .{ .case_stmt = .{ .scrutinee = a, .arms = &arms } }, 0), &.{ read(a), read(b), read(c), .{ .stmt = s0 }, .{ .stmt = s1 } });
     try expectEdges(&f, try f.addStmt(gpa, .{ .for_stmt = .{ .init = s0, .cond = a, .step = s1, .body = s0 } }, 0), &.{ .{ .stmt = s0 }, read(a), .{ .stmt = s1 }, .{ .stmt = s0 } });
     try expectEdges(&f, try f.addStmt(gpa, .{ .while_stmt = .{ .cond = a, .body = s0 } }, 0), &.{ read(a), .{ .stmt = s0 } });

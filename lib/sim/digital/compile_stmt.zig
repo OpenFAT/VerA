@@ -184,11 +184,11 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             var ty = typeOf(self, s.scrutinee);
             var have_default = false;
             for (s.arms) |arm| {
-                if (arm.labels.len == 0) {
+                if (self.file.caseLabels(arm).len == 0) {
                     if (have_default) return self.fail(tok, "a case statement cannot have multiple default items", .{});
                     have_default = true;
                 }
-                for (arm.labels) |label| {
+                for (self.file.caseLabels(arm)) |label| {
                     try checkExpr(self, label);
                     ty = common(ty, typeOf(self, label));
                 }
@@ -200,7 +200,7 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
             const exits = try self.arena.alloc(u32, s.arms.len);
             for (s.arms, 0..) |arm, i| {
                 self.program.case_targets.items[targets + i] = position(self);
-                if (arm.labels.len == 0) self.program.code.items[dispatch].case_select.fallback = position(self);
+                if (self.file.caseLabels(arm).len == 0) self.program.code.items[dispatch].case_select.fallback = position(self);
                 try compileStmt(self, arm.body, depth + 1);
                 exits[i] = try append(self, .{ .jump = 0 });
             }
