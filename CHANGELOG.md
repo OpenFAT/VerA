@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.22.0 — 2026-11-02
+
+On Suite VAMS-CONFORMANCE, we score Verilog-A 2448/2452, Verilog 3611/3611, Verilog-AMS 746/754, Cumulative: 6805/6817.
+
 - **Contract: a printing device keeps one §9.5 descriptor table per
   instance.** `contract.FileIo` gains `ctx`, which every function takes
   first; a device declares `fileIo(inst)` in place of `file_io`, and
