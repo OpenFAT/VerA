@@ -10,7 +10,7 @@
   first point's. For `--display=emit` devices only, `Instance` gains `zm__`
   (the monitor latches) and the latched §9.5 results move from
   `zf__.res__<site>` to top-level `zf_res__<site>`; `--display=drop` and
-  `record` devices change only in unused kernel text (#PR).
+  `record` devices change only in unused kernel text (#123).
 
 ## v0.22.0 — 2026-11-02
 
