@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.23.0 — 2026-11-02
+
+On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Verilog-AMS 755/755, Cumulative: 6818/6818.
+
 - **Without `connectrules`, a mixed port is found where Annex F.2.1 puts it
   when the net below it reaches a paramset instance, an instance array or a
   generate instance** (F.2.1 step 1, §6.4.2, §6.6): such a design is now
