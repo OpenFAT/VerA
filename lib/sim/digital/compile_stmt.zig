@@ -96,19 +96,21 @@ pub fn compileStmt(self: *Run, id: Ast.StmtId, depth: u32) Error!void {
     switch (self.file.stmt(id)) {
         .empty => {},
         .block => |b| {
-            // IEEE 1364-2005 §12.7: a named block's declarations are a scope
-            // of their own, searched before the one around it, so a local
-            // shadows a module variable of the same name. The block's name
-            // stays in the enclosing scope, where `disable` finds it.
-            // Pass one made the scope (`root.blockScopes`), except in an
-            // automatic activation's copy, which gets one here.
+            // IEEE 1364-2005 §12.5/§12.7: a named block is a scope of its
+            // own, searched before the one around it, so a local shadows a
+            // module variable of the same name and a nested block may reuse
+            // an outer block's name. The block's name stays in the enclosing
+            // scope, where `disable` finds it. Pass one made the scope
+            // (`root.blockScopes`), except for a body compiled before pass
+            // one reached it (a §10.4.5 constant function, `earlyFrame`) and
+            // an automatic activation's copy, which get one here.
             // ponytail: `%m` inside such a block names the block but not the
             // named blocks around it.
             const outer = self.scope;
             defer self.scope = outer;
             if (self.hier.block_scopes.get(.{ .scope = outer, .stmt = id })) |inner| {
                 self.scope = inner;
-            } else if (b.vars.len != 0 or b.params.len != 0 or b.events.len != 0) {
+            } else if (b.name != .none or b.vars.len != 0 or b.params.len != 0 or b.events.len != 0) {
                 self.scope = try elab.blockScope(self, outer, id);
             }
             const start = position(self);
