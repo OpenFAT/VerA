@@ -29,7 +29,7 @@ const site_max = 0xff_ffff - 1;
 pub fn badFinishNumber(self: *Lower, args: []const Ast.ExprId) Oom!bool {
     assert(self.blockValid(self.cur));
     if (args.len == 0 or args[0] == .none) return false;
-    const cv = lower_constfold.constEval(self, args[0]);
+    const cv = try lower_constfold.constEval(self, args[0]);
     if (cv) |v| switch (v) {
         .str => return false,
         .int => |n| if (n >= 0 and n <= 2) return false,
@@ -59,7 +59,7 @@ pub fn lowerStatus(self: *Lower, tok: u32, fatal: bool, args: []const Ast.ExprId
     for (args, 0..) |a, i| {
         if (a == .none) continue;
         const text = try lower_sysfunc_args.outputLiteral(self, a) orelse
-            if (lower_constfold.constEval(self, a)) |cv| switch (cv) {
+            if (try lower_constfold.constEval(self, a)) |cv| switch (cv) {
                 .str => |s| s,
                 else => null,
             } else null;

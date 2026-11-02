@@ -370,7 +370,7 @@ fn timerFunctionConstant(self: *Lower, name: Ast.StrId) Oom!bool {
             .jump => |j| if (j.kind == .ret) j.value else return false,
             else => return false, // else: no unconditional final result is established
         };
-        if (constfold.fold(self.file, value, constfold.literal_env) == null) return false;
+        if ((try constfold.fold(self.arena, self.file, value, constfold.literal_env)) == null) return false;
         return !try timerEarlyReturn(self, fd.body, last);
     };
     return false;
@@ -438,7 +438,7 @@ fn timerInputReads(self: *Lower, e: Ast.ExprId, reads: *std.ArrayList(TimerRead)
                 var buf: [lower_shape.max_stack_dims]i64 = undefined;
                 const idx = try lower_shape.subscriptBuf(self, &buf, chain.subs.len);
                 const fixed = for (chain.subs, idx) |sub, *value| {
-                    const c = lower_constfold.foldExpr(self, sub, false) orelse break false;
+                    const c = (try lower_constfold.foldExpr(self, sub, false)) orelse break false;
                     value.* = c.asIntExact() orelse break false;
                 } else true;
                 if (fixed) {

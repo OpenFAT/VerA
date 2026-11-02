@@ -81,7 +81,7 @@ pub fn lowerConcat(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
             // still folds, and so does one over parameters: the count sizes
             // the result, so a parameter in it is a SHAPE parameter (§3.4 —
             // fixed at compilation, `checkShape` refuses a card that moves it).
-            .undef, .str_const, .param_ref, .block_param, .inst_result => lower_constfold.shapeEval(self, count),
+            .undef, .str_const, .param_ref, .block_param, .inst_result => try lower_constfold.shapeEval(self, count),
         };
         const v = k orelse Const{ .str = "" };
         if (v == .str) {

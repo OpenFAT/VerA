@@ -493,7 +493,7 @@ fn declAttrs(self: *Lower) Oom![]const Lowered.DeclAttr {
         for (b.specs) |s| try out.append(self.arena, .{
             .tok = b.owner.tok,
             .name = self.file.str(s.name),
-            .value = if (s.value == .none) .{ .int = 1 } else constfold.fold(self.file, s.value, constfold.literal_env),
+            .value = if (s.value == .none) .{ .int = 1 } else try constfold.fold(self.arena, self.file, s.value, constfold.literal_env),
         });
     }
     for (out.items) |a| assert(a.tok < self.tok_starts.len or self.tok_starts.len == 0);

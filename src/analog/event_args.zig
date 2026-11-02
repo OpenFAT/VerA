@@ -51,7 +51,7 @@ pub fn checkEventArgBounds(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bo
     // "enable ... shall evaluate to an integer" (§5.10.3.1-§5.10.3.3); only a
     // folded non-integral value is refused. absdelta's is checked below.
     if (enableSlot(name)) |k| if (k < args.len and args[k] != .none) {
-        if (lower_constfold.foldExpr(self, args[k], false)) |c| {
+        if (try lower_constfold.foldExpr(self, args[k], false)) |c| {
             if (c != .str and c.asReal() != @round(c.asReal()))
                 try self.err(self.file.exprs.mainTok(args[k]), .E0517, "`{s}()` enable shall evaluate to an integer, got {d}", .{ name, c.asReal() });
         }
@@ -64,12 +64,12 @@ pub fn checkEventArgBounds(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bo
         const bounds = [_][]const u8{ "delta", "time_tol", "expr_tol" };
         for (bounds, 1..) |arg_name, i| {
             if (i >= args.len or args[i] == .none) continue;
-            const c = lower_constfold.foldExpr(self, args[i], false) orelse continue;
+            const c = (try lower_constfold.foldExpr(self, args[i], false)) orelse continue;
             if (c == .str or c.asReal() >= 0) continue;
             try self.err(self.file.exprs.mainTok(args[i]), .E0517, "`absdelta()` {s} shall be non-negative, got {d}", .{ arg_name, c.asReal() });
         }
         if (args.len > 4 and args[4] != .none) {
-            if (lower_constfold.foldExpr(self, args[4], false)) |c| {
+            if (try lower_constfold.foldExpr(self, args[4], false)) |c| {
                 if (c != .str and c.asReal() != @round(c.asReal()))
                     try self.err(self.file.exprs.mainTok(args[4]), .E0517, "`absdelta()` enable shall evaluate to an integer, got {d}", .{c.asReal()});
             }
@@ -79,7 +79,7 @@ pub fn checkEventArgBounds(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bo
     const is_cross = std.mem.eql(u8, name, "cross");
     if (std.mem.eql(u8, name, "timer")) {
         if (args.len < 3 or args[2] == .none) return true;
-        const c = lower_constfold.constEval(self, args[2]) orelse return true;
+        const c = (try lower_constfold.constEval(self, args[2])) orelse return true;
         if (c == .str or c.asReal() >= 0) return true;
         try self.err(self.file.exprs.mainTok(args[2]), .E0517, "`timer()` time_tol shall be non-negative, got {d}", .{c.asReal()});
         return true;
@@ -90,7 +90,7 @@ pub fn checkEventArgBounds(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bo
     const tol_first: usize = if (is_cross) 2 else 1;
 
     if (dir) |d| if (d < args.len and args[d] != .none) {
-        if (lower_constfold.constEval(self, args[d])) |c| {
+        if (try lower_constfold.constEval(self, args[d])) |c| {
             const v = c.asReal();
             // "shall evaluate to integers". Only a folded non-integral value is
             // refused: 0.5 selects no direction, while a real 1.0 evaluates to one.
@@ -103,7 +103,7 @@ pub fn checkEventArgBounds(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!bo
     for (tol_first..@max(tol_first, @min(tol_first + 2, args.len))) |i| {
         if (args[i] == .none) continue;
         tol_given = true;
-        const c = lower_constfold.constEval(self, args[i]) orelse continue;
+        const c = (try lower_constfold.constEval(self, args[i])) orelse continue;
         if (c == .str) continue;
         const v = c.asReal();
         if (v >= 0) continue;

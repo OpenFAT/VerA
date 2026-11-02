@@ -112,7 +112,7 @@ pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src
     const file = self.ctx.file;
     var hits: std.ArrayList(Hit) = .empty;
     for (src, 0..) |inst, ii| {
-        if (ii >= module.instances.len and !fold.gateHolds(self, gates[ii - module.instances.len])) continue;
+        if (ii >= module.instances.len and !try fold.gateHolds(self, gates[ii - module.instances.len])) continue;
         const child_path = try self.ctx.arena.print("{s}{s}{c}", .{ path, file.str(inst.name), sep });
         const child = try moduleOf(self, &inst, child_path) orelse continue;
         if (child.is_connect) continue;
@@ -199,8 +199,8 @@ pub fn plan(self: *Flatten, module: *const Ast.ModuleDecl, path: []const u8, src
         // names a module array's).
         var lo: i64, var hi: i64 = .{ 0, 0 };
         if (pt.range) |rg| {
-            const msb = fold.constInt(self, rg.msb);
-            const lsb = fold.constInt(self, rg.lsb);
+            const msb = try fold.constInt(self, rg.msb);
+            const lsb = try fold.constInt(self, rg.lsb);
             if (msb == null or lsb == null) {
                 try self.err(pt.main_tok, .E0909, "`{s}`", .{pt.inst});
                 continue;

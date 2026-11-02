@@ -202,7 +202,7 @@ pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) O
     const name = self.file.str(decl.name);
     const ty = astTy(decl.ty);
     const reg_width: ?u32 = if (decl.storage == .reg) blk: {
-        const width = if (decl.packed_range) |range| lower_shape.packedShapeWidth(self, range) orelse {
+        const width = if (decl.packed_range) |range| (try lower_shape.packedShapeWidth(self, range)) orelse {
             try self.err(decl.main_tok, .E0352, "the packed range of `{s}` is not a constant integer range", .{name});
             return;
         } else 1;
@@ -315,7 +315,7 @@ pub fn declareVarDecl(self: *Lower, decl: *const Ast.VarDecl, scope: VarScope) O
     const slot = try declareVar(self, name, vty);
     self.vars.getPtr(name).?.reg_width = reg_width orelse VarSlot.not_reg;
     self.vars.getPtr(name).?.reg_signed = decl.storage == .reg and decl.is_signed;
-    if (decl.storage == .reg) if (decl.packed_range) |range| if (lower_constfold.constEval(self, range.msb)) |m| if (lower_constfold.constEval(self, range.lsb)) |l| {
+    if (decl.storage == .reg) if (decl.packed_range) |range| if (try lower_constfold.constEval(self, range.msb)) |m| if (try lower_constfold.constEval(self, range.lsb)) |l| {
         const right = l.asIntExact() orelse 0;
         try self.reg_ranges.put(self.arena, name, .{ .right = right, .asc = (m.asIntExact() orelse 0) < right, .width = reg_width.?, .signed = decl.is_signed });
     };
@@ -567,7 +567,7 @@ fn scratchOn(self: *Lower, tok: u32) Oom!Scratch {
     assert(tok < self.tok_starts.len or self.tok_starts.len == 0 or tok == std.math.maxInt(u32));
     const a = try scratchSpec(self, tok) orelse return .off;
     if (a.value == .none) return .zero;
-    const c = lower_constfold.foldExpr(self, a.value, false) orelse {
+    const c = (try lower_constfold.foldExpr(self, a.value, false)) orelse {
         try self.err(a.main_tok, .E0534, "", .{});
         return .off;
     };
@@ -692,7 +692,7 @@ fn refuseDigitalScratch(self: *Lower, digital: *const std.AutoHashMapUnmanaged(A
     if (!digital.contains(v.name)) return;
     const a = try scratchSpec(self, v.main_tok) orelse return;
     if (a.value != .none) {
-        const c = lower_constfold.foldExpr(self, a.value, false) orelse return;
+        const c = (try lower_constfold.foldExpr(self, a.value, false)) orelse return;
         if ((scratchMode(c) orelse return) == .off) return;
     }
     try self.err(a.main_tok, .E0537, "`{s}`", .{self.file.str(v.name)});

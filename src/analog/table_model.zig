@@ -65,7 +65,7 @@ pub fn lowerTableModel(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     // that can be assigned to an analog signal", while every data-source
     // argument is an array (a name, or a §3.4.8 pattern) or a string.
     var i: usize = 0;
-    while (i < args.len and args[i] != .none and !isTableSource(self, args[i])) i += 1;
+    while (i < args.len and args[i] != .none and !try isTableSource(self, args[i])) i += 1;
     const nd = i;
     if (nd == 0 or i == args.len) {
         try self.err(self.file.exprs.mainTok(e), .E0815, "`$table_model(table_inputs, table_data_source [, table_control_string])` — one lookup expression per dimension, then the data source", .{});
@@ -92,7 +92,7 @@ pub fn lowerTableModel(self: *Lower, e: Ast.ExprId) Oom!TypedValue {
     var ns: usize = 0;
     while (i < args.len) : (i += 1) {
         if (args[i] == .none) continue;
-        const c = lower_constfold.constEval(self, args[i]) orelse break;
+        const c = (try lower_constfold.constEval(self, args[i])) orelse break;
         if (c != .str or ns == 2) break;
         strs[ns] = c.str;
         ns += 1;
@@ -237,10 +237,10 @@ pub fn readNoiseTableFile(self: *Lower, e: Ast.ExprId, name: []const u8) Oom!?[]
 // ---- private ----
 
 /// Is this argument part of `table_data_source` rather than a lookup input?
-fn isTableSource(self: *Lower, a: Ast.ExprId) bool {
+fn isTableSource(self: *Lower, a: Ast.ExprId) std.mem.Allocator.Error!bool {
     assert(a == .none or self.exprValid(a));
     if (isTableArray(self, a)) return true;
-    const c = lower_constfold.constEval(self, a) orelse return false;
+    const c = (try lower_constfold.constEval(self, a)) orelse return false;
     return c == .str;
 }
 

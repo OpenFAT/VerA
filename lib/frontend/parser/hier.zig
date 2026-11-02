@@ -56,7 +56,7 @@ pub fn parseDottedPath(self: *Parser, allow_index: bool, unfolded: ?*std.ArrayLi
             self.pos += 1;
             const idx = try parse_expr.parseExpr(self);
             _ = try self.expect(.rbracket);
-            if (try self.walk(tok, constIndex, .{ self, idx })) |k| {
+            if (try constIndex(self, idx)) |k| {
                 var buf: [24]u8 = undefined;
                 try joined.appendSlice(self.arena, std.mem.print(&buf, "[{d}]", .{k}) catch unreachable);
             } else if (unfolded) |list| {
@@ -109,11 +109,10 @@ pub fn parseInstanceSelect(self: *Parser, name: Ast.StrId, unfolded: *std.ArrayL
     assert(self.pos < self.tags.len);
     const pos_in = self.pos;
     defer assert(self.pos >= pos_in);
-    const tok = self.pos;
     self.pos += 1;
     const idx = try parse_expr.parseExpr(self);
     _ = try self.expect(.rbracket);
-    const k = try self.walk(tok, constIndex, .{ self, idx }) orelse {
+    const k = try constIndex(self, idx) orelse {
         try unfolded.append(self.arena, idx);
         return self.file.intern(self.arena, try self.arena.print("{s}[]", .{self.file.str(name)}));
     };
@@ -126,7 +125,7 @@ pub fn parseInstanceSelect(self: *Parser, name: Ast.StrId, unfolded: *std.ArrayL
 /// integer typing: the same kernel elaboration applies to the instance-array
 /// range. Parameters are elaboration's, so a read of one does not fold, and
 /// neither does a real-valued index.
-fn constIndex(self: *const Parser, e: Ast.ExprId) ?i64 {
-    const c = constfold.fold(&self.file, e, constfold.literal_env) orelse return null;
+fn constIndex(self: *const Parser, e: Ast.ExprId) std.mem.Allocator.Error!?i64 {
+    const c = (try constfold.fold(self.arena, &self.file, e, constfold.literal_env)) orelse return null;
     return if (c == .int) c.int else null;
 }

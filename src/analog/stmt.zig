@@ -291,7 +291,7 @@ fn publishBlockLocals(self: *Lower, label: []const u8, b: Ast.SeqBlock) Oom!void
 fn nodiffValue(self: *Lower, a: Ast.LteAttr) Oom!bool {
     assert(a.value == .none or self.exprValid(a.value));
     if (a.value == .none) return true;
-    const c = lower_constfold.foldExpr(self, a.value, false) orelse {
+    const c = (try lower_constfold.foldExpr(self, a.value, false)) orelse {
         try self.err(a.main_tok, .E0525, "", .{});
         assert(self.had_error);
         return false;

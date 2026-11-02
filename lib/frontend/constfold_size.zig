@@ -1,24 +1,31 @@
 //! The constant folder's sizing (VAMS §4.2.9; IEEE 1364-2005 §§5.4–5.5): an
 //! expression's width and signedness in, how `constfold` sizes its operands
 //! out. Each walk keeps its pending rows on a heap stack (`Pending`), so an
-//! expression nests as deep as memory allows on any thread. Names come from
+//! expression nests as deep as memory allows on any thread; out of memory is
+//! `Error`, never null. Names come from
 //! the caller's `env` (`width`, `signed`), as for `constfold.fold`.
 //!
 //! Contents:
 //! - `pub const UnsignedCompare = struct`: `Side`, `extend`
 //! - `pub const IntContext = struct`: `normalize`
 //! - `pub const IntPlan = struct`: `resize`
-//! - `pub fn unsignedCompare(file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId, env: anytype) ?UnsignedCompare`
-//! - `pub fn operandWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32`
-//! - `pub fn clog2Width(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32`
-//! - `pub fn clog2Signed(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?bool`
-//! - `pub fn intPlan(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) ?IntPlan`
+//! - `pub const Error = std.mem.Allocator.Error`
+//! - `pub fn unsignedCompare(gpa: std.mem.Allocator, file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId, env: anytype) Error!?UnsignedCompare`
+//! - `pub fn operandWidth(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?u32`
+//! - `pub fn clog2Width(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?u32`
+//! - `pub fn clog2Signed(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?bool`
+//! - `pub fn intPlan(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) Error!?IntPlan`
 //! - `pub fn literalWidth(ex: *const Ast.ExprStore, e: Ast.ExprId) u32`
 //! - `pub fn Pending(comptime T: type) type`: `init`, `deinit`, `push`, `pushBoth`, `pop`, `items`
+//! - `pub fn envSigned(env: anytype, e: Ast.ExprId) Error!?bool`
 
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("ast.zig");
+
+/// The one failure a walk adds to the caller's: no memory for its pending
+/// rows. Never answered as null: that would change the fold's verdict.
+pub const Error = std.mem.Allocator.Error;
 
 /// §4.2.9 on the i64 carrier: "When one or both operands are unsigned, the
 /// expression shall be interpreted as a comparison between unsigned values. If
@@ -95,11 +102,11 @@ const rows_in_place = 64;
 
 /// The §4.2.9 extension of comparison `l` vs `r` under `env` (`fold`'s), or
 /// null when neither operand is known unsigned.
-pub fn unsignedCompare(file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId, env: anytype) ?UnsignedCompare {
+pub fn unsignedCompare(gpa: std.mem.Allocator, file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId, env: anytype) Error!?UnsignedCompare {
     assert(l != .none);
     assert(r != .none);
-    if ((env.signed(l) orelse true) and (env.signed(r) orelse true)) return null;
-    const w = [2]?u32{ operandWidth(file, l, env), operandWidth(file, r, env) };
+    if (((try envSigned(env, l)) orelse true) and ((try envSigned(env, r)) orelse true)) return null;
+    const w = [2]?u32{ try operandWidth(gpa, file, l, env), try operandWidth(gpa, file, r, env) };
     var u: UnsignedCompare = .{ .mask = undefined, .flip = false };
     for (w, &u.mask) |wi, *m| {
         const n = wi orelse {
@@ -119,9 +126,9 @@ pub fn unsignedCompare(file: *const Ast.SourceFile, l: Ast.ExprId, r: Ast.ExprId
 /// 32 bits, since the analog operators compute at that width, or the carrier's
 /// wider value where a sign, a complement, a bitwise operator or `?:` passes a
 /// wide operand through. Null when unknown.
-pub fn operandWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32 {
+pub fn operandWidth(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?u32 {
     assert(e != .none);
-    const w = expressionWidth(file, e, env, false);
+    const w = try expressionWidth(gpa, file, e, env, false);
     // Not self-determined: an operator result is at least §3.2's 32 bits.
     if (w) |x| if (file.exprs.tag(e) == .binary) assert(x >= 32);
     return w;
@@ -130,50 +137,50 @@ pub fn operandWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u
 /// IEEE 1364-2005 §5.4.1 / §17.11.1: `$clog2`'s self-determined operand
 /// keeps the size of a sized unary or arithmetic expression; no assignment
 /// context widens it to the analog integer carrier's 32 bits.
-pub fn clog2Width(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?u32 {
+pub fn clog2Width(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?u32 {
     assert(e != .none);
     assert(@backingInt(e) < file.exprs.len());
-    return expressionWidth(file, e, env, true);
+    return expressionWidth(gpa, file, e, env, true);
 }
 
 /// IEEE §5.5.1 signedness before the unsigned `$clog2` boundary. Names are
 /// the environment's; a function call keeps its own argument contexts.
-pub fn clog2Signed(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?bool {
+pub fn clog2Signed(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) Error!?bool {
     assert(e != .none);
     const ex = &file.exprs;
     assert(@backingInt(e) < ex.len());
     // §5.5.1: unsigned when any operand the sign passes through is, and
     // unknown when any of them is.
     var in_place: [rows_in_place]Ast.ExprId = undefined;
-    var pending: Pending(Ast.ExprId) = .init(&in_place);
+    var pending: Pending(Ast.ExprId) = .init(&in_place, gpa);
     defer pending.deinit();
-    pending.push(e) catch return null;
+    try pending.push(e);
     var signed = true;
     while (pending.pop()) |n| {
         const leaf: bool = switch (ex.tag(n)) {
             .int_literal => ex.intLiteral(n).signed,
             .logic_literal => ex.logicValue(n).signed,
-            .ident => env.signed(n) orelse return null,
+            .ident => (try envSigned(env, n)) orelse return null,
             .unary => switch (ex.unOp(n)) {
                 .plus, .minus, .bit_not => {
-                    pending.push(ex.lhs(n)) catch return null;
+                    try pending.push(ex.lhs(n));
                     continue;
                 },
                 .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => false,
             },
             .binary => switch (ex.binOp(n)) {
                 .shl, .shr, .ashl, .ashr, .pow => {
-                    pending.push(ex.lhs(n)) catch return null;
+                    try pending.push(ex.lhs(n));
                     continue;
                 },
                 .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .bit_xnor => {
-                    pending.pushBoth(ex.lhs(n), ex.rhs(n)) catch return null;
+                    try pending.pushBoth(ex.lhs(n), ex.rhs(n));
                     continue;
                 },
                 .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge, .logical_and, .logical_or => false,
             },
             .ternary => {
-                pending.pushBoth(ex.rhs(n), ex.ternaryElse(n)) catch return null;
+                try pending.pushBoth(ex.rhs(n), ex.ternaryElse(n));
                 continue;
             },
             .sys_call => !std.mem.eql(u8, file.str(ex.strOf(n)), "$realtobits"),
@@ -190,9 +197,9 @@ pub fn clog2Signed(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype) ?bo
 /// conditional's condition are self-determined. Comparisons share a context
 /// between their operands, independent of their one-bit result. Null when
 /// `env` cannot give a width or signedness the plan needs.
-pub fn intPlan(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) ?IntPlan {
+pub fn intPlan(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent: ?IntContext) Error!?IntPlan {
     const ex = &file.exprs;
-    const own: IntContext = .{ .width = clog2Width(file, e, env) orelse return null, .signed = clog2Signed(file, e, env) orelse return null };
+    const own: IntContext = .{ .width = (try clog2Width(gpa, file, e, env)) orelse return null, .signed = (try clog2Signed(gpa, file, e, env)) orelse return null };
     const result: IntContext = if (parent) |p| .{ .width = @max(p.width, own.width), .signed = p.signed } else own;
     var plan: IntPlan = .{ .result = result, .from_width = own.width };
     assert(plan.result.width >= own.width);
@@ -223,8 +230,8 @@ pub fn intPlan(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, parent:
             },
             .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge => {
                 const comparison: IntContext = .{
-                    .width = @max(clog2Width(file, ex.lhs(e), env) orelse return null, clog2Width(file, ex.rhs(e), env) orelse return null),
-                    .signed = clog2OperandsSigned(file, ex.lhs(e), ex.rhs(e), env) orelse return null,
+                    .width = @max((try clog2Width(gpa, file, ex.lhs(e), env)) orelse return null, (try clog2Width(gpa, file, ex.rhs(e), env)) orelse return null),
+                    .signed = (try clog2OperandsSigned(gpa, file, ex.lhs(e), ex.rhs(e), env)) orelse return null,
                 };
                 plan.operands[0] = comparison;
                 plan.operands[1] = comparison;
@@ -256,9 +263,8 @@ pub fn literalWidth(ex: *const Ast.ExprStore, e: Ast.ExprId) u32 {
     return if (std.math.cast(u32, v) != null or std.math.cast(i32, v) != null) 32 else 64;
 }
 
-/// A walk's pending entries: `in_place` on the caller's stack, then pages,
-/// so the walk's depth costs heap and never native stack. A walk that runs
-/// out of memory answers null, the "unknown" every walk here already has.
+/// A walk's pending entries: `in_place` on the caller's stack, then
+/// `gpa`, so the walk's depth costs heap and never native stack.
 pub fn Pending(comptime T: type) type {
     return struct {
         bfa: std.heap.BufferFirstAllocator,
@@ -266,20 +272,21 @@ pub fn Pending(comptime T: type) type {
 
         const Self = @This();
 
-        /// Starts empty on `in_place`, which must outlive the walk.
-        pub fn init(in_place: []T) Self {
-            return .{ .bfa = .init(std.mem.sliceAsBytes(in_place), std.heap.page_allocator) };
+        /// Starts empty on `in_place`, which must outlive the walk, then
+        /// takes `gpa`'s memory.
+        pub fn init(in_place: []T, gpa: std.mem.Allocator) Self {
+            return .{ .bfa = .init(std.mem.sliceAsBytes(in_place), gpa) };
         }
-        /// Frees the pages, if the walk took any.
+        /// Frees what the walk took from `gpa`, if anything.
         pub fn deinit(p: *Self) void {
             p.list.deinit(p.bfa.allocator());
         }
         /// Pushes `x`, to pop before everything pushed earlier.
-        pub fn push(p: *Self, x: T) std.mem.Allocator.Error!void {
+        pub fn push(p: *Self, x: T) Error!void {
             try p.list.append(p.bfa.allocator(), x);
         }
         /// Pushes `first` last, so it pops first: source order.
-        pub fn pushBoth(p: *Self, first: T, second: T) std.mem.Allocator.Error!void {
+        pub fn pushBoth(p: *Self, first: T, second: T) Error!void {
             try p.list.appendSlice(p.bfa.allocator(), &.{ second, first });
         }
         /// Pops the entry pushed last, or null when none is left.
@@ -293,50 +300,55 @@ pub fn Pending(comptime T: type) type {
     };
 }
 
+/// `env.signed(e)`, from an `env` whose methods may or may not fail.
+pub fn envSigned(env: anytype, e: Ast.ExprId) Error!?bool {
+    return env.signed(e);
+}
+
 // ---- private ----
 
 /// `operandWidth` and `clog2Width`: §3.2's 32 bits as the floor for an
 /// operand an operator sizes, or exactly as written when `self_determined`.
-fn expressionWidth(file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, comptime self_determined: bool) ?u32 {
+fn expressionWidth(gpa: std.mem.Allocator, file: *const Ast.SourceFile, e: Ast.ExprId, env: anytype, comptime self_determined: bool) Error!?u32 {
     assert(e != .none);
     const ex = &file.exprs;
     // The width is the widest operand the size passes through, raised to
     // §3.2's 32 bits (`widthFloor`) once any operator passed it on.
     var in_place: [rows_in_place]Ast.ExprId = undefined;
-    var pending: Pending(Ast.ExprId) = .init(&in_place);
+    var pending: Pending(Ast.ExprId) = .init(&in_place, gpa);
     defer pending.deinit();
-    pending.push(e) catch return null;
+    try pending.push(e);
     var widest: u32 = 0;
     while (pending.pop()) |n| {
         const w: u32 = switch (ex.tag(n)) {
             .int_literal => literalWidth(ex, n),
             .logic_literal => ex.logicValue(n).width,
-            .ident => env.width(n) orelse return null,
+            .ident => (try envWidth(env, n)) orelse return null,
             // `unary`'s `wrapFrom`: a sign or complement keeps a wide literal's width.
             .unary => switch (ex.unOp(n)) {
                 .plus, .minus, .bit_not => {
-                    pending.push(ex.lhs(n)) catch return null;
+                    try pending.push(ex.lhs(n));
                     continue;
                 },
                 .logical_not, .reduce_and, .reduce_nand, .reduce_or, .reduce_nor, .reduce_xor, .reduce_xnor => if (self_determined) 1 else 32,
             },
             .binary => switch (ex.binOp(n)) {
                 .bit_and, .bit_or, .bit_xor, .bit_xnor => {
-                    pending.pushBoth(ex.lhs(n), ex.rhs(n)) catch return null;
+                    try pending.pushBoth(ex.lhs(n), ex.rhs(n));
                     continue;
                 },
                 .add, .sub, .mul, .div, .mod => if (self_determined) {
-                    pending.pushBoth(ex.lhs(n), ex.rhs(n)) catch return null;
+                    try pending.pushBoth(ex.lhs(n), ex.rhs(n));
                     continue;
                 } else 32,
                 .pow, .shl, .shr, .ashl, .ashr => if (self_determined) {
-                    pending.push(ex.lhs(n)) catch return null;
+                    try pending.push(ex.lhs(n));
                     continue;
                 } else 32,
                 .eq, .neq, .case_eq, .case_neq, .lt, .le, .gt, .ge, .logical_and, .logical_or => if (self_determined) 1 else 32,
             },
             .ternary => {
-                pending.pushBoth(ex.rhs(n), ex.ternaryElse(n)) catch return null;
+                try pending.pushBoth(ex.rhs(n), ex.ternaryElse(n));
                 continue;
             },
             // §9.11 `$realtobits` returns the double's 64-bit pattern.
@@ -354,10 +366,15 @@ fn widthFloor(w: u32, comptime self_determined: bool) u32 {
     return out;
 }
 
-fn clog2OperandsSigned(file: *const Ast.SourceFile, a: Ast.ExprId, b: Ast.ExprId, env: anytype) ?bool {
+fn clog2OperandsSigned(gpa: std.mem.Allocator, file: *const Ast.SourceFile, a: Ast.ExprId, b: Ast.ExprId, env: anytype) Error!?bool {
     assert(a != .none);
     assert(b != .none);
-    const sa = clog2Signed(file, a, env) orelse return null;
-    const sb = clog2Signed(file, b, env) orelse return null;
+    const sa = (try clog2Signed(gpa, file, a, env)) orelse return null;
+    const sb = (try clog2Signed(gpa, file, b, env)) orelse return null;
     return sa and sb;
+}
+
+/// `env.width(e)`, from an `env` whose methods may or may not fail.
+fn envWidth(env: anytype, e: Ast.ExprId) Error!?u32 {
+    return env.width(e);
 }

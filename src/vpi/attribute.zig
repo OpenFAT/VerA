@@ -84,7 +84,7 @@ const AnalogEnv = struct {
     /// `constfold`'s leaf hook: a parameter's folded value, or one of the
     /// conversion calls the analog validator folds. Null: not a constant.
     /// Asserts that `e` is an expression and no digital run folds it.
-    pub fn leaf(env: AnalogEnv, e: Ast.ExprId) ?Const {
+    pub fn leaf(env: AnalogEnv, e: Ast.ExprId) constfold.Error!?Const {
         std.debug.assert(e != .none);
         std.debug.assert(env.b.run == null); // a digital model folds through its run
         // These are the conversion calls the analog constant-expression
@@ -95,9 +95,9 @@ const AnalogEnv = struct {
             if (args.len != 1) return null;
             const name = env.b.file.str(ex.strOf(e));
             const clog = std.mem.eql(u8, name, "$clog2");
-            const v = (if (clog) constfold.foldSized(env.b.file, args[0], env) else constfold.fold(env.b.file, args[0], env)) orelse return null;
+            const v = (try if (clog) constfold.foldSized(env.b.arena, env.b.file, args[0], env) else constfold.fold(env.b.arena, env.b.file, args[0], env)) orelse return null;
             if (v == .str) return null;
-            if (clog) return .{ .int = constfold.clog2(v.asIntExact() orelse return null, constfold.clog2Width(env.b.file, args[0], env) orelse return null) };
+            if (clog) return .{ .int = constfold.clog2(v.asIntExact() orelse return null, (try constfold.clog2Width(env.b.arena, env.b.file, args[0], env)) orelse return null) };
             if (std.mem.eql(u8, name, "$itor")) return .{ .real = @floatFromInt(v.asIntExact() orelse return null) };
             if (std.mem.eql(u8, name, "$rtoi")) {
                 const t = @trunc(v.asReal());
@@ -126,10 +126,10 @@ const AnalogEnv = struct {
     }
     /// `constfold`'s signedness hook; an `integer` parameter is signed.
     /// Asserts that `e` is an expression and no digital run folds it.
-    pub fn signed(env: AnalogEnv, e: Ast.ExprId) ?bool {
+    pub fn signed(env: AnalogEnv, e: Ast.ExprId) constfold.Error!?bool {
         std.debug.assert(e != .none);
         std.debug.assert(env.b.run == null); // a digital model folds through its run
-        if (env.b.file.exprs.tag(e) != .ident) return constfold.clog2Signed(env.b.file, e, env);
+        if (env.b.file.exprs.tag(e) != .ident) return try constfold.clog2Signed(env.b.arena, env.b.file, e, env);
         const p = env.parameter(e) orelse return null;
         return if (p.integer32) true else p.source_signed;
     }
@@ -248,7 +248,7 @@ pub fn attach(b: *Builder, parent: ObjId, owner: Ast.AttributeOwner, definition:
                     .real => |real| value = .{ .real = real },
                 }
             } else {
-                value = constfold.fold(b.file, spec.value, AnalogEnv{ .b = b }) orelse return error.NotElaborated;
+                value = (try constfold.fold(b.arena, b.file, spec.value, AnalogEnv{ .b = b })) orelse return error.NotElaborated;
             }
             std.debug.assert(b.objects.at(at).vtype == user.vpiAttribute);
             b.objects.at(at).name = try b.arena.dupe(u8, name);

@@ -469,7 +469,7 @@ fn enterFuncConsts(self: *Lower, fd: *const Ast.FuncDecl, genvars: []const []con
         try shadowed.append(self.arena, .{ .name = g, .prev = prev.value });
     }
     for (fd.params) |*p| {
-        const c = lower_constfold.constEval(self, p.default) orelse continue;
+        const c = (try lower_constfold.constEval(self, p.default)) orelse continue;
         const pname = self.file.str(p.name);
         try shadowed.append(self.arena, .{ .name = pname, .prev = self.consts.get(pname) });
         try self.consts.put(self.arena, pname, c);

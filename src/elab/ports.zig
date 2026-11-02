@@ -436,8 +436,8 @@ pub fn netPart(self: *Flatten, parent: *const Unit, e: Ast.ExprId, out: *std.Arr
     const sel = ex.rhs(e);
     const two = ex.tag(sel) == .range or ex.tag(sel) == .indexed_range;
     // `constInt` folds in `self.unit`, which is still the parent here.
-    const a = fold.constInt(self, if (two) ex.lhs(sel) else sel) orelse return false;
-    const b = if (two) fold.constInt(self, ex.rhs(sel)) orelse return false else a;
+    const a = (try fold.constInt(self, if (two) ex.lhs(sel) else sel)) orelse return false;
+    const b = if (two) (try fold.constInt(self, ex.rhs(sel))) orelse return false else a;
     try out.append(self.ctx.arena, .{
         .net = net,
         .sel = if (!two) .bit else if (ex.tag(sel) == .range) .range else if (ex.extraOf(sel) != 0) .down else .up,

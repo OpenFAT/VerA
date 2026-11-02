@@ -295,7 +295,7 @@ fn branchKey(self: *Lower, buf: *[lower_shape.elem_key_len]u8, e: Ast.ExprId) Oo
         .index => blk: {
             const base = ex.lhs(e);
             if (ex.tag(base) != .ident) break :blk null;
-            const i = lower_constfold.constEval(self, ex.rhs(e)) orelse break :blk null;
+            const i = (try lower_constfold.constEval(self, ex.rhs(e))) orelse break :blk null;
             break :blk try lower_shape.elemKey(self, buf, self.file.str(ex.strOf(base)), &.{i.asInt()});
         },
         else => null, // else: names no branch; `nodeOf` reads it as a net reference and reports it
