@@ -218,8 +218,9 @@ ships, `tests/` the tests, `tools/` the scripts.
   `--emit-osdi` inputs), `vpi_negative/`, `vpi_escaped/` and `vpi_mem/`
   (VerA's own VPI applications and designs), `suite.xfail` (the fixture runner's known
   failures) and the `conformance/` submodule. The roots: `unit.zig` (every module's public-API tests,
-  one namespace per module), `suite.zig` (the fixture runner, one namespace
-  per mode over the shared harness), `fuzz.zig`, `rng_reference.zig` (+ `.c`),
+  one namespace per module, each in `unit/<namespace>.zig`), `suite.zig`
+  (the fixture runner, one namespace per mode over the shared harness, each
+  in `suite/<Namespace>.zig`), `fuzz.zig`, `rng_reference.zig` (+ `.c`),
   `printf_reference.zig`, `codegen_probe.zig`, `argv.zig` (the
   degenerate-argv table), `generators.zig` (generated inputs through every
   pass, one child per row), `runners.zig` (one runner per template variant,

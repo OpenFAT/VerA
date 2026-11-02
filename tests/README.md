@@ -70,7 +70,7 @@ specification chapter. The suite is tool-neutral: VerA keeps nothing in it.
 | `tests/include/` | `check.vh` (the `CHECK` macros) and `erfc.vh`, on every compile's include path | |
 | `tests/netlist/` | ESPice's decks | none |
 
-A dedicated test file is a namespace of `unit.zig`. A `test` block that
+A dedicated test file is a namespace of `unit.zig`, in `unit/<namespace>.zig` (named as the namespace, so its tests keep `unit.<namespace>.` names). A `test` block that
 checks a file's private declarations stays beside that declaration in `lib/`
 or `src/`, as in Zig's own std; what a unit namespace needs from a module is
 exported by the module's root (`Lower.Harness`, `codegen.Harness`,
