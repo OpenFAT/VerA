@@ -433,12 +433,10 @@ pub fn printTimescale(self: *Run, args: []const Ast.ExprId) Error!void {
 }
 
 /// §17.3.1 what `$printtimescale`'s argument names, by §12.5's resolution:
-/// an instance (or a named block that declares something, which `instances`
-/// holds too), or a variable, net or parameter and the scope declaring it
-/// (iverilog takes any such object). The first name is searched for upward
-/// from the current scope to its module, then among the top-level modules.
-/// A named block that declares nothing has no scope, so is found in its
-/// module's source (`namedBlock`).
+/// an instance (or a named block, which `instances` holds too), or a
+/// variable, net or parameter and the scope declaring it (iverilog takes
+/// any such object). The first name is searched for upward from the current
+/// scope to its module, then among the top-level modules.
 pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!TimescaleTarget {
     assert(e != .none);
     const ex = &self.file.exprs;
@@ -453,7 +451,7 @@ pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!TimescaleTarget {
         var at = self.scope;
         while (true) {
             if (self.hier.instances.get(.{ .scope = at, .str = parts[0] })) |child| break :blk child;
-            if (parts.len == 1 and (self.hier.names.contains(.{ .scope = at, .str = parts[0] }) or namedBlock(self, at, parts[0]))) return .{ .scope = at, .leaf = parts[0] };
+            if (parts.len == 1 and self.hier.names.contains(.{ .scope = at, .str = parts[0] })) return .{ .scope = at, .leaf = parts[0] };
             if (!self.hier.scopes.items[at].lexical) break;
             at = self.hier.scopes.items[at].parent;
         }
@@ -464,7 +462,7 @@ pub fn timescaleScope(self: *Run, e: Ast.ExprId) Error!TimescaleTarget {
     for (parts[1..], 1..) |p, i| {
         if (self.hier.instances.get(.{ .scope = scope, .str = p })) |child| {
             scope = child;
-        } else if (i + 1 == parts.len and (self.hier.names.contains(.{ .scope = scope, .str = p }) or namedBlock(self, scope, p))) {
+        } else if (i + 1 == parts.len and self.hier.names.contains(.{ .scope = scope, .str = p })) {
             return .{ .scope = scope, .leaf = p };
         } else if (i + 1 == parts.len) {
             return self.exprFail(e, "§17.3.1: $printtimescale names no object of this design");
@@ -744,32 +742,6 @@ fn emitPath(self: *Run, s: u32) Error!void {
     try self.out.writeAll(self.file.str(info.name));
     // §12.4.1 one iteration of a loop generate is `name[value]`.
     if (info.index) |i| try self.out.print("[{d}]", .{i});
-}
-
-/// Whether a block named `name` that declares nothing, so has no scope of
-/// its own (`elab.blockScopes`), is in module instance `scope`'s
-/// initial and always constructs.
-fn namedBlock(self: *const Run, scope: u32, name: Ast.StrId) bool {
-    assert(scope < self.hier.scopes.items.len);
-    if (self.hier.scopes.items[scope].lexical) return false;
-    const V = struct {
-        f: *const Ast.SourceFile,
-        name: Ast.StrId,
-        /// An expression holds no named block: nothing to find.
-        pub fn expr(_: @This(), _: Ast.ExprId, _: Ast.SourceFile.Edge) error{Found}!void {}
-        /// `error.Found` at the named block the walk is looking for.
-        pub fn stmt(v: @This(), c: Ast.StmtId) error{Found}!void {
-            if (c == .none) return;
-            switch (v.f.stmt(c)) {
-                .block => |b| if (b.name == v.name) return error.Found,
-                else => {}, // else: only a block is named
-            }
-            try v.f.stmtEdges(c, v);
-        }
-    };
-    for (self.file.modules[self.hier.scopes.items[scope].def].discrete) |d|
-        (V{ .f = self.file, .name = name }).stmt(d.body) catch return true;
-    return false;
 }
 
 test "§9.4.3 the radix conversions size themselves from the operand" {

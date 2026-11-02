@@ -230,6 +230,8 @@ fn isRuntimeElem(self: *Lower, target: Ast.ExprId) Oom!bool {
     assert(self.blockValid(self.cur));
     var subs: [lower_shape.max_stack_dims]Ast.ExprId = undefined;
     const chain = (try lower_lvalue.indexChain(self, target, &subs)) orelse return false;
+    // §5.7 a `reg` is refused whole (E0316, `resolveLvalue`), its selects unread.
+    if (lower_lvalue.isReg(self, self.file.str(chain.name))) return false;
     for (chain.subs) |s| {
         if (lower_constfold.foldExpr(self, s, false) != null) continue;
         return self.arrays.contains(self.file.str(chain.name));

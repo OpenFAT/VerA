@@ -8,7 +8,7 @@
 //! success, 1 on a diagnosed error, 2 on a usage error, each nonzero exit
 //! with its reason on stderr. A row is BAD when vera dies on a signal (an
 //! assertion's abort, a panic), exits outside {0, 1, 2}, prints a panic, exits
-//! nonzero with nothing on stderr, or runs past `timeout`. The class is
+//! nonzero with nothing on stderr, or runs past `timeout_s`. The class is
 //! `valuedKey`'s `vera ""` abort and `simTree`'s `--work-dir ""` one: an
 //! assertion on argv, which is input.
 //!
@@ -41,15 +41,16 @@ const known: []const struct { row: []const u8, why: []const u8 } = &.{};
 /// units (CreateProcessW), the paths of vera and its input included.
 const big_len = if (builtin.os.tag == .windows) 24 * 1024 else 128 * 1024 - 1 - 64; // os: Windows' command-line limit
 
-/// A row that runs longer than this hangs. It is a hang check, not a speed
-/// check: an `--emit-so` row compiles a device, and on a loaded machine (CI, or
-/// several worktrees building at once) that alone ran past a minute.
+/// A row that runs longer than this hangs. A row takes under 2 s on a quiet
+/// machine, and the slow rows (`--emit-so`'s, which write the engine tree's
+/// 231 files) spend 0.04 s on the CPU and the rest blocked in page-cache
+/// writeback: on a machine whose disk is busy (other builds, load average
+/// 80) one took 68 s, and 35 ran past the old 60 s limit. Fewer hands do not
+/// help, because the wait is the disk's, not the table's: at 4 hands a
+/// parallel `zig build test` stretched the run to 451 s. So the limit covers
+/// an I/O stall, not just work, and a real hang still fails, after one limit
+/// and not one per row (`Pool.hung`).
 const timeout_s = 600;
-
-/// The rows run at once: half the CPUs, at most 8, so the table does not
-/// oversubscribe the machine it shares (19 rows timed out at load 55 when it
-/// ran one per CPU).
-const hands_max = 8;
 
 /// The inputs a line runs on, written into the scratch dir. Null: no input.
 const inputs = [_]?struct { name: []const u8, text: []const u8, builds: bool }{
@@ -114,13 +115,20 @@ pub fn main(init: std.process.Init) !u8 {
     // The rows share nothing but the scratch dir's inputs, which none writes.
     var pool: Pool = .{ .arena = arena, .io = io, .dir = dir, .rows = table.items };
     var group: Io.Group = .init;
-    const hands = std.math.clamp((std.Thread.getCpuCount() catch 2) / 2, 1, hands_max);
+    const hands = @max(1, std.Thread.getCpuCount() catch 1);
     for (0..hands) |_| group.concurrent(io, Pool.work, .{&pool}) catch break;
     pool.work();
     try group.await(io);
     if (pool.failed) |e| return e;
 
     var bad: usize = 0;
+    // After a hang the pool takes no more rows: one hang is enough to fail,
+    // and if every row hung, running the rest would take hours.
+    const unrun = pool.rows.len -| pool.next.load(.monotonic);
+    if (unrun != 0) {
+        try w.print("BAD {d} rows not run after a row hung\n", .{unrun});
+        bad += 1;
+    }
     const seen = try arena.alloc(bool, known.len);
     @memset(seen, false);
     for (table.items) |row| {
@@ -166,15 +174,24 @@ const Pool = struct {
     next: std.atomic.Value(usize) = .init(0),
     /// A row that could not be run at all (spawn failed): the run's error.
     failed: ?anyerror = null,
+    /// Set once a row has run past `timeout_s`; no hand takes another row.
+    hung: std.atomic.Value(bool) = .init(false),
 
     fn work(pool: *Pool) void {
-        while (true) {
+        while (!pool.hung.load(.monotonic)) {
             const i = pool.next.fetchAdd(1, .monotonic);
             if (i >= pool.rows.len) return;
             const row = &pool.rows[i];
-            row.why = judge(pool.arena, pool.io, row.argv, pool.dir) catch |e| {
-                pool.failed = e;
-                return;
+            row.why = judge(pool.arena, pool.io, row.argv, pool.dir) catch |e| switch (e) {
+                error.Timeout => {
+                    pool.hung.store(true, .monotonic);
+                    row.why = pool.arena.print("ran past {d} s", .{timeout_s}) catch "ran past the limit";
+                    continue;
+                },
+                else => {
+                    pool.failed = e;
+                    return;
+                },
             };
         }
     }
@@ -182,14 +199,11 @@ const Pool = struct {
 
 /// Why the run of `argv` (in `cwd`) breaks the exit contract, or null.
 fn judge(arena: Allocator, io: Io, argv: []const []const u8, cwd: []const u8) !?[]const u8 {
-    const r = std.process.run(arena, io, .{
+    const r = try std.process.run(arena, io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
         .timeout = .{ .duration = .{ .raw = .fromSeconds(timeout_s), .clock = .awake } },
-    }) catch |e| switch (e) {
-        error.Timeout => return try arena.print("ran past {d} s", .{timeout_s}),
-        else => return e,
-    };
+    });
     const code = switch (r.term) {
         .exited => |c| c,
         else => return try arena.print("did not exit: {any}\n{s}", .{ r.term, head(r.stderr) }),

@@ -231,6 +231,9 @@ pub const ArrayInfo = struct {
     /// §3.4.4 an array parameter: its elements are `param_index` rows, and
     /// §5.7 lets only its declaration assign it.
     param: bool = false,
+    /// IEEE 1364-2005 §4.9 a memory of `reg`s, the discrete domain's, which
+    /// §5.7 keeps the analog side from writing.
+    reg: bool = false,
     /// A memory-backed array's SSA place and `out.mem_arrays` row.
     pub const Mem = struct { place: Ssa.Place, id: u32, reg_width: ?u32 = null };
 };

@@ -58,6 +58,7 @@ const NativeJob = struct {
                 aw.writer.print("FAIL {s}: the runner itself failed: {t}\n", .{ job.cases[i], e }) catch {};
                 break :blk NativeVerdict{ .pass = false, .fallback = null };
             };
+            settle(arena_state.allocator(), job.io, job.cases[i], v, &aw.writer);
             var list = aw.toArrayList();
             // The reason is in the arena the next case resets.
             var kept = v;
@@ -66,6 +67,21 @@ const NativeJob = struct {
         }
     }
 };
+
+/// Once case `case` is judged, its work directory (`nativeCase`: the
+/// executable, its source tree, its build's cache and what it wrote, about
+/// 25 MB) goes, unless the case failed: then it stays for diagnosis and its
+/// path is printed. A full run otherwise held every case's, 30 GB, past a CI
+/// runner's disk.
+fn settle(arena: Allocator, io: Io, case: []const u8, v: NativeVerdict, w: *Io.Writer) void {
+    const work = arena.print("native/{s}", .{case}) catch return;
+    if (!v.pass and !v.xfail) {
+        const at = Io.Dir.cwd().realPathFileAlloc(io, work, arena) catch work;
+        w.print("  kept {s}\n", .{at}) catch {};
+        return;
+    }
+    Io.Dir.cwd().deleteTree(io, work) catch |e| w.print("  could not delete {s}: {t}\n", .{ work, e }) catch {};
+}
 
 /// `fallback` is the executable's reason for embedding the interpreter;
 /// `refused` is a case the shared elaboration rejected, so no executable
@@ -169,11 +185,13 @@ fn nativeCase(arena: Allocator, io: Io, vera_exe: []const u8, flags: []const []c
     const work = try arena.print("native/{s}", .{case});
     try Io.Dir.cwd().createDirPath(io, work);
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(arena, &.{ vera_exe, "--emit-exe", "--work-dir", work });
+    // Built inside `work`, so the build's `--cache-dir .zig-cache` (one
+    // case's source tree, a few MB) is the case's and goes with it (`settle`).
+    try argv.appendSlice(arena, &.{ vera_exe, "--emit-exe", "--work-dir", "." });
     try argv.appendSlice(arena, flags);
     try argv.append(arena, src);
     try argv.appendSlice(arena, try digital.runnerArgs(arena, source, std.fs.path.dirname(src).?));
-    const built = try child.capture(arena, io, argv.items);
+    const built = try child.captureIn(arena, io, argv.items, work);
     const two_state = std.mem.eql(u8, flags[0], "--two-state");
     const fallback: ?[]const u8 = if (std.mem.find(u8, built.stderr, "not native (")) |at| blk: {
         const rest = built.stderr[at + "not native (".len ..];
@@ -193,7 +211,7 @@ fn nativeCase(arena: Allocator, io: Io, vera_exe: []const u8, flags: []const []c
         try w.print("FAIL {s}: `// native-required` forbids interpreter fallback: {s}\n", .{ case, why });
         return .{ .pass = false, .fallback = fallback };
     };
-    const bin = try Io.Dir.cwd().realPathFileAlloc(io, std.mem.trimEnd(u8, built.stdout, "\n"), arena);
+    const bin = try Io.Dir.cwd().realPathFileAlloc(io, try std.fs.path.resolve(arena, &.{ work, std.mem.trimEnd(u8, built.stdout, "\n") }), arena);
     var ran = try child.captureIn(arena, io, if (snapshot) &.{ bin, "--vera-state", "--vera-snapshot" } else &.{ bin, "--vera-state" }, work);
     if (std.mem.find(u8, ran.stderr, "vera-snapshot: ")) |at| {
         const end = std.mem.findScalarPos(u8, ran.stderr, at, '\n') orelse ran.stderr.len;

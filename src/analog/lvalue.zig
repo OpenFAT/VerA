@@ -10,6 +10,7 @@
 //! - `pub fn readLvalue(self: *Lower, lv: Lvalue) Oom!Mir.Value`
 //! - `pub fn writeLvalue(self: *Lower, lv: Lvalue, v: Mir.Value) Oom!void`
 //! - `pub fn resolveLvalue(self: *Lower, e: Ast.ExprId) Oom!?Lvalue`
+//! - `pub fn isReg(self: *const Lower, name: []const u8) bool`
 //! - `pub fn indexChain(self: *Lower, e: Ast.ExprId, buf: []Ast.ExprId) Oom!?IndexChain`
 //! - `pub fn checkSubscriptCount(self: *Lower, e: Ast.ExprId, name: []const u8, info: ArrayInfo, n: usize) Oom!bool`
 //! - `pub fn checkSubscripts(self: *Lower, e: Ast.ExprId, name: []const u8, info: ArrayInfo, idx: []const i64) Oom!bool`
@@ -113,6 +114,10 @@ pub fn resolveLvalue(self: *Lower, e: Ast.ExprId) Oom!?Lvalue {
                 return null;
             };
             const name = self.file.str(chain.name);
+            // §5.7: a bit or part of a `reg` is no target, and `checkRegWrites`
+            // already said so (E0316). Its select is a vector select, not a
+            // §3.2.2 subscript, so it is not judged as one (E0309, E0311).
+            if (isReg(self, name)) return null;
             var idx: [lower_shape.max_stack_dims]i64 = undefined;
             const at = try lower_shape.subscriptBuf(self, &idx, chain.subs.len);
             for (chain.subs, at) |s, *o| {
@@ -153,6 +158,15 @@ pub fn resolveLvalue(self: *Lower, e: Ast.ExprId) Oom!?Lvalue {
             return null;
         },
     }
+}
+
+/// Whether `name` resolves to a `reg`, or to a memory of them (IEEE 1364-2005
+/// §4.9): the discrete domain's variables, which §5.7 keeps the analog side
+/// from writing.
+pub fn isReg(self: *const Lower, name: []const u8) bool {
+    if (self.vars.get(name)) |v| return v.regWidth() != null;
+    const arr = self.arrays.get(name) orelse return false;
+    return arr.reg;
 }
 
 /// Returns `e`'s base name and subscripts, or null when the base is not a plain
