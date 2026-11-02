@@ -13333,6 +13333,24 @@ pub const sim_digital_tests = struct {
         , "7\n");
     }
 
+    test "§12.2.1 a defparam through a name that itself starts with `\\` names it, beside the `$`-led one" {
+        // Oracle: IEEE 1364-2005 §3.7.1, `\\$x ` is the name `\$x` and
+        // `\$x ` the different name `$x`; `\\a ` is `\a`, not `a`. A defparam
+        // through each sets the parameter of the instance that name holds,
+        // and the twin beside it keeps its own (each instance prints its `p`,
+        // in source order): whatever the frontend interns, the path's
+        // segments must be the names the tokens are.
+        const m = "module m; parameter p = 1; initial #1 $display(\"%0d\", p); endmodule ";
+        try expectRun(m ++ "module top; m \\\\$x (); m \\$x (); defparam \\\\$x .p = 7; endmodule", "7\n1\n");
+        try expectRun(m ++ "module top; m \\\\a (); m a (); defparam \\\\a .p = 7; endmodule", "7\n1\n");
+        try expectRun(m ++ "module top; m \\\\a (); m a (); defparam a.p = 7; endmodule", "1\n7\n");
+        // The parameter's own name holds the `\\`.
+        try expectRun(
+            \\module m; parameter \\$q  = 1; initial #1 $display("%0d", \\$q ); endmodule
+            \\module top; m u (); defparam u.\\$q  = 7; endmodule
+        , "7\n");
+    }
+
     test "an expression nested past a host thread's stack is refused at run time (E1100), never a crash" {
         // Oracle: deep_stack's contract: a walk on a thread `runGuarded` did
         // not start (a contract device's host, a VPI application, this
