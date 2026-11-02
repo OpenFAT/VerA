@@ -12,6 +12,15 @@ On Suite VAMS-CONFORMANCE, we score Verilog-A 2452/2452, Verilog 3611/3611, Veri
   fixtures that set a `reg` that way now set it from a declaration or an
   `initial` block. The two wider copies of `wide_reg_matches_digital` left
   the suite, so Verilog-AMS has 752 tests instead of 754.
+- **A printing device's `$monitor` and `$fmonitor` keep one latch per
+  instance** (§9.4.1): two instances of one model each compare against their
+  own last report, where before one instance's report could repeat or hide
+  the other's (`tests/host/fmonitor_host.zig`). In a batch, each point now
+  reads the `$fopen`/`$ftell`/... result its own instance latched, not the
+  first point's. For `--display=emit` devices only, `Instance` gains `zm__`
+  (the monitor latches) and the latched §9.5 results move from
+  `zf__.res__<site>` to top-level `zf_res__<site>`; `--display=drop` and
+  `record` devices change only in unused kernel text (#123).
 
 ## v0.22.0 — 2026-11-02
 

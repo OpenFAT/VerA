@@ -1756,7 +1756,7 @@ test "codegen: §9.5.9 `$fdebug` and `$debug` run on every pass but the accepted
     // latch otherwise) and `$strobe`.
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, exe, "(if (zFinish == 0 and (pass != .accepted)) "));
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, exe, "(if (zFinish == 0 and (pass != .iteration)) "));
-    try std.testing.expect(std.mem.find(u8, exe, " else inst.zf__.res__") != null);
+    try std.testing.expect(std.mem.find(u8, exe, " else zInstI(S, inst, \"zf_res__") != null);
     // A device drops every §9.5 call: no passes.
     const dev = try h.gen(std.testing.allocator);
     try std.testing.expect(std.mem.find(u8, dev, "displayPass") == null);
@@ -1855,7 +1855,7 @@ test "codegen: §9.5 a descriptor is an i64 in the DEVICE too, not only in the e
     // `updateState` see) is that latch, not the device's zero.
     const exe = try h.genDisplay(std.testing.allocator);
     try std.testing.expect(std.mem.find(u8, exe, "zFKeep(") != null);
-    try std.testing.expect(std.mem.find(u8, exe, ": i64 = inst.zf__.res__") != null);
+    try std.testing.expect(std.mem.find(u8, exe, ": i64 = zInstI(S, inst, \"zf_res__") != null);
 }
 
 test "codegen: §9.4 a display unit that reads an operator input opens the cache" {
