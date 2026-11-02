@@ -250,6 +250,11 @@ pub fn expand(pp: *Pp, text: []const u8, at: usize, after_name: usize, name: []c
         try substitute(pp, &buf, m.body, m.params, actuals.args);
         // Substituted: the actuals' regions are popped.
         if (actuals.base) |b| pp.actualStack().shrinkRetainingCapacity(b);
+        // ponytail: a body with a '`' stays on scratch, so uses nested in a
+        // macro whose body has one (`define M(x) `N(x)`) take memory quadratic
+        // in their depth. Upgrade: make every directive that borrows body text
+        // (`handleDefine`'s name, formals and body) copy it; then these bodies
+        // can go back to `Pp.bodies` too.
         kept = std.mem.findScalar(u8, buf.items, '`') != null;
         break :blk buf.items;
     } else m.body;
@@ -447,6 +452,10 @@ fn macroArgs(pp: *Pp, text: []const u8, lparen: usize, at: usize, name: []const 
 /// white space, so IEEE 1364 §19.3.1's literal substitution is unchanged.
 fn oneLine(pp: *Pp, arg: []const u8) Error![]const u8 {
     if (std.mem.findScalar(u8, arg, '\n') == null) return arg;
+    // ponytail: the copy stays on scratch, so uses nested in actuals that
+    // hold a newline take memory quadratic in their depth. Upgrade: make the
+    // directives that borrow text copy it (see `expand`), then copy this into
+    // a buffer freed after the expansion that reads it.
     const copy = try pp.scratch.dupe(u8, arg);
     defer assert(copy.len == arg.len);
     var i: usize = 0;
