@@ -333,7 +333,15 @@ fn modelName(buf: []u8, text: []const u8) ?[]const u8 {
         } else {
             const end = std.mem.findAnyPos(u8, text, i, " \t\n\r") orelse return null;
             if (end == i + 1) return null; // `\\` and white space: no name
-            for (text[i + 1 .. end]) |c| {
+            // A name led by `$` or `\` is interned with its `\` kept
+            // (`Parser.internTok`); the escape's own `\` is that byte.
+            const body = text[i + 1 .. end];
+            if (body[0] == '$' or body[0] == '\\') {
+                if (n == buf.len) return null;
+                buf[n] = '\\';
+                n += 1;
+            }
+            for (body) |c| {
                 if (n == buf.len) return null;
                 buf[n] = if (c == '.') ' ' else c;
                 n += 1;

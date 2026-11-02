@@ -426,7 +426,10 @@ fn propFail(prop: c_int, o: *const Obj) c_int {
 /// A name as the source declares it: the parser interns an escaped
 /// identifier's `.` as a space (`Parser.internTok`), and §3.7.1's name has
 /// the `.`. No identifier holds a space otherwise.
-fn spellName(s: []const u8) [*c]u8 {
+fn spellName(interned: []const u8) [*c]u8 {
+    // A `$`- or `\`-led escaped name is interned with its own `\`
+    // (`Parser.internTok`), which is not part of the name.
+    const s = if (interned.len != 0 and interned[0] == '\\') interned[1..] else interned;
     const out = copyStr(s);
     const n = std.mem.len(out);
     std.debug.assert(n <= s.len);
@@ -458,8 +461,10 @@ fn writeFull(w: *std.Io.Writer, full: []const u8) std.Io.Writer.Error!void {
             try w.writeAll(seg);
             continue;
         }
+        // The name after the `\` a `$`- or `\`-led one is interned with.
+        const name = if (seg.len != 0 and seg[0] == '\\') seg[1..] else seg;
         try w.writeByte('\\');
-        for (seg) |c| try w.writeByte(if (c == ' ') '.' else c);
+        for (name) |c| try w.writeByte(if (c == ' ') '.' else c);
         try w.writeByte(' ');
     }
 }

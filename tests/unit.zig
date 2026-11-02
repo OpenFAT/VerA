@@ -22281,6 +22281,32 @@ pub const vpi_tests = struct {
         try std.testing.expectEqual(@as(c_int, user.vpiNode), property.vpi_get(user.vpiType, handle.vpi_handle(user.vpiLowConn, p)));
         try std.testing.expect(handle.vpi_handle(user.vpiHighConn, p) == null);
     }
+
+    test "§3.7.1 vpiName is an escaped identifier's name, and vpiFullName reads back by name: `\\a`, `$q`, `m.1`" {
+        // Oracle: IEEE 1364-2005 §3.7.1, neither the leading `\` nor the
+        // closing white space is part of the name: `\\a ` is `\a`, `\$q ` is
+        // `$q`, `\m.1 ` is `m.1`. The parser interns the first two with a `\`
+        // of their own (front's interning, 0.22), which vpiName showed.
+        var h: run.Harness = undefined;
+        try h.init("module t;\n  wire \\\\a , \\$q , \\m.1 ;\nendmodule\n");
+        defer h.deinit();
+        const itr = iterate.vpi_iterate(user.vpiNet, handle.vpi_handle_by_name("t", null)) orelse return error.TestUnexpectedResult;
+        var names: [3][]const u8 = .{ "", "", "" };
+        defer for (names) |n| std.testing.allocator.free(n);
+        for (&names) |*name| {
+            const net = iterate.vpi_scan(itr) orelse return error.TestUnexpectedResult;
+            name.* = try std.testing.allocator.dupe(u8, std.mem.span(property.vpi_get_str(user.vpiName, net)));
+            const full = try std.testing.allocator.dupeSentinel(u8, std.mem.span(property.vpi_get_str(user.vpiFullName, net)), 0);
+            defer std.testing.allocator.free(full);
+            const back = handle.vpi_handle_by_name(full.ptr, null);
+            try std.testing.expect(back != null);
+            try std.testing.expect(trust.vpi_compare_objects(back, net) != 0);
+        }
+        try std.testing.expect(iterate.vpi_scan(itr) == null);
+        try std.testing.expectEqualStrings("\\a", names[0]);
+        try std.testing.expectEqualStrings("$q", names[1]);
+        try std.testing.expectEqualStrings("m.1", names[2]);
+    }
 };
 
 pub const exhaustive_tests = struct {
