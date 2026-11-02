@@ -213,7 +213,7 @@ fn readsAt(em: *Emitter, pc: u32, out: *std.ArrayList(u32)) Error!bool {
         .case_select => |c| {
             const cs = r.file.stmt(c.statement).case_stmt;
             if (!try exprReads(em, cs.scrutinee, out)) return false;
-            for (cs.arms) |arm| for (arm.labels) |l| if (!try exprReads(em, l, out)) return false;
+            for (cs.arms) |arm| for (r.file.caseLabels(arm)) |l| if (!try exprReads(em, l, out)) return false;
         },
         .repeat_start => |x| return exprReads(em, x.count, out),
         .wait_event => |e| return exprReads(em, e, out),

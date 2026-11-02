@@ -178,7 +178,7 @@ pub fn readSlots(self: *Run, id: Ast.StmtId, out: *std.ArrayList(u32)) Error!voi
         .case_stmt => |s| {
             try sensitivity(self, s.scrutinee, out);
             for (s.arms) |arm| {
-                for (arm.labels) |label| try sensitivity(self, label, out);
+                for (self.file.caseLabels(arm)) |label| try sensitivity(self, label, out);
                 try readSlots(self, arm.body, out);
             }
         },

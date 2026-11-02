@@ -173,7 +173,7 @@ pub fn lowerCase(
     var defaults: usize = 0;
     assert(self.valueValid(sv.v));
     for (arms) |a| {
-        if (a.labels.len != 0) continue;
+        if (self.file.caseLabels(a).len != 0) continue;
         defaults += 1;
         default_arm = a.body;
     }
@@ -190,7 +190,7 @@ pub fn lowerCase(
     // `===` does (IEEE 1364 §9.5: `case` is case equality).
     const ex = &self.file.exprs;
     var four = ex.tag(scrutinee) == .ident and self.out.discrete_xz.contains(self.file.str(ex.strOf(scrutinee)));
-    for (arms) |a| for (a.labels) |l| if (ex.tag(l) == .logic_literal) {
+    for (arms) |a| for (self.file.caseLabels(a)) |l| if (ex.tag(l) == .logic_literal) {
         four = true;
     };
     try lowerCaseChain(self, sv, scrutinee, if (four) scrutinee else null, kind, arms, default_arm, lower_static.isAnalysisOrConst(self, scrutinee) or try lower_static.isStaticValue(self, sv.v));
@@ -237,10 +237,10 @@ fn lowerCaseChain(
     var joins: std.ArrayList(Mir.Block) = .empty;
     defer joins.deinit(self.arena);
     for (arms) |a| {
-        if (a.labels.len == 0) continue;
+        if (self.file.caseLabels(a).len == 0) continue;
         // §5.8.3 an arm with several labels matches any of them.
         var cond: ?Mir.Value = null;
-        for (a.labels) |l| {
+        for (self.file.caseLabels(a)) |l| {
             const eq = if (four_state) |fs|
                 (try lower_expr_case.caseMatch(self, kind, fs, l)) orelse try lower_expr_op.cmp(self, .eq, sv, try lower_expr.lowerExpr(self, l))
             else
@@ -254,7 +254,7 @@ fn lowerCaseChain(
         try self.branchTo(cond.?, then_b, else_b, true);
 
         self.cur = then_b;
-        try lower_hier_name.pushCond(self, .{ .e = subject, .labels = a.labels, .pol = true, .pure = pure });
+        try lower_hier_name.pushCond(self, .{ .e = subject, .labels = self.file.caseLabels(a), .pol = true, .pure = pure });
         try lowerCondBody(self, a.body, static);
         lower_hier_name.popCond(self);
         try self.gotoBlock(join);
@@ -262,7 +262,7 @@ fn lowerCaseChain(
         self.cur = else_b;
         self.cond_depth += 1;
         self.static_cond_depth += @intFromBool(static);
-        try lower_hier_name.pushCond(self, .{ .e = subject, .labels = a.labels, .pol = false, .pure = pure });
+        try lower_hier_name.pushCond(self, .{ .e = subject, .labels = self.file.caseLabels(a), .pol = false, .pure = pure });
         try joins.append(self.arena, join);
     }
     try lower_stmt.lowerStmt(self, default_arm);

@@ -220,7 +220,7 @@ pub fn stmt(self: *Emitter, p: *Proc, s: StmtId) Error!void {
             for (c.arms) |arm| {
                 try self.indent(p);
                 try p.w.writeAll("case");
-                for (arm.labels, 0..) |l, k| {
+                for (self.file.caseLabels(arm), 0..) |l, k| {
                     const v = try self.fit(try self.expr(l, sel.w), sel.w);
                     try p.w.print("{s} {s}", .{ if (k == 0) "" else ",", v.s });
                 }

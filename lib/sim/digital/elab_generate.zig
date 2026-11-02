@@ -120,8 +120,8 @@ pub fn generate(r: *Run, e: *Elab, m: *const Ast.ModuleDecl, scope: u32, s: Ast.
             var chosen: ?Ast.StmtId = null;
             var fallback: Ast.StmtId = .none;
             for (c.arms) |arm| {
-                if (arm.labels.len == 0) fallback = arm.body;
-                for (arm.labels) |label| {
+                if (r.file.caseLabels(arm).len == 0) fallback = arm.body;
+                for (r.file.caseLabels(arm)) |label| {
                     if (chosen != null) break;
                     const l = try r.constant(label, tok);
                     const ty: Type = .{ .width = @max(l.width, value.width), .signed = l.signed and value.signed };

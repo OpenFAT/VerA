@@ -736,7 +736,7 @@ fn run(self: *Run, per_instruction: *Scratch, start: u32, comptime hooked: bool)
                 const value = try evaluate.evalContext(self, scratch, case.scrutinee, s.ty);
                 pc = s.fallback;
                 search: for (case.arms, 0..) |arm, i| {
-                    for (arm.labels) |label| {
+                    for (self.file.caseLabels(arm)) |label| {
                         const item = try evaluate.evalContext(self, scratch, label, s.ty);
                         if (caseMatches(case.kind, value, item)) {
                             pc = self.program.case_targets.items[s.targets + i];
