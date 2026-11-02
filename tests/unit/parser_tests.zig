@@ -1917,9 +1917,10 @@ test "Parser.expect: E0207 leaves the cursor, and only a terminator earns an ins
 test "nesting has no parser bound: each construct at the old 1024 cap and far past it" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    // 1025 was one past E0241's old cap; 100,000 crosses many stack segments
+    // 1025 was one past E0241's old cap; 20,000 crosses four stack segments
     // (`segment_levels`), so the run also checks `frames` unwinds across them.
-    for ([_]usize{ 1025, 100_000 }) |n| try parseEveryNesting(arena_state.allocator(), n);
+    // Debug frames cost up to 12 KB a level, so 20,000 is 240 MB of stack.
+    for ([_]usize{ 1025, 20_000 }) |n| try parseEveryNesting(arena_state.allocator(), n);
 }
 
 test "nesting 5000 deep parses on a 1 MiB thread: the caller's stack is not what bounds it" {
@@ -1954,13 +1955,15 @@ test "a defparam path's index folds on a stack sized for its depth (A.9.3)" {
     try std.testing.expectEqualStrings("u[100001].p", r.file.str(r.file.modules[0].defparams[0].path));
 }
 
-test "§6.6 generate regions nested 10^5 deep are E0228, not a stack overflow" {
+test "§6.6 generate regions nested 20,000 deep are E0228, not a stack overflow" {
     // "Generate regions do not nest": each inner one is reported and read
     // on, a recursion through the module-item loop that no `enter` counts.
+    // At 8 KB of Debug stack a level, 20,000 is 160 MB: twenty times a
+    // main thread's 8 MiB.
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const n = 100_000;
+    const n = 20_000;
     var src: std.ArrayList(u8) = .empty;
     try src.appendSlice(arena, "module m; ");
     for (0..n) |_| try src.appendSlice(arena, "generate ");

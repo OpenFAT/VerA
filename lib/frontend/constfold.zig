@@ -754,15 +754,17 @@ test "§3.4 firstStateRead names the first simulation-state or variable read of 
     }
 }
 
-test "every walk holds 100,000 levels on a 1 MiB thread: depth costs heap, not native stack" {
+test "every walk holds 20,000 levels on a 1 MiB thread: depth costs heap, not native stack" {
     // Oracle: the guard page, and each chain's value worked out by hand. An
     // embedder's thread may have 1 MiB; a walk that recursed once per level
-    // overflowed it long before 100,000.
+    // would need frames under 53 bytes to hold 20,000 levels in it. The
+    // parses that build the chains cost the parser's Debug stack, about 6 KB
+    // a level, so n stays no larger than that proof needs.
     if (@import("builtin").single_threaded) return error.SkipZigTest;
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const n = 100_000;
+    const n = 20_000;
     const sized_bound_ms = 10_000;
     // `40'd1 | 1 | ... | 1` nests on the left, the others on the right.
     const ors = try testParse(a, "", try nested(a, "", "40'd1", " | 1", n));
@@ -793,7 +795,7 @@ test "every walk holds 100,000 levels on a 1 MiB thread: depth costs heap, not n
             try expectInt(3, try fold(testing.allocator, &t[4].file, t[4].e, literal_env));
             try expectInt(n + 1, try fold(testing.allocator, &t[5].file, t[5].e, literal_env));
             try testing.expectEqualStrings("$abstime", (try firstStateRead(testing.allocator, &t[6].file, t[6].e, &.{})).?);
-            // 100,001 four-bit ones: 100,001 mod 16 at four bits, 100,001 on
+            // 20,001 four-bit ones: 20,001 mod 16 at four bits, 20,001 on
             // the carrier. Sized in one pass over the rows: planning each
             // operator over its whole operand was quadratic in the depth.
             const io = testing.io;

@@ -842,9 +842,9 @@ test "SPICE expressions name what they refuse, and nesting has no depth bound" {
     try std.testing.expectEqualStrings("1e0", (try expression(arena, "+1", &.{})).text);
     try std.testing.expectEqualStrings("(2e0 ** (3e0 ** 2e0))", (try expression(arena, "2**3**2", &.{})).text);
     // Every recursive rule passes through `unary`. 257 parentheses was one
-    // past the old 256-level cap; 100,000 crosses many stack segments. An
+    // past the old 256-level cap; 20,000 crosses many stack segments. An
     // even count of signs is the value itself.
-    for ([_]usize{ 257, 100_000 }) |n| {
+    for ([_]usize{ 257, 20_000 }) |n| {
         const buf = try arena.alloc(u8, 2 * n + 1);
         @memset(buf[0..n], '(');
         buf[n] = '1';
